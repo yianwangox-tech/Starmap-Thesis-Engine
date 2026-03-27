@@ -25,7 +25,7 @@ This repository includes a pre-populated `database.db` so you can experience the
 ### Installation
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/your-username/Starmap-Thesis-Engine.git](https://github.com/ywangox-boop/Starmap-Thesis-Engine.git)
+   git clone https://github.com/ywangox-boop/Starmap-Thesis-Engine.git
    cd Starmap-Thesis-Engine
    
 2. **Install the backend dependencies:** pip install fastapi uvicorn pydantic
