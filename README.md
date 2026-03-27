@@ -35,9 +35,14 @@ And the server will start securely on http://127.0.0.1:8001.
 4. Launch the Frontend:
 Simply double-click the index.html file to open it in your web browser.
 
-Using the Demo Dataset
-Since a demo database is included, you can log in using the existing test account (or register a new one). Click on the existing project in the Dashboard to instantly see the interactive graphs and test the AI clustering tools.
-(Note: You will need to configure your own LLM API keys in the dashboard to parse new PDFs or generate text).
+### Using the Demo Dataset
+Since a demo database is included, you can log in using the existing test account to see the interactive graphs immediately:
+
+- **Username**: LQ_Signal_Test
+- **Password**: 12345678
+
+Alternatively, you can register a new account. Click on the existing project in the Dashboard to instantly see the interactive graphs and test the AI clustering tools. 
+*(Note: You will need to configure your own LLM API keys in the dashboard to parse new PDFs or generate text).*
 
 ## ⚙️ Configuration & Security
 All external API configurations are managed securely from the Dashboard -> 🤖 AI Parser Settings:
