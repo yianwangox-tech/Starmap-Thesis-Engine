@@ -1288,20 +1288,29 @@
                         <label for="literature-watch-discipline" style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em;">Discipline Scope</label>
                         <select id="literature-watch-discipline" onchange="handleLiteratureWatchDisciplineChange()" style="min-width:280px; padding:10px 12px; border-radius:12px; border:1px solid var(--border-color); background:#fff; font-size:13px;">
                             <option value="">Select discipline scope</option>
-                            <option value="macroeconomics_monetary">Macroeconomics & Monetary Economics</option>
-                            <option value="international_finance_sovereign_debt">International Finance & Sovereign Debt</option>
-                            <option value="banking_credit_financial_intermediation">Banking, Credit & Financial Intermediation</option>
-                            <option value="asset_pricing_corporate_finance">Asset Pricing & Corporate Finance</option>
-                            <option value="public_finance_political_economy">Public Finance & Political Economy</option>
-                            <option value="development_international_political_economy">Development & International Political Economy</option>
-                            <option value="political_economy_public_policy">Political Economy & Public Policy</option>
-                            <option value="management_strategy_organizations">Management, Strategy & Organizations</option>
-                            <option value="marketing_operations_business_analytics">Marketing, Operations & Business Analytics</option>
-                            <option value="computer_science_ai">Computer Science & AI</option>
-                            <option value="general_social_science">General Social Science</option>
+                            <option value="a_general_economics_teaching">A. General Economics and Teaching</option>
+                            <option value="b_history_methodology_heterodox">B. History of Economic Thought, Methodology, and Heterodox Approaches</option>
+                            <option value="c_mathematical_quantitative_methods">C. Mathematical and Quantitative Methods</option>
+                            <option value="d_microeconomics">D. Microeconomics</option>
+                            <option value="e_macroeconomics_monetary">E. Macroeconomics and Monetary Economics</option>
+                            <option value="f_international_economics">F. International Economics</option>
+                            <option value="g_financial_economics">G. Financial Economics</option>
+                            <option value="h_public_economics">H. Public Economics</option>
+                            <option value="i_health_education_welfare">I. Health, Education, and Welfare</option>
+                            <option value="j_labor_demographic_economics">J. Labor and Demographic Economics</option>
+                            <option value="k_law_economics">K. Law and Economics</option>
+                            <option value="l_industrial_organization">L. Industrial Organization</option>
+                            <option value="m_business_administration_business_economics">M. Business Administration and Business Economics • Marketing • Accounting • Personnel Economics</option>
+                            <option value="n_economic_history">N. Economic History</option>
+                            <option value="o_development_innovation_growth">O. Economic Development, Innovation, Technological Change, and Growth</option>
+                            <option value="p_political_economy_comparative_systems">P. Political Economy and Comparative Economic Systems</option>
+                            <option value="q_agricultural_environmental_resource">Q. Agricultural and Natural Resource Economics • Environmental and Ecological Economics</option>
+                            <option value="r_urban_regional_real_estate_transportation">R. Urban, Rural, Regional, Real Estate, and Transportation Economics</option>
+                            <option value="y_miscellaneous">Y. Miscellaneous Categories</option>
+                            <option value="z_other_special_topics">Z. Other Special Topics</option>
                         </select>
                     </div>
-                    <div style="font-size:11px; color:var(--text-muted); max-width:360px; line-height:1.5;">Choose the closest discipline before scanning. Literature Watch will use it to prefer field-appropriate journals and keep reranking inside the right literature neighborhood.</div>
+                    <div style="font-size:11px; color:var(--text-muted); max-width:360px; line-height:1.5;">Choose the closest economics field before scanning. Literature Watch will use it to prefer field-appropriate journals and keep reranking inside the right economics neighborhood.</div>
                 </div>
                 <div class="toggle-group" style="margin-bottom:0; min-width:0;">
                     <button id="literature-watch-range-3m" class="btn-toggle active" onclick="setLiteratureWatchRange('3m')">Past 3 Months</button>
@@ -2965,16 +2974,36 @@ Summary rules:
         return `${projectId || 'none'}::${mode || 'target'}::${discipline || 'none'}::${range || '3m'}::${scholarKey}`;
     }
 
+    function normalizeLiteratureWatchDisciplineKey(rawValue) {
+        const key = String(rawValue || '').trim().toLowerCase();
+        const aliases = {
+            macroeconomics_monetary: 'e_macroeconomics_monetary',
+            international_finance_sovereign_debt: 'f_international_economics',
+            banking_credit_financial_intermediation: 'g_financial_economics',
+            asset_pricing_corporate_finance: 'g_financial_economics',
+            public_finance_political_economy: 'h_public_economics',
+            development_international_political_economy: 'o_development_innovation_growth',
+            political_economy_public_policy: 'p_political_economy_comparative_systems',
+            management_strategy_organizations: 'm_business_administration_business_economics',
+            marketing_operations_business_analytics: 'm_business_administration_business_economics',
+            computer_science_ai: 'c_mathematical_quantitative_methods',
+            general_social_science: 'y_miscellaneous'
+        };
+        return aliases[key] || key;
+    }
+
     function getLiteratureWatchRecommendationKey(paper) {
         return cleanDoiLocal(paper?.doi) || String(paper?.openalex_id || '').trim() || `${String(paper?.title || '').trim().toLowerCase()}::${String(paper?.year || '').trim()}`;
     }
 
     function getLiteratureWatchDiscipline(projectId = currentProject?.id) {
-        return getProjectSearchSettings(projectId).literature_watch_discipline || '';
+        return normalizeLiteratureWatchDisciplineKey(getProjectSearchSettings(projectId).literature_watch_discipline || '');
     }
 
     function setLiteratureWatchDiscipline(projectId = currentProject?.id, discipline = '') {
-        return saveProjectSearchSettings({ literature_watch_discipline: discipline }, projectId).literature_watch_discipline || '';
+        return normalizeLiteratureWatchDisciplineKey(saveProjectSearchSettings({
+            literature_watch_discipline: normalizeLiteratureWatchDisciplineKey(discipline)
+        }, projectId).literature_watch_discipline || '');
     }
 
     function getLiteratureWatchRange(projectId = currentProject?.id) {

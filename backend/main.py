@@ -71,142 +71,121 @@ LITERATURE_WATCH_STOPWORDS = set(CITATION_KEY_STOPWORDS) | {
     "based", "from", "toward", "through", "among", "over", "than", "such"
 }
 LITERATURE_WATCH_DISCIPLINES: Dict[str, dict] = {
-    "macroeconomics_monetary": {
-        "label": "Macroeconomics & Monetary Economics",
-        "top_venues": [
-            "american economic review",
-            "econometrica",
-            "quarterly journal of economics",
-            "journal of political economy",
-            "review of economics and statistics",
-            "journal of monetary economics",
-            "journal of economic theory",
-            "journal of international economics"
-        ],
-        "venue_keywords": ["macro", "monetary", "econom", "inflation", "business cycle", "exchange rate", "sovereign", "fiscal"],
+    "a_general_economics_teaching": {
+        "label": "A. General Economics and Teaching",
+        "top_venues": ["journal of economic literature", "journal of economic perspectives", "american economic review", "econometrica"],
+        "venue_keywords": ["economics", "economic education", "teaching", "survey", "literature", "overview"],
     },
-    "international_finance_sovereign_debt": {
-        "label": "International Finance & Sovereign Debt",
-        "top_venues": [
-            "journal of finance",
-            "review of financial studies",
-            "journal of financial economics",
-            "american economic review",
-            "journal of monetary economics",
-            "journal of international economics",
-            "journal of banking and finance",
-            "review of finance",
-            "journal of financial intermediation"
-        ],
-        "venue_keywords": ["sovereign", "debt", "default", "spread", "bond", "fiscal", "bank", "credit", "international finance", "public debt"],
+    "b_history_methodology_heterodox": {
+        "label": "B. History of Economic Thought, Methodology, and Heterodox Approaches",
+        "top_venues": ["history of political economy", "journal of the history of economic thought", "cambridge journal of economics"],
+        "venue_keywords": ["history of economic thought", "methodology", "heterodox", "epistemology", "school of thought"],
     },
-    "banking_credit_financial_intermediation": {
-        "label": "Banking, Credit & Financial Intermediation",
-        "top_venues": [
-            "journal of finance",
-            "review of financial studies",
-            "journal of financial economics",
-            "journal of financial intermediation",
-            "journal of banking and finance",
-            "review of finance"
-        ],
-        "venue_keywords": ["bank", "banking", "credit", "intermediation", "lending", "liquidity", "financial stability", "balance sheet"],
+    "c_mathematical_quantitative_methods": {
+        "label": "C. Mathematical and Quantitative Methods",
+        "top_venues": ["econometrica", "quantitative economics", "journal of econometrics", "theoretical economics", "review of economics and statistics"],
+        "venue_keywords": ["econometric", "estimation", "identification", "quantitative", "mathematical", "causal inference", "time series", "panel data"],
     },
-    "asset_pricing_corporate_finance": {
-        "label": "Asset Pricing & Corporate Finance",
-        "top_venues": [
-            "journal of finance",
-            "review of financial studies",
-            "journal of financial economics",
-            "review of finance",
-            "management science"
-        ],
-        "venue_keywords": ["asset pricing", "corporate finance", "equity", "valuation", "maturity", "capital structure", "investment", "returns"],
+    "d_microeconomics": {
+        "label": "D. Microeconomics",
+        "top_venues": ["american economic review", "econometrica", "quarterly journal of economics", "journal of political economy", "the rand journal of economics"],
+        "venue_keywords": ["microeconomics", "consumer", "firm", "game theory", "incentive", "contract", "pricing", "information"],
     },
-    "public_finance_political_economy": {
-        "label": "Public Finance & Political Economy",
-        "top_venues": [
-            "american economic review",
-            "quarterly journal of economics",
-            "journal of political economy",
-            "journal of public economics",
-            "review of economics and statistics",
-            "american political science review",
-            "journal of politics",
-            "world politics"
-        ],
-        "venue_keywords": ["public finance", "fiscal", "tax", "government", "political economy", "policy", "state", "regulation"],
+    "e_macroeconomics_monetary": {
+        "label": "E. Macroeconomics and Monetary Economics",
+        "top_venues": ["american economic review", "econometrica", "quarterly journal of economics", "journal of political economy", "journal of monetary economics", "review of economics and statistics"],
+        "venue_keywords": ["macro", "macroeconomics", "monetary", "inflation", "business cycle", "fiscal", "sovereign", "debt", "credit rating", "default"],
     },
-    "development_international_political_economy": {
-        "label": "Development & International Political Economy",
-        "top_venues": [
-            "journal of development economics",
-            "world development",
-            "american economic review",
-            "journal of international economics",
-            "world politics"
-        ],
-        "venue_keywords": ["development", "emerging markets", "global", "trade", "aid", "institutions", "political economy", "international"],
+    "f_international_economics": {
+        "label": "F. International Economics",
+        "top_venues": ["journal of international economics", "journal of international money and finance", "american economic review", "journal of monetary economics", "review of international economics"],
+        "venue_keywords": ["international", "trade", "exchange rate", "sovereign debt", "default", "capital flows", "external debt", "balance of payments"],
     },
-    "political_economy_public_policy": {
-        "label": "Political Economy & Public Policy",
-        "top_venues": [
-            "american political science review",
-            "journal of politics",
-            "world politics",
-            "governance",
-            "public administration review",
-            "journal of public economics"
-        ],
-        "venue_keywords": ["politic", "policy", "public", "govern", "state", "regulation"],
+    "g_financial_economics": {
+        "label": "G. Financial Economics",
+        "top_venues": ["journal of finance", "review of financial studies", "journal of financial economics", "review of finance", "journal of banking and finance", "journal of financial intermediation"],
+        "venue_keywords": ["finance", "financial", "banking", "credit", "bond", "spread", "asset pricing", "corporate finance", "intermediation", "risk"],
     },
-    "management_strategy_organizations": {
-        "label": "Management, Strategy & Organizations",
-        "top_venues": [
-            "academy of management journal",
-            "academy of management review",
-            "administrative science quarterly",
-            "strategic management journal",
-            "organization science",
-            "management science"
-        ],
-        "venue_keywords": ["management", "strategy", "organization", "firm", "leadership", "governance", "business"],
+    "h_public_economics": {
+        "label": "H. Public Economics",
+        "top_venues": ["journal of public economics", "national tax journal", "american economic review", "quarterly journal of economics", "journal of political economy"],
+        "venue_keywords": ["public economics", "tax", "taxation", "government", "public debt", "fiscal policy", "public finance", "state capacity"],
     },
-    "marketing_operations_business_analytics": {
-        "label": "Marketing, Operations & Business Analytics",
-        "top_venues": [
-            "journal of marketing",
-            "marketing science",
-            "management science",
-            "manufacturing & service operations management",
-            "operations research"
-        ],
-        "venue_keywords": ["marketing", "operations", "supply chain", "analytics", "pricing", "consumer", "service"],
+    "i_health_education_welfare": {
+        "label": "I. Health, Education, and Welfare",
+        "top_venues": ["journal of health economics", "economics of education review", "journal of human resources", "american economic journal: economic policy"],
+        "venue_keywords": ["health", "education", "welfare", "human capital", "schooling", "insurance", "public health"],
     },
-    "computer_science_ai": {
-        "label": "Computer Science & AI",
-        "top_venues": [
-            "neurips",
-            "icml",
-            "iclr",
-            "aaai",
-            "journal of machine learning research",
-            "transactions on pattern analysis and machine intelligence"
-        ],
-        "venue_keywords": ["machine learning", "artificial intelligence", "computer", "computing", "systems", "information"],
+    "j_labor_demographic_economics": {
+        "label": "J. Labor and Demographic Economics",
+        "top_venues": ["journal of labor economics", "industrial and labor relations review", "demography", "journal of human resources"],
+        "venue_keywords": ["labor", "employment", "wages", "demography", "migration", "household", "family", "gender"],
     },
-    "general_social_science": {
-        "label": "General Social Science",
-        "top_venues": [
-            "american journal of sociology",
-            "american sociological review",
-            "social forces",
-            "annual review of sociology"
-        ],
-        "venue_keywords": ["social", "sociolog", "politic", "economic", "policy"],
+    "k_law_economics": {
+        "label": "K. Law and Economics",
+        "top_venues": ["journal of law and economics", "international review of law and economics", "journal of legal studies"],
+        "venue_keywords": ["law", "legal", "regulation", "crime", "litigation", "property rights", "contract enforcement"],
+    },
+    "l_industrial_organization": {
+        "label": "L. Industrial Organization",
+        "top_venues": ["the rand journal of economics", "journal of industrial economics", "international journal of industrial organization", "management science"],
+        "venue_keywords": ["industrial organization", "competition", "market structure", "antitrust", "platform", "oligopoly", "innovation"],
+    },
+    "m_business_administration_business_economics": {
+        "label": "M. Business Administration and Business Economics • Marketing • Accounting • Personnel Economics",
+        "top_venues": ["management science", "marketing science", "accounting review", "strategic management journal", "organization science"],
+        "venue_keywords": ["business", "management", "marketing", "accounting", "personnel", "organization", "strategy", "firm performance"],
+    },
+    "n_economic_history": {
+        "label": "N. Economic History",
+        "top_venues": ["journal of economic history", "explorations in economic history", "economic history review"],
+        "venue_keywords": ["economic history", "historical", "long run", "industrialization", "institutions", "historical development"],
+    },
+    "o_development_innovation_growth": {
+        "label": "O. Economic Development, Innovation, Technological Change, and Growth",
+        "top_venues": ["journal of development economics", "world development", "research policy", "economic journal", "american economic journal: applied economics"],
+        "venue_keywords": ["development", "innovation", "technology", "growth", "structural transformation", "productivity", "emerging economy"],
+    },
+    "p_political_economy_comparative_systems": {
+        "label": "P. Political Economy and Comparative Economic Systems",
+        "top_venues": ["public choice", "journal of comparative economics", "journal of politics", "world politics", "journal of public economics"],
+        "venue_keywords": ["political economy", "comparative systems", "institutions", "state", "governance", "regime", "policy choice"],
+    },
+    "q_agricultural_environmental_resource": {
+        "label": "Q. Agricultural and Natural Resource Economics • Environmental and Ecological Economics",
+        "top_venues": ["american journal of agricultural economics", "journal of environmental economics and management", "resource and energy economics", "ecological economics"],
+        "venue_keywords": ["agricultural", "natural resource", "environmental", "ecological", "climate", "energy", "land use"],
+    },
+    "r_urban_regional_real_estate_transportation": {
+        "label": "R. Urban, Rural, Regional, Real Estate, and Transportation Economics",
+        "top_venues": ["journal of urban economics", "regional science and urban economics", "real estate economics", "transportation research part b"],
+        "venue_keywords": ["urban", "regional", "real estate", "housing", "transportation", "city", "spatial", "land"],
+    },
+    "y_miscellaneous": {
+        "label": "Y. Miscellaneous Categories",
+        "top_venues": ["american economic review", "economic journal", "review of economics and statistics"],
+        "venue_keywords": ["economics", "economic", "policy", "applied economics", "miscellaneous"],
+    },
+    "z_other_special_topics": {
+        "label": "Z. Other Special Topics",
+        "top_venues": ["american economic review", "economic journal", "review of economics and statistics"],
+        "venue_keywords": ["special topic", "economics", "policy", "interdisciplinary"],
     },
 }
-DEFAULT_LITERATURE_WATCH_DISCIPLINE = "international_finance_sovereign_debt"
+LITERATURE_WATCH_DISCIPLINE_ALIASES: Dict[str, str] = {
+    "macroeconomics_monetary": "e_macroeconomics_monetary",
+    "international_finance_sovereign_debt": "f_international_economics",
+    "banking_credit_financial_intermediation": "g_financial_economics",
+    "asset_pricing_corporate_finance": "g_financial_economics",
+    "public_finance_political_economy": "h_public_economics",
+    "development_international_political_economy": "o_development_innovation_growth",
+    "political_economy_public_policy": "p_political_economy_comparative_systems",
+    "management_strategy_organizations": "m_business_administration_business_economics",
+    "marketing_operations_business_analytics": "m_business_administration_business_economics",
+    "computer_science_ai": "c_mathematical_quantitative_methods",
+    "general_social_science": "y_miscellaneous",
+}
+DEFAULT_LITERATURE_WATCH_DISCIPLINE = "e_macroeconomics_monetary"
 
 def _scrub_paper_payload(paper: dict) -> dict:
     if not isinstance(paper, dict):
@@ -1039,6 +1018,8 @@ def _tokenize_literature_watch_text(value: str) -> List[str]:
 
 def _normalize_watch_discipline(raw_value: str) -> str:
     key = str(raw_value or "").strip().lower()
+    if key in LITERATURE_WATCH_DISCIPLINE_ALIASES:
+        key = LITERATURE_WATCH_DISCIPLINE_ALIASES[key]
     return key if key in LITERATURE_WATCH_DISCIPLINES else DEFAULT_LITERATURE_WATCH_DISCIPLINE
 
 def _discipline_config(raw_value: str) -> dict:
