@@ -990,12 +990,22 @@ class LlmProxyRequest(BaseModel):
     temperature: float = 0.2
     json_mode: bool = False
 
+class LiteratureWatchJournalSource(BaseModel):
+    id: str = ""
+    display_name: str = ""
+
+class LiteratureWatchSourceSearchRequest(BaseModel):
+    query: str
+    limit: int = 5
+
 class LiteratureWatchRequest(BaseModel):
     mode: str = "target"
     lookback_window: str = "3m"
     limit: int = 12
     discipline: str = ""
+    discipline_scopes: List[str] = Field(default_factory=list)
     scholar_names: List[str] = Field(default_factory=list)
+    journal_sources: List[LiteratureWatchJournalSource] = Field(default_factory=list)
 
 def _clean_doi(raw_value: Optional[str]) -> str:
     if not raw_value:
@@ -1022,12 +1032,43 @@ def _normalize_watch_discipline(raw_value: str) -> str:
         key = LITERATURE_WATCH_DISCIPLINE_ALIASES[key]
     return key if key in LITERATURE_WATCH_DISCIPLINES else DEFAULT_LITERATURE_WATCH_DISCIPLINE
 
+def _normalize_watch_discipline_scopes(raw_values) -> List[str]:
+    normalized: List[str] = []
+    for raw_value in raw_values or []:
+        key = _normalize_watch_discipline(raw_value)
+        if key not in normalized:
+            normalized.append(key)
+        if len(normalized) >= 3:
+            break
+    return normalized or [DEFAULT_LITERATURE_WATCH_DISCIPLINE]
+
 def _discipline_config(raw_value: str) -> dict:
     return LITERATURE_WATCH_DISCIPLINES[_normalize_watch_discipline(raw_value)]
 
+def _combined_discipline_config(raw_values) -> dict:
+    scopes = _normalize_watch_discipline_scopes(raw_values)
+    configs = [_discipline_config(scope) for scope in scopes]
+    labels = [config.get("label", scope) for config, scope in zip(configs, scopes)]
+    top_venues: List[str] = []
+    venue_keywords: List[str] = []
+    for config in configs:
+        for venue in config.get("top_venues", []):
+            if venue not in top_venues:
+                top_venues.append(venue)
+        for keyword in config.get("venue_keywords", []):
+            if keyword not in venue_keywords:
+                venue_keywords.append(keyword)
+    return {
+        "keys": scopes,
+        "labels": labels,
+        "label": " · ".join(labels),
+        "top_venues": top_venues,
+        "venue_keywords": venue_keywords,
+    }
+
 def _normalize_watch_mode(raw_value: str) -> str:
     mode = str(raw_value or "target").strip().lower()
-    return mode if mode in {"target", "scholar"} else "target"
+    return mode if mode in {"target", "scholar", "journal"} else "target"
 
 def _extract_json_payload_from_text(text: str) -> str:
     source = str(text or "").strip()
@@ -1114,7 +1155,7 @@ def _normalize_watch_range(raw_value: str) -> Tuple[str, str, str, int]:
     end = today.isoformat()
     return normalized, label, start, days
 
-def _get_project_watch_context(project_data: dict, discipline: str) -> dict:
+def _get_project_watch_context(project_data: dict, discipline_scopes: List[str]) -> dict:
     top_papers = json.loads(_scrub_top_papers_json(project_data.get("top_papers"))) if project_data.get("top_papers") else []
     core_papers = [
         paper for paper in top_papers
@@ -1126,12 +1167,12 @@ def _get_project_watch_context(project_data: dict, discipline: str) -> dict:
         "target_abstract": _trim_text(project_data.get("target_abstract"), MAX_TARGET_ABSTRACT_LENGTH),
         "top_papers": top_papers,
         "core_papers": core_papers[:50],
-        "discipline": _normalize_watch_discipline(discipline)
+        "disciplines": _normalize_watch_discipline_scopes(discipline_scopes)
     }
 
 def _build_watch_fallback_strategy(context: dict) -> dict:
     weighted_terms: Dict[str, float] = {}
-    discipline = _discipline_config(context.get("discipline", ""))
+    discipline = _combined_discipline_config(context.get("disciplines", []))
 
     def add_weighted(text: str, weight: float):
         for token in _tokenize_literature_watch_text(text):
@@ -1176,7 +1217,7 @@ def _build_literature_watch_prompt(context: dict) -> str:
             f"{index}. Title: {paper.get('title', '')}\n"
             f"   Abstract snippet: {_trim_text(_collapse_whitespace(paper.get('abstract', '')), 180)}"
         )
-    discipline_label = _discipline_config(context.get("discipline", "")).get("label", "Economics & Finance")
+    discipline_label = _combined_discipline_config(context.get("disciplines", [])).get("label", "Economics & Finance")
     return (
         "You are planning a literature watch for a research project.\n"
         "Use the target thesis, abstract, Core papers, and the declared discipline scope to infer the research direction.\n"
@@ -1217,7 +1258,7 @@ def _build_literature_watch_strategy(context: dict) -> dict:
             "summary": summary or "Generated from your thesis, abstract, and top Core papers.",
             "facets": facets,
             "queries": queries,
-            "discipline": _discipline_config(context.get("discipline", "")).get("label", "")
+            "discipline": _combined_discipline_config(context.get("disciplines", [])).get("label", "")
         }
     except Exception:
         return _build_watch_fallback_strategy(context)
@@ -1226,7 +1267,7 @@ def _make_watch_lookup_payload() -> PaperLookupRequest:
     payload = PaperLookupRequest(title="watch", doi="", year="", authors="")
     return _apply_runtime_defaults_to_lookup(payload)
 
-def _search_openalex_recent_works(query: str, lookup_payload: PaperLookupRequest, start_date: str, end_date: str, per_page: int = 18) -> List[dict]:
+def _search_openalex_recent_works(query: str, lookup_payload: PaperLookupRequest, start_date: str, end_date: str, per_page: int = 24) -> List[dict]:
     params = {
         "search": query,
         "per_page": per_page,
@@ -1441,6 +1482,52 @@ def _resolve_openalex_author(scholar_name: str, lookup_payload: PaperLookupReque
         "requested_name": safe_name
     }
 
+def _search_openalex_sources(query: str, lookup_payload: PaperLookupRequest, per_page: int = 5) -> List[dict]:
+    safe_query = _trim_text(_collapse_whitespace(query), 160)
+    if not safe_query:
+        return []
+    params = {
+        "search": safe_query,
+        "per_page": max(1, min(per_page, 10)),
+        "filter": "type:journal"
+    }
+    if lookup_payload.openalex_api_key:
+        params["api_key"] = lookup_payload.openalex_api_key
+    url = _build_url("https://api.openalex.org/sources", params)
+    results = (_http_get_json(url, lookup_payload.contact_email) or {}).get("results") or []
+    normalized_results = []
+    seen_ids = set()
+    for source in results:
+        source_id = _trim_text(source.get("id"), 300)
+        if not source_id or source_id in seen_ids:
+            continue
+        seen_ids.add(source_id)
+        normalized_results.append({
+            "id": source_id,
+            "display_name": _trim_text(source.get("display_name"), 220),
+            "host_organization_name": _trim_text(source.get("host_organization_name"), 220),
+            "works_count": int(source.get("works_count") or 0),
+            "cited_by_count": int(source.get("cited_by_count") or 0),
+            "type": _trim_text(source.get("type"), 40),
+        })
+    return normalized_results
+
+def _resolve_openalex_source(source_payload: LiteratureWatchJournalSource, lookup_payload: PaperLookupRequest) -> Optional[dict]:
+    source_id = _trim_text(source_payload.id, 300)
+    display_name = _trim_text(_collapse_whitespace(source_payload.display_name), 220)
+    if source_id:
+        return {"id": source_id, "display_name": display_name or source_id}
+    if not display_name:
+        return None
+    candidates = _search_openalex_sources(display_name, lookup_payload, per_page=5)
+    if not candidates:
+        return None
+    best = candidates[0]
+    return {
+        "id": best.get("id", ""),
+        "display_name": best.get("display_name") or display_name
+    }
+
 def _fetch_recent_works_for_author(author: dict, lookup_payload: PaperLookupRequest, start_date: str, end_date: str, per_page: int = 18) -> List[dict]:
     author_id = _extract_openalex_short_id(author.get("id", ""))
     if not author_id:
@@ -1463,6 +1550,35 @@ def _fetch_recent_works_for_author(author: dict, lookup_payload: PaperLookupRequ
         parsed["source_scholar"] = author.get("display_name") or ""
         papers.append(parsed)
     return papers
+
+def _fetch_recent_works_for_source(source: dict, lookup_payload: PaperLookupRequest, start_date: str, end_date: str, per_page: int = 40) -> List[dict]:
+    source_id = _trim_text(source.get("id"), 300)
+    if not source_id:
+        return []
+    params = {
+        "per_page": max(1, min(per_page, 50)),
+        "filter": f"primary_location.source.id:{source_id},from_publication_date:{start_date},to_publication_date:{end_date}",
+        "sort": "publication_date:desc"
+    }
+    if lookup_payload.openalex_api_key:
+        params["api_key"] = lookup_payload.openalex_api_key
+    url = _build_url("https://api.openalex.org/works", params)
+    results = (_http_get_json(url, lookup_payload.contact_email) or {}).get("results") or []
+    papers = []
+    for work in results:
+        parsed = _parse_openalex_work(work)
+        if not parsed:
+            continue
+        parsed["publication_date"] = _trim_text(work.get("publication_date"), 20)
+        parsed["source_journal"] = source.get("display_name") or ""
+        papers.append(parsed)
+    return papers
+
+def _summarize_watch_step_error(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        detail = getattr(exc, "detail", "") or ""
+        return _trim_text(str(detail), 220) or "Upstream literature metadata could not be retrieved."
+    return _trim_text(str(exc), 220) or "Upstream literature metadata could not be retrieved."
 
 def _build_watch_token_weights(context: dict, strategy: dict) -> Dict[str, float]:
     weights: Dict[str, float] = {}
@@ -1519,18 +1635,42 @@ def _candidate_relevance_score(candidate: dict, token_weights: Dict[str, float],
     relevance = min((lexical_score * 0.78) + (best_query_score * 0.22), 1.0)
     return relevance, matched_queries
 
-def _venue_discipline_bonus(candidate: dict, discipline_key: str) -> float:
+def _venue_discipline_bonus(candidate: dict, discipline_scopes) -> float:
     venue_text = _collapse_whitespace(str((candidate or {}).get("publication_venue") or "")).lower()
     if not venue_text:
         return 0.0
-    config = _discipline_config(discipline_key)
+    config = _combined_discipline_config(discipline_scopes)
     if any(top_venue in venue_text for top_venue in config.get("top_venues", [])):
         return 0.22
     if any(keyword in venue_text for keyword in config.get("venue_keywords", [])):
         return 0.10
     return 0.0
 
-def _candidate_quality_score(candidate: dict, discipline_key: str) -> float:
+def _normalize_watch_venue_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _collapse_whitespace(str(value or "")).lower()).strip()
+
+def _watched_journal_bonus(candidate: dict, watched_journals: List[str]) -> float:
+    if not watched_journals:
+        return 0.0
+    venue_candidates = {
+        _normalize_watch_venue_key(candidate.get("publication_venue")),
+        _normalize_watch_venue_key(candidate.get("source_journal"))
+    }
+    venue_candidates = {item for item in venue_candidates if item}
+    if not venue_candidates:
+        return 0.0
+    normalized_watched = {
+        _normalize_watch_venue_key(item)
+        for item in watched_journals
+        if _normalize_watch_venue_key(item)
+    }
+    for venue in venue_candidates:
+        for watched in normalized_watched:
+            if venue == watched or venue in watched or watched in venue:
+                return 0.12
+    return 0.0
+
+def _candidate_quality_score(candidate: dict, discipline_scopes, watched_journals: Optional[List[str]] = None) -> float:
     citation_count = candidate.get("citation_count") or 0
     fwci_value = candidate.get("fwci")
     citation_score = min((math.log1p(max(citation_count, 0)) / math.log1p(500)), 1.0) if citation_count else 0.0
@@ -1548,8 +1688,9 @@ def _candidate_quality_score(candidate: dict, discipline_key: str) -> float:
         completeness_bonus += 0.05
     if candidate.get("abstract"):
         completeness_bonus += 0.07
-    venue_bonus = _venue_discipline_bonus(candidate, discipline_key)
-    return min((citation_score * 0.58) + (fwci_score * 0.12) + completeness_bonus + venue_bonus, 1.0)
+    venue_bonus = _venue_discipline_bonus(candidate, discipline_scopes)
+    watched_journal_bonus = _watched_journal_bonus(candidate, watched_journals or [])
+    return min((citation_score * 0.58) + (fwci_score * 0.12) + completeness_bonus + venue_bonus + watched_journal_bonus, 1.0)
 
 def _candidate_freshness_score(candidate: dict, window_days: int) -> float:
     publication_date = str(candidate.get("publication_date") or "").strip()
@@ -1602,7 +1743,7 @@ def _semantic_watch_rerank(context: dict, strategy: dict, candidates: List[dict]
             for candidate in shortlist
         ]
         core_titles = [paper.get("title", "") for paper in context.get("core_papers", [])[:12]]
-        discipline_label = _discipline_config(context.get("discipline", "")).get("label", "Economics & Finance")
+        discipline_label = _combined_discipline_config(context.get("disciplines", [])).get("label", "Economics & Finance")
         prompt = (
             "You are reranking new-paper candidates for a project literature watch.\n"
             "Judge semantic relevance to the target thesis using the thesis, abstract, declared discipline, and Core-paper titles.\n"
@@ -2071,13 +2212,20 @@ def _merge_paper_sources(openalex_data: dict, crossref_data: dict) -> dict:
     return {"merged": merged, "validation": validation, "openalex": openalex_data, "crossref": crossref_data}
 
 def _build_project_literature_watch(project_data: dict, request_payload: LiteratureWatchRequest) -> dict:
-    discipline_key = _normalize_watch_discipline(request_payload.discipline)
+    discipline_scopes = _normalize_watch_discipline_scopes(request_payload.discipline_scopes or [request_payload.discipline])
+    primary_discipline_key = discipline_scopes[0]
+    combined_discipline = _combined_discipline_config(discipline_scopes)
     watch_mode = _normalize_watch_mode(request_payload.mode)
-    context = _get_project_watch_context(project_data, discipline_key)
+    context = _get_project_watch_context(project_data, discipline_scopes)
     strategy = _build_literature_watch_strategy(context)
     lookup_payload = _make_watch_lookup_payload()
     lookback_window, range_label, start_date, window_days = _normalize_watch_range(request_payload.lookback_window)
     recommendation_limit = max(3, min(int(request_payload.limit or 12), 30))
+    watched_journal_names = [
+        _trim_text(_collapse_whitespace(getattr(source, "display_name", "")), 220)
+        for source in (request_payload.journal_sources or [])
+        if _trim_text(_collapse_whitespace(getattr(source, "display_name", "")), 220)
+    ]
     existing_signatures = {
         signature
         for paper in context.get("top_papers", [])
@@ -2090,8 +2238,12 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
     scholar_sources = []
     unresolved_scholars: List[str] = []
     resolved_scholars: List[dict] = []
+    journal_sources: List[str] = []
+    resolved_journals: List[dict] = []
+    unresolved_journals: List[str] = []
+    partial_failures: List[dict] = []
 
-    def register_candidate(candidate: dict, *, matched_query: str = "", source_scholar: str = ""):
+    def register_candidate(candidate: dict, *, matched_query: str = "", source_scholar: str = "", source_journal: str = ""):
         identity_signatures = _paper_identity_signatures(candidate)
         if any(signature in existing_signatures for signature in identity_signatures):
             return
@@ -2099,12 +2251,15 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
         incoming = {
             **candidate,
             "matched_queries": [matched_query] if matched_query else [],
-            "source_scholar": source_scholar or candidate.get("source_scholar", "")
+            "source_scholar": source_scholar or candidate.get("source_scholar", ""),
+            "source_journal": source_journal or candidate.get("source_journal", "")
         }
         if matched_primary:
             merged = _merge_watch_candidate(candidates_by_key[matched_primary], incoming)
             if source_scholar and not merged.get("source_scholar"):
                 merged["source_scholar"] = source_scholar
+            if source_journal and not merged.get("source_journal"):
+                merged["source_journal"] = source_journal
             candidates_by_key[matched_primary] = merged
             for signature in identity_signatures:
                 signature_to_primary[signature] = matched_primary
@@ -2133,7 +2288,15 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
             raise HTTPException(status_code=422, detail="At least one scholar name is required for Scholar Watch.")
 
         for scholar_name in requested_scholars:
-            author = _resolve_openalex_author(scholar_name, lookup_payload)
+            try:
+                author = _resolve_openalex_author(scholar_name, lookup_payload)
+            except Exception as exc:
+                partial_failures.append({
+                    "kind": "scholar",
+                    "label": scholar_name,
+                    "detail": _summarize_watch_step_error(exc)
+                })
+                continue
             if not author:
                 unresolved_scholars.append(scholar_name)
                 continue
@@ -2144,24 +2307,104 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
                 "matched_name": author.get("matched_name") or (author.get("display_name") or scholar_name),
                 "match_score": author.get("match_score") or 0
             })
-            for candidate in _fetch_recent_works_for_author(author, lookup_payload, start_date, date.today().isoformat(), per_page=18):
+            try:
+                scholar_candidates = _fetch_recent_works_for_author(author, lookup_payload, start_date, date.today().isoformat(), per_page=18)
+            except Exception as exc:
+                partial_failures.append({
+                    "kind": "scholar",
+                    "label": author.get("display_name") or scholar_name,
+                    "detail": _summarize_watch_step_error(exc)
+                })
+                continue
+            for candidate in scholar_candidates:
                 register_candidate(candidate, source_scholar=author.get("display_name") or scholar_name)
+    elif watch_mode == "journal":
+        requested_journals = []
+        seen_journal_ids = set()
+        seen_journal_names = set()
+        for raw_source in request_payload.journal_sources or []:
+            source_id = _trim_text(getattr(raw_source, "id", ""), 300)
+            display_name = _trim_text(_collapse_whitespace(getattr(raw_source, "display_name", "")), 220)
+            dedupe_key = source_id.lower() if source_id else display_name.lower()
+            if not dedupe_key:
+                continue
+            if source_id and source_id.lower() in seen_journal_ids:
+                continue
+            if not source_id and display_name.lower() in seen_journal_names:
+                continue
+            if source_id:
+                seen_journal_ids.add(source_id.lower())
+            if display_name:
+                seen_journal_names.add(display_name.lower())
+            requested_journals.append(LiteratureWatchJournalSource(id=source_id, display_name=display_name))
+            if len(requested_journals) >= 20:
+                break
+        if not requested_journals:
+            raise HTTPException(status_code=422, detail="At least one journal is required for Journal Watch.")
+
+        for requested_source in requested_journals:
+            try:
+                source = _resolve_openalex_source(requested_source, lookup_payload)
+            except Exception as exc:
+                partial_failures.append({
+                    "kind": "journal",
+                    "label": requested_source.display_name or requested_source.id,
+                    "detail": _summarize_watch_step_error(exc)
+                })
+                continue
+            if not source:
+                unresolved_journals.append(requested_source.display_name or requested_source.id)
+                continue
+            source_name = source.get("display_name") or requested_source.display_name or requested_source.id
+            journal_sources.append(source_name)
+            resolved_journals.append({
+                "requested": requested_source.display_name or requested_source.id,
+                "resolved": source_name,
+                "id": source.get("id", "")
+            })
+            try:
+                source_candidates = _fetch_recent_works_for_source(source, lookup_payload, start_date, date.today().isoformat(), per_page=40)
+            except Exception as exc:
+                partial_failures.append({
+                    "kind": "journal",
+                    "label": source_name,
+                    "detail": _summarize_watch_step_error(exc)
+                })
+                continue
+            for candidate in source_candidates:
+                register_candidate(candidate, source_journal=source_name)
     else:
         for query in strategy.get("queries", [])[:6]:
-            for candidate in _search_openalex_recent_works(query, lookup_payload, start_date, date.today().isoformat(), per_page=18):
+            try:
+                query_candidates = _search_openalex_recent_works(query, lookup_payload, start_date, date.today().isoformat(), per_page=24)
+            except Exception as exc:
+                partial_failures.append({
+                    "kind": "query",
+                    "label": query,
+                    "detail": _summarize_watch_step_error(exc)
+                })
+                continue
+            for candidate in query_candidates:
                 register_candidate(candidate, matched_query=query)
 
     preliminary_candidates = []
     for candidate in candidates_by_key.values():
         relevance_score, matched_queries = _candidate_relevance_score(candidate, token_weights, strategy)
-        quality_score = _candidate_quality_score(candidate, discipline_key)
+        quality_score = _candidate_quality_score(
+            candidate,
+            discipline_scopes,
+            watched_journal_names if watch_mode == "target" else []
+        )
         freshness_score = _candidate_freshness_score(candidate, window_days)
-        lexical_threshold = 0.12 if watch_mode == "scholar" else 0.18
+        lexical_threshold = 0.12 if watch_mode == "scholar" else (0.14 if watch_mode == "journal" else 0.18)
         if relevance_score < lexical_threshold:
             continue
         candidate["lexical_relevance_score"] = round(relevance_score, 3)
         candidate["quality_score"] = round(quality_score, 3)
         candidate["freshness_score"] = round(freshness_score, 3)
+        candidate["watched_journal_bonus_applied"] = (
+            watch_mode == "target" and _watched_journal_bonus(candidate, watched_journal_names) > 0
+        )
         candidate["matched_queries"] = matched_queries or candidate.get("matched_queries", [])[:3]
         preliminary_candidates.append(candidate)
 
@@ -2174,32 +2417,53 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
         reverse=True
     )
 
-    semantic_scores = _semantic_watch_rerank(context, strategy, preliminary_candidates)
+    try:
+        semantic_scores = _semantic_watch_rerank(context, strategy, preliminary_candidates)
+    except Exception as exc:
+        partial_failures.append({
+            "kind": "rerank",
+            "label": "semantic rerank",
+            "detail": _summarize_watch_step_error(exc)
+        })
+        semantic_scores = {}
 
-    recommendations = []
+    scored_candidates = []
     for candidate in preliminary_candidates:
         lexical_relevance = float(candidate.get("lexical_relevance_score") or 0)
         semantic_relevance = semantic_scores.get(candidate.get("watch_candidate_id"), lexical_relevance)
         final_relevance = min((semantic_relevance * 0.72) + (lexical_relevance * 0.28), 1.0) if semantic_scores else lexical_relevance
-        threshold = (0.36 if semantic_scores else 0.22) if watch_mode == "scholar" else (0.42 if semantic_scores else 0.28)
-        if final_relevance < threshold:
-            continue
+        threshold = (
+            (0.36 if semantic_scores else 0.22)
+            if watch_mode == "scholar"
+            else ((0.34 if semantic_scores else 0.24) if watch_mode == "journal" else (0.42 if semantic_scores else 0.28))
+        )
         watch_score = min((final_relevance * 0.65) + (float(candidate.get("quality_score") or 0) * 0.30) + (float(candidate.get("freshness_score") or 0) * 0.05), 1.0)
         candidate["semantic_relevance_score"] = round(semantic_relevance, 3)
         candidate["relevance_score"] = round(final_relevance, 3)
+        candidate["watch_threshold"] = round(threshold, 3)
         candidate["watch_score"] = round(watch_score, 3)
         candidate["watch_reason"] = (
             f"Matched scholar {candidate.get('source_scholar')} and remained close to the target thesis."
             if watch_mode == "scholar" and candidate.get("source_scholar")
             else (
-                f"Strongest query match: {candidate['matched_queries'][0]}"
-                if candidate.get("matched_queries")
-                else "Matched the target thesis and Core-paper signal."
+                (
+                    f"Strongest query match: {candidate['matched_queries'][0]}. Published in one of your watched journals."
+                    if candidate.get("matched_queries") and candidate.get("watched_journal_bonus_applied")
+                    else (
+                        f"Strongest query match: {candidate['matched_queries'][0]}"
+                        if candidate.get("matched_queries")
+                        else (
+                            "Matched the target thesis, Core-paper signal, and one of your watched journals."
+                            if candidate.get("watched_journal_bonus_applied")
+                            else "Matched the target thesis and Core-paper signal."
+                        )
+                    )
+                )
             )
         )
-        recommendations.append(candidate)
+        scored_candidates.append(candidate)
 
-    recommendations.sort(
+    scored_candidates.sort(
         key=lambda item: (
             float(item.get("watch_score") or 0),
             float(item.get("relevance_score") or 0),
@@ -2209,13 +2473,45 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
         reverse=True
     )
 
+    recommendations = [
+        candidate for candidate in scored_candidates
+        if float(candidate.get("relevance_score") or 0) >= float(candidate.get("watch_threshold") or 0)
+    ]
+
+    minimum_recommendations = 12 if watch_mode in {"target", "journal"} else 0
+    if minimum_recommendations and len(recommendations) < minimum_recommendations:
+        supplemental_floor = 0.24 if watch_mode == "target" else 0.22
+        chosen_ids = {
+            str(candidate.get("watch_candidate_id") or "")
+            for candidate in recommendations
+        }
+        supplemental = []
+        for candidate in scored_candidates:
+            candidate_id = str(candidate.get("watch_candidate_id") or "")
+            if candidate_id in chosen_ids:
+                continue
+            if float(candidate.get("relevance_score") or 0) < supplemental_floor:
+                continue
+            candidate["watch_reason"] = f"{candidate.get('watch_reason', 'Relevant to the target thesis.')} Included from the next-strongest watch candidates to broaden this scan."
+            supplemental.append(candidate)
+            chosen_ids.add(candidate_id)
+            if len(recommendations) + len(supplemental) >= minimum_recommendations:
+                break
+        recommendations.extend(supplemental)
+
+    partial_failure_warning = ""
+    if partial_failures:
+        partial_failure_warning = "Some paper information could not be retrieved. Please run Watch again to get more complete results."
+
     return {
         "mode": watch_mode,
         "range": lookback_window,
         "range_label": range_label,
         "discipline": {
-            "key": discipline_key,
-            "label": _discipline_config(discipline_key).get("label", discipline_key)
+            "key": primary_discipline_key,
+            "keys": discipline_scopes,
+            "label": combined_discipline.get("label", _discipline_config(primary_discipline_key).get("label", primary_discipline_key)),
+            "labels": combined_discipline.get("labels", [])
         },
         "source_summary": {
             "core_papers_used": len(context.get("core_papers", [])),
@@ -2226,6 +2522,11 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
         "scholar_sources": scholar_sources[:20],
         "resolved_scholars": resolved_scholars[:20],
         "unresolved_scholars": unresolved_scholars[:20],
+        "journal_sources": journal_sources[:20],
+        "resolved_journals": resolved_journals[:20],
+        "unresolved_journals": unresolved_journals[:20],
+        "partial_failures": partial_failures[:20],
+        "partial_failure_warning": partial_failure_warning,
         "candidate_count": len(recommendations),
         "recommendations": recommendations[:recommendation_limit]
     }
@@ -3345,6 +3646,15 @@ async def project_literature_watch(project_id: int, payload: LiteratureWatchRequ
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Project literature watch failed: {exc}")
+
+@app.post("/api/literature_watch/journal_search")
+async def literature_watch_journal_search(payload: LiteratureWatchSourceSearchRequest, current_user: dict = Depends(_require_session)):
+    query = _trim_text(_collapse_whitespace(payload.query), 160)
+    if not query:
+        raise HTTPException(status_code=422, detail="Journal search query is required.")
+    lookup_payload = _make_watch_lookup_payload()
+    results = _search_openalex_sources(query, lookup_payload, per_page=max(1, min(int(payload.limit or 5), 8)))
+    return {"results": results}
 
 @app.post("/api/export/bibtex", response_class=PlainTextResponse)
 async def export_bibtex(payload: BibtexExportRequest, current_user: dict = Depends(_require_session)):
