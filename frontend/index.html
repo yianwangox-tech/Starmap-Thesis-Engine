@@ -1202,7 +1202,7 @@
             </button>
         </div>
 
-        <div class="workspace-title-row">
+        <div id="starmap-visualization-anchor" class="workspace-title-row">
             <div class="workspace-section-title">
                 <div>
                     <div class="workspace-pill">Workspace Atlas</div>
@@ -1210,14 +1210,28 @@
                     <div class="workspace-section-copy">Move between orbital, network, and citation views while keeping your paper review flow, sync tools, and writing actions within the same workspace.</div>
                 </div>
             </div>
-            <div class="toggle-group" style="margin-bottom: 0; min-width:min(520px, 100%);">
-                <button id="btn-orbital" class="btn-toggle active" onclick="setChartMode('orbital')">Orbital (Uni-directional)</button>
-                <button id="btn-network" class="btn-toggle" onclick="setChartMode('network')">Network (Bi-directional)</button>
-                <button id="btn-citation" class="btn-toggle" onclick="setChartMode('citation')">Citation Graph</button>
+            <div style="display:grid; grid-template-columns:minmax(320px, 1fr) minmax(240px, auto); gap:14px; align-items:end; min-width:min(820px, 100%);">
+                <div style="display:flex; flex-direction:column; gap:6px; min-width:0;">
+                    <div style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em;">Visualization Mode</div>
+                    <div class="toggle-group" style="margin-bottom:0; min-width:0;">
+                        <button id="btn-orbital" class="btn-toggle active" onclick="setChartMode('orbital')">Orbital (Uni-directional)</button>
+                        <button id="btn-network" class="btn-toggle" onclick="setChartMode('network')">Network (Bi-directional)</button>
+                        <button id="btn-citation" class="btn-toggle" onclick="setChartMode('citation')">Citation Graph</button>
+                    </div>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:6px; min-width:0;">
+                    <div style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em; text-align:right;">Visualization Density</div>
+                    <div class="toggle-group" style="margin-bottom:0; min-width:0;">
+                        <button id="chart-limit-500" class="btn-toggle active" onclick="setChartRenderLimit(500)">Top 500</button>
+                        <button id="chart-limit-300" class="btn-toggle" onclick="setChartRenderLimit(300)">Top 300</button>
+                        <button id="chart-limit-150" class="btn-toggle" onclick="setChartRenderLimit(150)">Top 150</button>
+                    </div>
+                </div>
             </div>
         </div>
         
         <div id="chart-wrapper">
+            <div id="marked-node-panel" class="hidden" style="position:absolute; top:18px; left:18px; z-index:20; max-width:min(440px, calc(100% - 180px));"></div>
             <div id="chart-loading" class="hidden">
                 <div style="font-size: 30px; animation: spin 2s linear infinite;">🧠</div>
                 <div id="loading-text" style="margin-top:15px; font-weight:800; color:var(--primary);">Computing pairwise embeddings...</div>
@@ -1627,6 +1641,7 @@
                     <textarea id="pm-notes" rows="3" style="width: 100%; border-radius: 6px; padding: 8px; border: 1px solid var(--border-color); font-size: 12px;" onchange="updatePaperAttr('notes', this.value)" placeholder="Add personal notes, thoughts, or reminders about this paper..."></textarea>
                 </div>
                 <div id="pm-external-actions" class="action-row">
+                    <button id="btn-toggle-mark-node" class="btn btn-outline" style="padding: 6px 10px; font-size: 12px;" onclick="toggleCurrentPaperMark()">🔖 Mark Node</button>
                     <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px;" onclick="showPaperBibtex()">Generate BibTeX</button>
                     <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px;" onclick="showPaperCitedBy()">Cited By</button>
                     <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px;" onclick="showPaperReferences()">References</button>
@@ -1875,6 +1890,7 @@
     let currentImportCancellationRequested = false;
     let visiblePaperCount = 10; 
     let currentChartMode = 'orbital'; 
+    let currentChartRenderLimit = 500;
     let currentOpenedPaperFilename = null; 
     let currentOpenedPaperRecord = null;
     let searchTimeout = null; 
@@ -1883,6 +1899,7 @@
     let currentNetworkGraphState = null;
     let currentCitationSelectionKey = null;
     let currentCitationGraphState = null;
+    let currentOrbitalGraphState = null;
     let currentCitationDisplayMode = 'focused';
     let currentCitationCursor = "*";
     let currentReferenceCursor = "*";
@@ -2252,8 +2269,38 @@
         return window.__starmapRainbowImportSymbol;
     }
 
+    function getMarkedRainbowImportSymbol() {
+        if (window.__starmapMarkedRainbowImportSymbol) return window.__starmapMarkedRainbowImportSymbol;
+        const svg = `
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+                <defs>
+                    <clipPath id="markedRainbowClip">
+                        <circle cx="60" cy="60" r="42"/>
+                    </clipPath>
+                </defs>
+                <circle cx="60" cy="60" r="48" fill="none" stroke="#312e81" stroke-width="7"/>
+                <circle cx="60" cy="60" r="44" fill="white" fill-opacity="0.98"/>
+                <g clip-path="url(#markedRainbowClip)">
+                    <circle cx="38" cy="34" r="23" fill="#ff5f57"/>
+                    <circle cx="70" cy="28" r="22" fill="#ffbd2e"/>
+                    <circle cx="89" cy="50" r="21" fill="#34c759"/>
+                    <circle cx="84" cy="82" r="22" fill="#32ade6"/>
+                    <circle cx="52" cy="92" r="24" fill="#007aff"/>
+                    <circle cx="28" cy="72" r="22" fill="#af52de"/>
+                    <circle cx="34" cy="50" r="18" fill="#ff2d55"/>
+                </g>
+                <circle cx="60" cy="60" r="43" fill="none" stroke="rgba(255,255,255,0.96)" stroke-width="2.2"/>
+            </svg>
+        `.trim();
+        window.__starmapMarkedRainbowImportSymbol = `image://data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+        return window.__starmapMarkedRainbowImportSymbol;
+    }
+
     function getPaperNodeSymbol(paper, highlightKeys = null) {
-        return isRainbowRecentImport(paper, highlightKeys) ? getRainbowImportSymbol() : 'circle';
+        if (isRainbowRecentImport(paper, highlightKeys)) {
+            return isMarkedPaper(paper) ? getMarkedRainbowImportSymbol() : getRainbowImportSymbol();
+        }
+        return 'circle';
     }
 
     function getPaperNodeStyle(paper, baseStyle = {}, highlightKeys = null) {
@@ -2265,6 +2312,15 @@
                 opacity: 1,
                 shadowBlur: Math.max(nextStyle.shadowBlur || 0, 20),
                 shadowColor: 'rgba(79, 70, 229, 0.24)'
+            };
+        }
+        if (isMarkedPaper(paper)) {
+            nextStyle = {
+                ...nextStyle,
+                borderColor: '#312e81',
+                borderWidth: Math.max(nextStyle.borderWidth || 0, 2.5),
+                shadowBlur: Math.max(nextStyle.shadowBlur || 0, 18),
+                shadowColor: 'rgba(49, 46, 129, 0.22)'
             };
         }
         return nextStyle;
@@ -2623,7 +2679,7 @@ Summary rules:
     }
 
     function getNetworkSelectionKeyFromPaper(paperData) {
-        return paperData?.isCenter ? '__TARGET_CENTER__' : paperData?.filename || null;
+        return paperData?.isCenter ? '__TARGET_CENTER__' : getStablePaperGraphKey(paperData) || null;
     }
 
     function escapeHtml(value) {
@@ -2828,12 +2884,18 @@ Summary rules:
                         .filter(item => item.display_name)
                         .slice(0, 20)
                     : [],
+                marked_node_keys: Array.isArray(parsed.marked_node_keys)
+                    ? parsed.marked_node_keys.map(item => String(item || '').trim()).filter(Boolean).slice(0, 18)
+                    : [],
+                chart_render_limit: [150, 300, 500].includes(Number(parsed.chart_render_limit))
+                    ? Number(parsed.chart_render_limit)
+                    : 500,
                 fwci_weight_tier: Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, parsed.citation_count_weight_tier)
                     ? parsed.citation_count_weight_tier
                     : (Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, parsed.fwci_weight_tier) ? parsed.fwci_weight_tier : 'medium')
             };
         } catch {
-            return { use_background_precompute: true, use_llm_theme_naming: true, use_zotero_sync_preload: true, use_fwci_filter: false, literature_watch_discipline: '', literature_watch_disciplines: [], literature_watch_range: '3m', literature_watch_scholars: [], literature_watch_journals: [], fwci_weight_tier: 'medium' };
+            return { use_background_precompute: true, use_llm_theme_naming: true, use_zotero_sync_preload: true, use_fwci_filter: false, literature_watch_discipline: '', literature_watch_disciplines: [], literature_watch_range: '3m', literature_watch_scholars: [], literature_watch_journals: [], marked_node_keys: [], chart_render_limit: 500, fwci_weight_tier: 'medium' };
         }
     }
 
@@ -2846,6 +2908,93 @@ Summary rules:
         nextSettings.citation_count_weight_tier = nextSettings.fwci_weight_tier;
         localStorage.setItem(getProjectSettingsStorageKey(projectId), JSON.stringify(nextSettings));
         return nextSettings;
+    }
+
+    function getMarkedNodeKeys(projectId = currentProject?.id) {
+        return getProjectSearchSettings(projectId).marked_node_keys || [];
+    }
+
+    function setMarkedNodeKeys(keys = [], projectId = currentProject?.id) {
+        const nextKeys = keys
+            .map(item => String(item || '').trim())
+            .filter(Boolean)
+            .filter((item, index, arr) => arr.indexOf(item) === index)
+            .slice(0, 18);
+        saveProjectSearchSettings({ marked_node_keys: nextKeys }, projectId);
+        return nextKeys;
+    }
+
+    function getMarkedNodeKeySet(project = currentProject) {
+        return new Set(getMarkedNodeKeys(project?.id));
+    }
+
+    function isMarkedPaper(paper, project = currentProject) {
+        const key = getStablePaperGraphKey(paper);
+        if (!key) return false;
+        return getMarkedNodeKeySet(project).has(key);
+    }
+
+    function updateMarkedPaperButton(paper = getCurrentOpenedPaper()) {
+        const btn = document.getElementById('btn-toggle-mark-node');
+        if (!btn) return;
+        if (!paper || paper.isCenter) {
+            btn.classList.add('hidden');
+            return;
+        }
+        btn.classList.remove('hidden');
+        const marked = isMarkedPaper(paper);
+        btn.innerText = marked ? '✓ Marked Node' : '🔖 Mark Node';
+        btn.style.borderColor = marked ? 'rgba(79,70,229,0.34)' : '';
+        btn.style.color = marked ? '#4338ca' : '';
+        btn.style.background = marked ? '#eef2ff' : '';
+    }
+
+    function renderMarkedNodesPanel() {
+        const panel = document.getElementById('marked-node-panel');
+        if (!panel) return;
+        if (!currentProject?.top_papers?.length) {
+            panel.classList.add('hidden');
+            panel.innerHTML = '';
+            return;
+        }
+        const savedKeys = getMarkedNodeKeys(currentProject.id);
+        const keyToPaper = new Map((currentProject.top_papers || []).map(paper => [getStablePaperGraphKey(paper), paper]));
+        const validKeys = savedKeys.filter(key => keyToPaper.has(key));
+        if (validKeys.length !== savedKeys.length) {
+            setMarkedNodeKeys(validKeys, currentProject.id);
+        }
+        if (!validKeys.length) {
+            panel.classList.add('hidden');
+            panel.innerHTML = '';
+            return;
+        }
+        panel.classList.remove('hidden');
+        panel.innerHTML = `
+            <div style="padding:12px 14px; border-radius:18px; border:1px solid rgba(79,70,229,0.14); background:rgba(255,255,255,0.92); box-shadow:0 10px 24px rgba(15,23,42,0.06); backdrop-filter:blur(4px);">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;">
+                    <div style="font-size:11px; font-weight:800; color:#4338ca; text-transform:uppercase; letter-spacing:0.06em;">Marked Nodes</div>
+                    <div style="font-size:11px; color:#64748b;">Jump back to your saved exploration anchors.</div>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    ${validKeys.map(key => {
+                        const paper = keyToPaper.get(key);
+                        const title = truncateText(paper?.title || 'Untitled', 34);
+                        return `
+                            <div style="display:inline-flex; align-items:center; gap:8px; padding:8px 10px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:12px; font-weight:700; max-width:100%;">
+                                <button onclick="focusMarkedNode('${encodeURIComponent(key)}')" style="background:transparent; border:none; color:inherit; cursor:pointer; padding:0; font:inherit; text-align:left; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(title)}</button>
+                                <button onclick="removeMarkedNode('${encodeURIComponent(key)}')" style="background:transparent; border:none; cursor:pointer; color:#64748b; font-size:12px; padding:0;">✕</button>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+    }
+
+    function setChartRenderLimitButtons() {
+        [150, 300, 500].forEach(limit => {
+            document.getElementById(`chart-limit-${limit}`)?.classList.toggle('active', currentChartRenderLimit === limit);
+        });
     }
 
     function shouldUseLlmSearch(projectId = currentProject?.id) {
@@ -5885,6 +6034,7 @@ Return ONLY a JSON object matching this exact schema:
         document.getElementById('pm-display-mode').classList.remove('hidden');
         document.getElementById('pm-edit-mode').classList.add('hidden');
         document.getElementById('btn-toggle-edit').innerText = "✏️ Edit Metadata";
+        updateMarkedPaperButton(canonicalPaper);
 
         if (!canonicalPaper.isCenter) {
             const status = getPaperStatus(canonicalPaper);
@@ -5917,6 +6067,128 @@ Return ONLY a JSON object matching this exact schema:
             }
         }
         currentPaperModalMode = 'center';
+    };
+
+    function refreshMarkedNodeVisualInCurrentChart(paper) {
+        if (!paper || !myChart) return;
+        const selectionKey = getStablePaperGraphKey(paper);
+        if (!selectionKey) return;
+        const recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject);
+
+        if (currentChartMode === 'network' && currentNetworkGraphState?.baseNodes?.length) {
+            const baseNode = currentNetworkGraphState.baseNodes.find(node => node.selectionKey === selectionKey);
+            if (!baseNode) return;
+            const baseColor = baseNode.paperData?.isCenter ? '#eab308' : getPaperColor(baseNode.paperData);
+            baseNode.symbol = getPaperNodeSymbol(baseNode.paperData, recentImportHighlightKeys);
+            baseNode.itemStyle = getPaperNodeStyle(baseNode.paperData, {
+                color: baseColor,
+                opacity: 0.92,
+                shadowBlur: 10,
+                shadowColor: hexToRgba(baseColor, 0.2)
+            }, recentImportHighlightKeys);
+            applyMarkedStylesToNetworkBaseLinks();
+            applyNetworkSelection();
+            return;
+        }
+
+        if (currentChartMode === 'citation' && currentCitationGraphState?.baseNodes?.length) {
+            const baseNode = currentCitationGraphState.baseNodes.find(node => node.selectionKey === selectionKey);
+            if (!baseNode) return;
+            const degree = Number(baseNode.value || 0);
+            const baseColor = getPaperColor(baseNode.paperData);
+            const isCore = getPaperStatus(baseNode.paperData) === 'Core';
+            baseNode.symbol = getPaperNodeSymbol(baseNode.paperData, recentImportHighlightKeys);
+            baseNode.itemStyle = getPaperNodeStyle(baseNode.paperData, {
+                color: degree <= 1 && !isCore ? hexToRgba(baseColor, 0.4) : baseColor,
+                opacity: degree === 0 && !isCore ? 0.28 : 0.9,
+                shadowBlur: isCore ? 14 : 8,
+                shadowColor: hexToRgba(baseColor, 0.2)
+            }, recentImportHighlightKeys);
+            applyMarkedStylesToCitationBaseLinks();
+            applyCitationSelection();
+            return;
+        }
+
+        if (currentChartMode === 'orbital') {
+            const option = myChart.getOption();
+            const nextData = (option?.series?.[0]?.data || []).map(node => {
+                if (node.selectionKey !== selectionKey) return node;
+                const baseColor = getPaperColor(paper);
+                return {
+                    ...node,
+                    symbol: getPaperNodeSymbol(paper, recentImportHighlightKeys),
+                    itemStyle: getPaperNodeStyle(paper, {
+                        color: baseColor,
+                        opacity: 0.88,
+                        shadowBlur: 10,
+                        shadowColor: hexToRgba(baseColor, 0.2)
+                    }, recentImportHighlightKeys)
+                };
+            });
+            myChart.setOption({
+                series: [{
+                    data: nextData
+                }]
+            });
+        }
+    }
+
+    function togglePaperMarkForPaper(paper) {
+        if (!paper || !currentProject?.id || paper.isCenter) return;
+        const key = getStablePaperGraphKey(paper);
+        if (!key) return;
+        const currentKeys = getMarkedNodeKeys(currentProject.id);
+        const isMarked = currentKeys.includes(key);
+        const nextKeys = isMarked
+            ? currentKeys.filter(item => item !== key)
+            : [...currentKeys, key];
+        setMarkedNodeKeys(nextKeys, currentProject.id);
+        updateMarkedPaperButton(paper);
+        renderMarkedNodesPanel();
+        refreshMarkedNodeVisualInCurrentChart(paper);
+    }
+
+    window.toggleCurrentPaperMark = () => {
+        const paper = getCurrentOpenedPaper();
+        togglePaperMarkForPaper(paper);
+    };
+
+    window.removeMarkedNode = (encodedKey) => {
+        if (!currentProject?.id) return;
+        const key = decodeURIComponent(encodedKey || '');
+        const paper = currentProject?.top_papers?.find(item => getStablePaperGraphKey(item) === key);
+        setMarkedNodeKeys(getMarkedNodeKeys(currentProject.id).filter(item => item !== key), currentProject.id);
+        renderMarkedNodesPanel();
+        updateMarkedPaperButton();
+        if (paper) refreshMarkedNodeVisualInCurrentChart(paper);
+    };
+
+    window.focusMarkedNode = async (encodedKey) => {
+        if (!currentProject?.top_papers?.length) return;
+        const key = decodeURIComponent(encodedKey || '');
+        const paper = currentProject.top_papers.find(item => getStablePaperGraphKey(item) === key);
+        if (!paper) {
+            setMarkedNodeKeys(getMarkedNodeKeys(currentProject.id).filter(item => item !== key), currentProject.id);
+            renderMarkedNodesPanel();
+            return;
+        }
+        if (currentChartMode === 'network') {
+            openPaperModal(paper, { source: 'network-node' });
+            return;
+        }
+        if (currentChartMode === 'citation') {
+            openPaperModal(paper, { source: 'citation-node' });
+            return;
+        }
+        const orbitalNode = currentOrbitalGraphState?.nodeByKey?.[key];
+        if (orbitalNode && myChart) {
+            const halfSpan = 95;
+            myChart.setOption({
+                xAxis: { min: orbitalNode.x - halfSpan, max: orbitalNode.x + halfSpan },
+                yAxis: { min: orbitalNode.y - halfSpan, max: orbitalNode.y + halfSpan }
+            });
+        }
+        openPaperModal(paper);
     };
 
     window.toggleMetadataEdit = () => {
@@ -8234,6 +8506,8 @@ About 500 words of literature review draft in markdown.`;
             progressTimer: null
         };
         const projectSettings = getProjectSearchSettings(currentProject.id);
+        currentChartRenderLimit = projectSettings.chart_render_limit || 500;
+        setChartRenderLimitButtons();
         zoteroSyncCache = { projectId: null, collections: [], previewsByCollection: {} };
         currentNetworkSelectionKey = null;
         currentNetworkGraphState = null;
@@ -8251,6 +8525,13 @@ About 500 words of literature review draft in markdown.`;
                         : 'default';
                     openPaperModal(params.data.paperData, { source }); 
                 }
+            });
+            myChart.on('contextmenu', function(params) {
+                if (!params?.data || params.dataType === 'edge' || !params.data.paperData || params.data.paperData.isCenter) return;
+                if (typeof params.event?.event?.preventDefault === 'function') {
+                    params.event.event.preventDefault();
+                }
+                togglePaperMarkForPaper(resolvePaperInCurrentProject(params.data.paperData) || params.data.paperData);
             });
             myChart.getZr().on('click', function(event) {
                 if (!event.target && (currentChartMode === 'network' || currentChartMode === 'citation')) {
@@ -8343,6 +8624,60 @@ About 500 words of literature review draft in markdown.`;
         document.getElementById(`btn-${mode}`).classList.add('active'); 
         updateCitationControlVisibility();
         await updateWorkspaceUI(); 
+    };
+
+    window.setChartRenderLimit = async (limit) => {
+        const normalizedLimit = [150, 300, 500].includes(Number(limit)) ? Number(limit) : 500;
+        currentChartRenderLimit = normalizedLimit;
+        if (currentProject?.id) {
+            saveProjectSearchSettings({ chart_render_limit: normalizedLimit }, currentProject.id);
+        }
+        setChartRenderLimitButtons();
+        if (!currentProject?.top_papers?.length) return;
+        await renderChart(currentProject.top_papers);
+    };
+
+    async function focusPaperInVisualization(paperData) {
+        if (!currentProject?.top_papers?.length) {
+            openPaperModal(paperData);
+            return;
+        }
+        const canonicalPaper = resolvePaperInCurrentProject(paperData) || findCurrentProjectPaperByFilename(paperData?.filename) || paperData;
+        const sortedPapers = [...(currentProject.top_papers || [])].sort((a, b) => Number(b.similarity || 0) - Number(a.similarity || 0));
+        const paperRank = sortedPapers.findIndex(item => getStablePaperGraphKey(item) === getStablePaperGraphKey(canonicalPaper)) + 1;
+        if (!paperRank || paperRank > 500) {
+            openPaperModal(canonicalPaper);
+            return;
+        }
+        const requiredLimit = paperRank <= 150 ? 150 : (paperRank <= 300 ? 300 : 500);
+        if (currentChartRenderLimit < requiredLimit) {
+            currentChartRenderLimit = requiredLimit;
+            if (currentProject?.id) {
+                saveProjectSearchSettings({ chart_render_limit: requiredLimit }, currentProject.id);
+            }
+            setChartRenderLimitButtons();
+        }
+        if (currentChartMode !== 'network') {
+            closePaperModal();
+            currentChartMode = 'network';
+            document.getElementById('btn-orbital').classList.remove('active');
+            document.getElementById('btn-network').classList.add('active');
+            document.getElementById('btn-citation').classList.remove('active');
+            updateCitationControlVisibility();
+        }
+        document.getElementById('starmap-visualization-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        await renderChart(currentProject.top_papers || []);
+        openPaperModal(canonicalPaper, { source: 'network-node' });
+    }
+
+    window.handleWorkspacePaperCardOpen = async (paperData) => {
+        const canonicalPaper = resolvePaperInCurrentProject(paperData) || findCurrentProjectPaperByFilename(paperData?.filename) || paperData;
+        const query = String(workspaceSearchState.query || '').trim();
+        if (!query) {
+            openPaperModal(canonicalPaper);
+            return;
+        }
+        await focusPaperInVisualization(canonicalPaper);
     };
 
     window.forceRefreshChart = async () => {
@@ -8487,6 +8822,7 @@ About 500 words of literature review draft in markdown.`;
         literatureWatchState.journals = getLiteratureWatchJournals(currentProject?.id);
         literatureWatchState.journalSuggestions = [];
         literatureWatchState.journalSearchLoading = false;
+        renderMarkedNodesPanel();
         renderLiteratureWatchModal();
         renderWorkspacePaperView();
 
@@ -8552,7 +8888,7 @@ About 500 words of literature review draft in markdown.`;
             const scoreLabel = p.similarity_pending ? 'Scoring…' : `${(p.similarity * 100).toFixed(1)}%`;
 
             return `
-                <div class="rank-item" onclick='openPaperModal(${paperStr})'>
+                <div class="rank-item" onclick='handleWorkspacePaperCardOpen(${paperStr})'>
                     <div class="rank-info">
                         <div class="rank-title">${badge}<span>${p.title}</span>${p.is_new ? '<span class="badge-new">NEW</span>' : ''}</div>
                         ${zoteroPdfHint}
@@ -9850,20 +10186,25 @@ ${rawText}`;
 
     async function renderChart(papers) {
         if (myChart) myChart.resize();
+        setChartRenderLimitButtons();
         if (!papers || papers.length === 0) { 
+            currentOrbitalGraphState = null;
             currentNetworkGraphState = null;
             currentCitationGraphState = null;
             currentNetworkSelectionKey = null;
             myChart.clear(); 
             return; 
         }
-        const sortedPapers = [...papers].sort((a,b) => b.similarity - a.similarity);
+        const sortedPapers = [...papers]
+            .sort((a,b) => b.similarity - a.similarity)
+            .slice(0, currentChartRenderLimit);
         const recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject);
         myChart.clear(); 
         
         const hintBtn = document.getElementById('network-hint');
         updateCitationControlVisibility();
         if (currentChartMode === 'orbital') { 
+            currentOrbitalGraphState = null;
             currentNetworkGraphState = null;
             currentCitationGraphState = null;
             currentNetworkSelectionKey = null;
@@ -9871,19 +10212,21 @@ ${rawText}`;
             if (hintBtn) hintBtn.classList.add('hidden');
             await renderOrbital(sortedPapers, recentImportHighlightKeys); 
         } else if (currentChartMode === 'network') { 
+            currentOrbitalGraphState = null;
             currentCitationGraphState = null;
             currentCitationSelectionKey = null;
             if (hintBtn) {
                 hintBtn.classList.remove('hidden');
-                hintBtn.innerText = `⚡ Network mode displays Top 200 papers only for performance`;
+                hintBtn.innerText = `⚡ Network mode is currently rendering the Top ${sortedPapers.length} papers`;
             }
             await renderNetwork(sortedPapers, recentImportHighlightKeys); 
         } else {
+            currentOrbitalGraphState = null;
             currentNetworkGraphState = null;
             currentNetworkSelectionKey = null;
             if (hintBtn) {
                 hintBtn.classList.remove('hidden');
-                hintBtn.innerText = `↗ Citation graph uses retained Top 500 papers and draws A → B when A cites B`;
+                hintBtn.innerText = `↗ Citation graph uses the retained Top ${sortedPapers.length} papers and draws A → B when A cites B`;
             }
             await renderCitationGraph(sortedPapers, recentImportHighlightKeys);
         }
@@ -9923,9 +10266,17 @@ ${rawText}`;
                 value: [radius * Math.cos(angle), radius * Math.sin(angle), p.similarity], 
                 itemStyle: getPaperNodeStyle(p, { color: color, opacity: 0.88, shadowBlur: 10, shadowColor: hexToRgba(color, 0.2) }, recentImportHighlightKeys), 
                 symbolSize: getLatestImportSymbolSize(nodeSize, p, recentImportHighlightKeys), 
-                paperData: p 
+                paperData: p,
+                selectionKey: getStablePaperGraphKey(p)
             });
         });
+        currentOrbitalGraphState = {
+            nodeByKey: Object.fromEntries(
+                data
+                    .filter(node => node.selectionKey)
+                    .map(node => [node.selectionKey, { x: node.value?.[0] || 0, y: node.value?.[1] || 0 }])
+            )
+        };
         myChart.setOption({ 
             backgroundColor: 'transparent', 
             tooltip: getTooltipFormatter(), 
@@ -9971,6 +10322,51 @@ ${rawText}`;
         };
     }
 
+    function getMarkedTrailLineStyle(baseLineStyle = {}) {
+        return {
+            ...baseLineStyle,
+            width: Math.max((baseLineStyle.width || 1) * 1.18, 2.2),
+            opacity: Math.max(baseLineStyle.opacity || 0, 0.42),
+            color: '#c98a4a',
+            shadowBlur: 6,
+            shadowColor: 'rgba(201, 138, 74, 0.18)'
+        };
+    }
+
+    function applyMarkedStylesToNetworkBaseLinks() {
+        if (!currentNetworkGraphState?.baseLinks?.length || !currentNetworkGraphState?.nodeKeyByName) return;
+        const markedKeys = getMarkedNodeKeySet(currentProject);
+        currentNetworkGraphState.baseLinks.forEach(link => {
+            const sourceKey = currentNetworkGraphState.nodeKeyByName[link.source];
+            const targetKey = currentNetworkGraphState.nodeKeyByName[link.target];
+            const touchesMarked = (sourceKey && markedKeys.has(sourceKey)) || (targetKey && markedKeys.has(targetKey));
+            const baseWidth = link.isTargetLine ? 5 : 1.25;
+            const nextBaseStyle = {
+                width: link.isTargetLine ? Math.max(link.lineStyle?.width || 0, 3.2) : (link.lineStyle?.width || baseWidth),
+                opacity: link.isTargetLine ? 0.92 : 0.6,
+                color: link.isTargetLine ? '#f97316' : '#cbd5e1'
+            };
+            link.lineStyle = touchesMarked ? getMarkedTrailLineStyle(nextBaseStyle) : nextBaseStyle;
+        });
+    }
+
+    function applyMarkedStylesToCitationBaseLinks() {
+        if (!currentCitationGraphState?.baseLinks?.length || !currentCitationGraphState?.nodeKeyByName) return;
+        const markedKeys = getMarkedNodeKeySet(currentProject);
+        currentCitationGraphState.baseLinks.forEach(link => {
+            const sourceKey = currentCitationGraphState.nodeKeyByName[link.source];
+            const targetKey = currentCitationGraphState.nodeKeyByName[link.target];
+            const touchesMarked = (sourceKey && markedKeys.has(sourceKey)) || (targetKey && markedKeys.has(targetKey));
+            const nextBaseStyle = {
+                width: 1.6,
+                opacity: 0.5,
+                color: '#94a3b8',
+                curveness: 0.08
+            };
+            link.lineStyle = touchesMarked ? getMarkedTrailLineStyle(nextBaseStyle) : nextBaseStyle;
+        });
+    }
+
     function setNetworkSelection(selectionKey) {
         currentNetworkSelectionKey = selectionKey;
         applyNetworkSelection();
@@ -9979,7 +10375,7 @@ ${rawText}`;
     function applyNetworkSelection() {
         if (!myChart || !currentNetworkGraphState) return;
 
-        const { baseNodes, baseLinks, adjacency, nodeNameByKey, recentImportHighlightKeys } = currentNetworkGraphState;
+        const { baseNodes, baseLinks, adjacency, nodeNameByKey, nodeKeyByName, recentImportHighlightKeys } = currentNetworkGraphState;
         const selectedNodeName = currentNetworkSelectionKey ? nodeNameByKey[currentNetworkSelectionKey] : null;
 
         if (!selectedNodeName) {
@@ -9995,6 +10391,12 @@ ${rawText}`;
 
         const firstDegree = new Set(adjacency[selectedNodeName] || []);
         const secondDegree = new Set();
+        const markedKeys = getMarkedNodeKeySet(currentProject);
+        const selectedNode = baseNodes.find(node => node.name === selectedNodeName);
+        const selectedAccentColor = selectedNode?.paperData?.isCenter
+            ? '#eab308'
+            : getPaperColor(selectedNode?.paperData);
+        const selectedLinkColor = hexToRgba(selectedAccentColor || '#6366f1', 0.78);
         firstDegree.forEach(nodeName => {
             (adjacency[nodeName] || []).forEach(neighborName => {
                 if (neighborName !== selectedNodeName && !firstDegree.has(neighborName)) {
@@ -10014,19 +10416,19 @@ ${rawText}`;
                     ...nextNode.itemStyle,
                     color: baseColor,
                     opacity: 1,
-                    borderColor: '#0f172a',
+                    borderColor: '#334155',
                     borderWidth: isRecentImport ? 3 : 2.5,
                     borderType: 'solid',
-                    shadowBlur: 24,
-                    shadowColor: hexToRgba(baseColor, 0.45)
+                    shadowBlur: 20,
+                    shadowColor: 'rgba(51, 65, 85, 0.18)'
                 };
             } else if (firstDegree.has(node.name)) {
                 nextNode.itemStyle = {
                     ...nextNode.itemStyle,
                     color: baseColor,
                     opacity: 1,
-                    shadowBlur: 14,
-                    shadowColor: hexToRgba(baseColor, 0.22)
+                    shadowBlur: 12,
+                    shadowColor: hexToRgba(baseColor, 0.16)
                 };
             } else if (secondDegree.has(node.name)) {
                 nextNode.itemStyle = {
@@ -10053,17 +10455,23 @@ ${rawText}`;
                 (firstDegree.has(link.target) && secondDegree.has(link.source));
 
             if (touchesSelected) {
+                const touchesTargetCenter = link.source === 'TARGET_CENTER' || link.target === 'TARGET_CENTER';
                 nextLink.lineStyle = {
                     ...nextLink.lineStyle,
-                    width: nextLink.lineStyle.width * 1.35,
-                    opacity: 0.95,
-                    color: '#0f172a'
+                    width: touchesTargetCenter ? 2.9 : Math.max((nextLink.lineStyle.width || 1) * 1.28, 3.0),
+                    opacity: touchesTargetCenter ? 0.88 : 0.84,
+                    color: touchesTargetCenter ? '#f97316' : selectedLinkColor,
+                    shadowBlur: touchesTargetCenter ? 10 : 8,
+                    shadowColor: touchesTargetCenter ? 'rgba(249, 115, 22, 0.24)' : hexToRgba(selectedAccentColor || '#6366f1', 0.22),
+                    curveness: touchesTargetCenter ? 0.08 : 0.04
                 };
+            } else if ((nodeKeyByName[link.source] && markedKeys.has(nodeKeyByName[link.source])) || (nodeKeyByName[link.target] && markedKeys.has(nodeKeyByName[link.target]))) {
+                nextLink.lineStyle = getMarkedTrailLineStyle(nextLink.lineStyle || {});
             } else if (connectsVisibleRing) {
                 nextLink.lineStyle = {
                     ...nextLink.lineStyle,
-                    opacity: 0.22,
-                    color: '#94a3b8'
+                    opacity: 0.16,
+                    color: '#a8b3c7'
                 };
             } else {
                 nextLink.lineStyle = {
@@ -10092,7 +10500,7 @@ ${rawText}`;
     function applyCitationSelection() {
         if (!myChart || !currentCitationGraphState) return;
 
-        const { baseNodes, baseLinks, incomingAdjacency, outgoingAdjacency, nodeNameByKey, baseMode, recentImportHighlightKeys } = currentCitationGraphState;
+        const { baseNodes, baseLinks, incomingAdjacency, outgoingAdjacency, nodeNameByKey, nodeKeyByName, baseMode, recentImportHighlightKeys } = currentCitationGraphState;
         const selectedNodeName = currentCitationSelectionKey ? nodeNameByKey[currentCitationSelectionKey] : null;
 
         if (!selectedNodeName) {
@@ -10110,6 +10518,7 @@ ${rawText}`;
         const incoming = new Set(incomingAdjacency[selectedNodeName] || []);
         const firstDegree = new Set([...outgoing, ...incoming]);
         const secondDegree = new Set();
+        const markedKeys = getMarkedNodeKeySet(currentProject);
 
         const visitSecondDegree = (nodeName) => {
             [...(outgoingAdjacency[nodeName] || []), ...(incomingAdjacency[nodeName] || [])].forEach(neighborName => {
@@ -10195,6 +10604,8 @@ ${rawText}`;
                     opacity: 0.95,
                     color: isOutgoing ? '#2563eb' : '#ef4444'
                 };
+            } else if ((nodeKeyByName[link.source] && markedKeys.has(nodeKeyByName[link.source])) || (nodeKeyByName[link.target] && markedKeys.has(nodeKeyByName[link.target]))) {
+                nextLink.lineStyle = getMarkedTrailLineStyle(nextLink.lineStyle || {});
             } else if (touchesFirstDegree) {
                 nextLink.lineStyle = {
                     ...nextLink.lineStyle,
@@ -10219,10 +10630,8 @@ ${rawText}`;
         });
     }
 
-   // 注意：这里的参数名变成了 inputPapers
     async function renderNetwork(inputPapers, recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject)) {
-        // --- 核心修改：暴力截取前 200 篇文章，保护浏览器性能 ---
-        const papers = inputPapers.slice(0, 200);
+        const papers = inputPapers.slice(0, currentChartRenderLimit);
 
         const loadingBox = document.getElementById('chart-loading'); 
         const loadingText = document.getElementById('loading-text'); 
@@ -10336,7 +10745,7 @@ ${rawText}`;
                     symbolSize: getLatestImportSymbolSize(size, p, recentImportHighlightKeys), 
                     itemStyle: getPaperNodeStyle(p, { color: color, opacity: 0.92, shadowBlur: 10, shadowColor: hexToRgba(color, 0.2) }, recentImportHighlightKeys), 
                     paperData: p,
-                    selectionKey: p.filename
+                    selectionKey: getStablePaperGraphKey(p)
                 }); 
             });
 
@@ -10348,9 +10757,9 @@ ${rawText}`;
                     weight: l.weight, 
                     isTargetLine: l.isTargetLine,
                     lineStyle: { 
-                        width: isNaN(thickness) ? (l.isTargetLine ? 5 : 1.25) : (l.isTargetLine ? thickness * 4 : thickness), 
-                        opacity: l.isTargetLine ? 1.0 : 0.6, 
-                        color: l.isTargetLine ? '#eab308' : '#cbd5e1' 
+                        width: isNaN(thickness) ? (l.isTargetLine ? 3.2 : 1.25) : (l.isTargetLine ? thickness * 2.35 : thickness), 
+                        opacity: l.isTargetLine ? 0.92 : 0.6, 
+                        color: l.isTargetLine ? '#f97316' : '#cbd5e1' 
                     } 
                 }; 
             });
@@ -10369,8 +10778,10 @@ ${rawText}`;
                 baseLinks: edgesData.map(cloneBaseLink),
                 adjacency,
                 recentImportHighlightKeys,
-                nodeNameByKey: Object.fromEntries(nodesData.map(node => [node.selectionKey, node.name]))
+                nodeNameByKey: Object.fromEntries(nodesData.map(node => [node.selectionKey, node.name])),
+                nodeKeyByName: Object.fromEntries(nodesData.map(node => [node.name, node.selectionKey]))
             };
+            applyMarkedStylesToNetworkBaseLinks();
 
             myChart.setOption({ 
                 tooltip: getTooltipFormatter(), 
@@ -10381,7 +10792,7 @@ ${rawText}`;
                     animationDurationUpdate: 250,
                     force: { repulsion: 250, edgeLength: 80, gravity: 0.1 }, 
                     data: nodesData, 
-                    links: edgesData 
+                    links: currentNetworkGraphState.baseLinks.map(cloneBaseLink) 
                 }] 
             });
             applyNetworkSelection();
@@ -10394,7 +10805,7 @@ ${rawText}`;
     }
 
     async function renderCitationGraph(inputPapers, recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject)) {
-        const papers = inputPapers.slice(0, 500).map(paper => {
+        const papers = inputPapers.slice(0, currentChartRenderLimit).map(paper => {
             normalizePaperState(paper);
             return paper;
         });
@@ -10519,8 +10930,10 @@ ${rawText}`;
                 recentImportHighlightKeys,
                 incomingAdjacency: Object.fromEntries(nodesData.map(node => [node.name, []])),
                 outgoingAdjacency: Object.fromEntries(nodesData.map(node => [node.name, []])),
-                nodeNameByKey: Object.fromEntries(nodesData.map(node => [node.selectionKey, node.name]))
+                nodeNameByKey: Object.fromEntries(nodesData.map(node => [node.selectionKey, node.name])),
+                nodeKeyByName: Object.fromEntries(nodesData.map(node => [node.name, node.selectionKey]))
             };
+            applyMarkedStylesToCitationBaseLinks();
             edgesData.forEach(link => {
                 currentCitationGraphState.outgoingAdjacency[link.source]?.push(link.target);
                 currentCitationGraphState.incomingAdjacency[link.target]?.push(link.source);
@@ -10535,7 +10948,7 @@ ${rawText}`;
                     animationDurationUpdate: 250,
                     force: { repulsion: 150, edgeLength: 110, gravity: 0.06 },
                     data: nodesData,
-                    links: edgesData,
+                    links: currentCitationGraphState.baseLinks.map(cloneBaseLink),
                     lineStyle: {
                         opacity: 0.5,
                         color: '#94a3b8'
@@ -10592,6 +11005,9 @@ ${rawText}`;
                 const recentImportNote = isRainbowRecentImport(d)
                     ? `<div style="font-size:12px; color:#f8fafc; margin-top:4px;">Recently imported: highlighted with the rainbow recent-import icon</div>`
                     : '';
+                const markedNodeNote = isMarkedPaper(d)
+                    ? `<div style="font-size:12px; color:#c4b5fd; margin-top:4px;">Marked node: saved as an exploration anchor</div>`
+                    : '';
                 return `<div style="max-width:300px; white-space:normal; line-height:1.5;">
                             <div style="font-weight:700; color:${statusMeta.color}; margin-bottom:4px;">${d.title}</div>
                             <div style="margin-bottom:4px;"><span class="status-badge" style="background:${hexToRgba(statusMeta.color, 0.14)}; color:${statusMeta.color};">${statusMeta.label}</span></div>
@@ -10601,6 +11017,7 @@ ${rawText}`;
                                 ? `<div style="font-weight:800; color:#38bdf8; margin-top:4px;">Citation Degree: ${escapeHtml(p.data.value ?? 0)}</div>`
                                 : `<div style="font-weight:800; color:#10b981; margin-top:4px;">Target Similarity: ${(d.similarity*100).toFixed(1)}%</div>`}
                             ${recentImportNote}
+                            ${markedNodeNote}
                         </div>`; 
             } 
         };
