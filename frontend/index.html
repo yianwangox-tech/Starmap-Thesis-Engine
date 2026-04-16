@@ -1202,7 +1202,7 @@
             </button>
         </div>
 
-        <div class="workspace-title-row">
+        <div id="starmap-visualization-anchor" class="workspace-title-row">
             <div class="workspace-section-title">
                 <div>
                     <div class="workspace-pill">Workspace Atlas</div>
@@ -1210,14 +1210,28 @@
                     <div class="workspace-section-copy">Move between orbital, network, and citation views while keeping your paper review flow, sync tools, and writing actions within the same workspace.</div>
                 </div>
             </div>
-            <div class="toggle-group" style="margin-bottom: 0; min-width:min(520px, 100%);">
-                <button id="btn-orbital" class="btn-toggle active" onclick="setChartMode('orbital')">Orbital (Uni-directional)</button>
-                <button id="btn-network" class="btn-toggle" onclick="setChartMode('network')">Network (Bi-directional)</button>
-                <button id="btn-citation" class="btn-toggle" onclick="setChartMode('citation')">Citation Graph</button>
+            <div style="display:grid; grid-template-columns:minmax(320px, 1fr) minmax(240px, auto); gap:14px; align-items:end; min-width:min(820px, 100%);">
+                <div style="display:flex; flex-direction:column; gap:6px; min-width:0;">
+                    <div style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em;">Visualization Mode</div>
+                    <div class="toggle-group" style="margin-bottom:0; min-width:0;">
+                        <button id="btn-orbital" class="btn-toggle active" onclick="setChartMode('orbital')">Orbital (Uni-directional)</button>
+                        <button id="btn-network" class="btn-toggle" onclick="setChartMode('network')">Network (Bi-directional)</button>
+                        <button id="btn-citation" class="btn-toggle" onclick="setChartMode('citation')">Citation Graph</button>
+                    </div>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:6px; min-width:0;">
+                    <div style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em; text-align:right;">Visualization Density</div>
+                    <div class="toggle-group" style="margin-bottom:0; min-width:0;">
+                        <button id="chart-limit-500" class="btn-toggle active" onclick="setChartRenderLimit(500)">Top 500</button>
+                        <button id="chart-limit-300" class="btn-toggle" onclick="setChartRenderLimit(300)">Top 300</button>
+                        <button id="chart-limit-150" class="btn-toggle" onclick="setChartRenderLimit(150)">Top 150</button>
+                    </div>
+                </div>
             </div>
         </div>
         
         <div id="chart-wrapper">
+            <div id="marked-node-panel" class="hidden" style="position:absolute; top:18px; left:18px; z-index:20; max-width:min(440px, calc(100% - 180px));"></div>
             <div id="chart-loading" class="hidden">
                 <div style="font-size: 30px; animation: spin 2s linear infinite;">🧠</div>
                 <div id="loading-text" style="margin-top:15px; font-weight:800; color:var(--primary);">Computing pairwise embeddings...</div>
@@ -1268,46 +1282,67 @@
                     <div class="workspace-section-copy">Turn your thesis, abstract, and Core papers into a recurring discovery surface for recent literature. Review recommendations first, then decide what enters StarMap.</div>
                 </div>
             </div>
-            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                <button class="btn btn-outline" style="padding:6px 12px; font-size:12px;" onclick="refreshLiteratureWatch()">Refresh Watch</button>
-                <button class="btn btn-outline" style="padding:6px 12px; font-size:12px;" onclick="scrollLiteratureWatchIntoView()">Focus Section</button>
-            </div>
         </div>
 
         <div id="literature-watch-section" class="panel" style="padding:20px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(247,249,255,0.97)); border-radius:24px; box-shadow:0 18px 40px rgba(15,23,42,0.06);">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
-                <div class="toggle-group" style="margin-bottom:0; min-width:0;">
+            <div style="display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr) auto; gap:14px; align-items:end; margin-bottom:14px;">
+                <div style="display:flex; flex-direction:column; gap:6px; min-width:0;">
+                    <div style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em;">Watch Mode</div>
+                    <div class="toggle-group" style="margin-bottom:0; min-width:0;">
                     <button id="literature-watch-mode-target" class="btn-toggle active" onclick="setLiteratureWatchMode('target')">Target Watch</button>
                     <button id="literature-watch-mode-scholar" class="btn-toggle" onclick="setLiteratureWatchMode('scholar')">Scholar Watch</button>
-                </div>
-                <div id="literature-watch-mode-copy" style="font-size:12px; color:var(--text-muted);">Use your thesis, abstract, and Core papers to scan recent literature in this direction.</div>
-            </div>
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                    <div style="display:flex; flex-direction:column; gap:4px;">
-                        <label for="literature-watch-discipline" style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em;">Discipline Scope</label>
-                        <select id="literature-watch-discipline" onchange="handleLiteratureWatchDisciplineChange()" style="min-width:280px; padding:10px 12px; border-radius:12px; border:1px solid var(--border-color); background:#fff; font-size:13px;">
-                            <option value="">Select discipline scope</option>
-                            <option value="macroeconomics_monetary">Macroeconomics & Monetary Economics</option>
-                            <option value="international_finance_sovereign_debt">International Finance & Sovereign Debt</option>
-                            <option value="banking_credit_financial_intermediation">Banking, Credit & Financial Intermediation</option>
-                            <option value="asset_pricing_corporate_finance">Asset Pricing & Corporate Finance</option>
-                            <option value="public_finance_political_economy">Public Finance & Political Economy</option>
-                            <option value="development_international_political_economy">Development & International Political Economy</option>
-                            <option value="political_economy_public_policy">Political Economy & Public Policy</option>
-                            <option value="management_strategy_organizations">Management, Strategy & Organizations</option>
-                            <option value="marketing_operations_business_analytics">Marketing, Operations & Business Analytics</option>
-                            <option value="computer_science_ai">Computer Science & AI</option>
-                            <option value="general_social_science">General Social Science</option>
-                        </select>
+                    <button id="literature-watch-mode-journal" class="btn-toggle" onclick="setLiteratureWatchMode('journal')">Journal Watch</button>
                     </div>
-                    <div style="font-size:11px; color:var(--text-muted); max-width:360px; line-height:1.5;">Choose the closest discipline before scanning. Literature Watch will use it to prefer field-appropriate journals and keep reranking inside the right literature neighborhood.</div>
                 </div>
-                <div class="toggle-group" style="margin-bottom:0; min-width:0;">
-                    <button id="literature-watch-range-3m" class="btn-toggle active" onclick="setLiteratureWatchRange('3m')">Past 3 Months</button>
-                    <button id="literature-watch-range-1y" class="btn-toggle" onclick="setLiteratureWatchRange('1y')">Past 1 Year</button>
-                    <button id="literature-watch-range-3y" class="btn-toggle" onclick="setLiteratureWatchRange('3y')">Past 3 Years</button>
+                <div style="display:flex; flex-direction:column; gap:6px; min-width:0;">
+                    <div style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em;">Time Range</div>
+                    <div class="toggle-group" style="margin-bottom:0; min-width:0;">
+                        <button id="literature-watch-range-3m" class="btn-toggle active" onclick="setLiteratureWatchRange('3m')">Past 3 Months</button>
+                        <button id="literature-watch-range-1y" class="btn-toggle" onclick="setLiteratureWatchRange('1y')">Past 1 Year</button>
+                        <button id="literature-watch-range-3y" class="btn-toggle" onclick="setLiteratureWatchRange('3y')">Past 3 Years</button>
+                    </div>
                 </div>
+                <button id="literature-watch-run-btn" class="btn btn-primary" style="padding:10px 16px; font-size:13px; white-space:nowrap;" onclick="runLiteratureWatch()">Run Watch</button>
+            </div>
+            <div style="display:grid; grid-template-columns:minmax(280px, 1.2fr) minmax(220px, 0.8fr); gap:14px; align-items:end; margin-bottom:14px;">
+                <div style="display:flex; flex-direction:column; gap:6px;">
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                        <label for="literature-watch-discipline-picker" style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em;">Discipline Scope</label>
+                        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                            <select id="literature-watch-discipline-picker" style="flex:1; min-width:280px; padding:10px 12px; border-radius:12px; border:1px solid var(--border-color); background:#fff; font-size:13px;">
+                                <option value="">Add discipline scope</option>
+                                <option value="a_general_economics_teaching">A. General Economics and Teaching</option>
+                                <option value="b_history_methodology_heterodox">B. History of Economic Thought, Methodology, and Heterodox Approaches</option>
+                                <option value="c_mathematical_quantitative_methods">C. Mathematical and Quantitative Methods</option>
+                                <option value="d_microeconomics">D. Microeconomics</option>
+                                <option value="e_macroeconomics_monetary">E. Macroeconomics and Monetary Economics</option>
+                                <option value="f_international_economics">F. International Economics</option>
+                                <option value="g_financial_economics">G. Financial Economics</option>
+                                <option value="h_public_economics">H. Public Economics</option>
+                                <option value="i_health_education_welfare">I. Health, Education, and Welfare</option>
+                                <option value="j_labor_demographic_economics">J. Labor and Demographic Economics</option>
+                                <option value="k_law_economics">K. Law and Economics</option>
+                                <option value="l_industrial_organization">L. Industrial Organization</option>
+                                <option value="m_business_administration_business_economics">M. Business Administration and Business Economics • Marketing • Accounting • Personnel Economics</option>
+                                <option value="n_economic_history">N. Economic History</option>
+                                <option value="o_development_innovation_growth">O. Economic Development, Innovation, Technological Change, and Growth</option>
+                                <option value="p_political_economy_comparative_systems">P. Political Economy and Comparative Economic Systems</option>
+                                <option value="q_agricultural_environmental_resource">Q. Agricultural and Natural Resource Economics • Environmental and Ecological Economics</option>
+                                <option value="r_urban_regional_real_estate_transportation">R. Urban, Rural, Regional, Real Estate, and Transportation Economics</option>
+                                <option value="y_miscellaneous">Y. Miscellaneous Categories</option>
+                                <option value="z_other_special_topics">Z. Other Special Topics</option>
+                            </select>
+                            <button class="btn btn-outline" style="padding:10px 14px; font-size:12px;" onclick="addLiteratureWatchDisciplineFromPicker()">Add Scope</button>
+                        </div>
+                    </div>
+                    <div id="literature-watch-discipline-list" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <div style="padding:6px 10px; border-radius:999px; background:#f8fafc; color:#64748b; font-size:11px; font-weight:700;">Field-aware ranking</div>
+                        <div style="padding:6px 10px; border-radius:999px; background:#f8fafc; color:#64748b; font-size:11px; font-weight:700;">Top Core papers included</div>
+                        <div style="padding:6px 10px; border-radius:999px; background:#f8fafc; color:#64748b; font-size:11px; font-weight:700;">Up to 3 scopes</div>
+                    </div>
+                </div>
+                <div id="literature-watch-mode-copy" style="font-size:12px; color:var(--text-muted); line-height:1.7; align-self:center; justify-self:end; text-align:right; max-width:360px;">Scan recent literature around your project, then review the strongest candidates before adding them to StarMap.</div>
             </div>
             <div id="literature-watch-scholar-tools" class="hidden" style="margin-bottom:14px;">
                 <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
@@ -1317,9 +1352,20 @@
                     </div>
                     <button class="btn btn-outline" style="padding:10px 14px; font-size:12px;" onclick="addLiteratureWatchScholarFromInput()">Add Scholar</button>
                 </div>
-                <div style="font-size:11px; color:var(--text-muted); margin-bottom:8px;">Track up to 20 scholars. You can type names here or click bars in Repository Analytics → Top Authors to add them directly.</div>
                 <div id="literature-watch-scholar-list" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
             </div>
+            <div id="literature-watch-journal-tools" class="hidden" style="margin-bottom:14px;">
+                <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:10px;">
+                    <div style="flex:1; min-width:260px;">
+                        <label for="literature-watch-journal-input" style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em;">Journals to Watch</label>
+                        <input id="literature-watch-journal-input" type="text" placeholder="Type a journal name, then press Enter or Find Journal" onkeydown="handleLiteratureWatchJournalInputKey(event)" style="width:100%; padding:10px 12px; border-radius:12px; border:1px solid var(--border-color); background:#fff; font-size:13px; box-sizing:border-box;">
+                    </div>
+                    <button class="btn btn-outline" style="padding:10px 14px; font-size:12px;" onclick="searchLiteratureWatchJournals()">Find Journal</button>
+                </div>
+                <div id="literature-watch-journal-suggestions" style="margin-bottom:10px;"></div>
+                <div id="literature-watch-journal-list" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+            </div>
+            <div id="literature-watch-feedback" class="hidden" style="margin-bottom:14px;"></div>
             <div id="literature-watch-summary" class="secondary-panel" style="margin-bottom:14px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); border-radius:20px; padding:18px;"></div>
             <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px;">
                 <div style="font-size:13px; font-weight:800; color:var(--primary);">Recommended New Papers</div>
@@ -1332,7 +1378,7 @@
                 </div>
             </div>
             <div id="literature-watch-list" class="secondary-panel" style="max-height:52vh; overflow:auto; padding:14px;"></div>
-            <div id="literature-watch-status" style="font-size:12px; color:var(--text-muted); min-height:18px; margin:14px 0 16px;"></div>
+            <div id="literature-watch-status" class="hidden" style="font-size:12px; color:var(--text-muted); min-height:18px; margin:14px 0 16px;"></div>
             <div style="display:flex; justify-content:flex-end; gap:10px;">
                 <button id="literature-watch-add-btn" class="btn btn-primary" onclick="addSelectedLiteratureWatchPapers()">Add Selected to StarMap</button>
             </div>
@@ -1595,6 +1641,7 @@
                     <textarea id="pm-notes" rows="3" style="width: 100%; border-radius: 6px; padding: 8px; border: 1px solid var(--border-color); font-size: 12px;" onchange="updatePaperAttr('notes', this.value)" placeholder="Add personal notes, thoughts, or reminders about this paper..."></textarea>
                 </div>
                 <div id="pm-external-actions" class="action-row">
+                    <button id="btn-toggle-mark-node" class="btn btn-outline" style="padding: 6px 10px; font-size: 12px;" onclick="toggleCurrentPaperMark()">🔖 Mark Node</button>
                     <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px;" onclick="showPaperBibtex()">Generate BibTeX</button>
                     <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px;" onclick="showPaperCitedBy()">Cited By</button>
                     <button class="btn btn-outline" style="padding: 6px 10px; font-size: 12px;" onclick="showPaperReferences()">References</button>
@@ -1820,13 +1867,21 @@
         projectId: null,
         mode: 'target',
         range: '3m',
-        discipline: '',
+        disciplines: [],
         loading: false,
         response: null,
         selections: new Set(),
         status: '',
         error: '',
-        scholars: []
+        partialWarning: '',
+        scholars: [],
+        journals: [],
+        journalSuggestions: [],
+        journalSearchLoading: false,
+        progressPercent: 0,
+        progressDetail: '',
+        progressStepsRemaining: '',
+        progressTimer: null
     };
     let literatureWatchCache = {};
     let literatureWatchQueuedOptions = null;
@@ -1835,6 +1890,7 @@
     let currentImportCancellationRequested = false;
     let visiblePaperCount = 10; 
     let currentChartMode = 'orbital'; 
+    let currentChartRenderLimit = 500;
     let currentOpenedPaperFilename = null; 
     let currentOpenedPaperRecord = null;
     let searchTimeout = null; 
@@ -1843,6 +1899,7 @@
     let currentNetworkGraphState = null;
     let currentCitationSelectionKey = null;
     let currentCitationGraphState = null;
+    let currentOrbitalGraphState = null;
     let currentCitationDisplayMode = 'focused';
     let currentCitationCursor = "*";
     let currentReferenceCursor = "*";
@@ -2212,8 +2269,38 @@
         return window.__starmapRainbowImportSymbol;
     }
 
+    function getMarkedRainbowImportSymbol() {
+        if (window.__starmapMarkedRainbowImportSymbol) return window.__starmapMarkedRainbowImportSymbol;
+        const svg = `
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+                <defs>
+                    <clipPath id="markedRainbowClip">
+                        <circle cx="60" cy="60" r="42"/>
+                    </clipPath>
+                </defs>
+                <circle cx="60" cy="60" r="48" fill="none" stroke="#312e81" stroke-width="7"/>
+                <circle cx="60" cy="60" r="44" fill="white" fill-opacity="0.98"/>
+                <g clip-path="url(#markedRainbowClip)">
+                    <circle cx="38" cy="34" r="23" fill="#ff5f57"/>
+                    <circle cx="70" cy="28" r="22" fill="#ffbd2e"/>
+                    <circle cx="89" cy="50" r="21" fill="#34c759"/>
+                    <circle cx="84" cy="82" r="22" fill="#32ade6"/>
+                    <circle cx="52" cy="92" r="24" fill="#007aff"/>
+                    <circle cx="28" cy="72" r="22" fill="#af52de"/>
+                    <circle cx="34" cy="50" r="18" fill="#ff2d55"/>
+                </g>
+                <circle cx="60" cy="60" r="43" fill="none" stroke="rgba(255,255,255,0.96)" stroke-width="2.2"/>
+            </svg>
+        `.trim();
+        window.__starmapMarkedRainbowImportSymbol = `image://data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+        return window.__starmapMarkedRainbowImportSymbol;
+    }
+
     function getPaperNodeSymbol(paper, highlightKeys = null) {
-        return isRainbowRecentImport(paper, highlightKeys) ? getRainbowImportSymbol() : 'circle';
+        if (isRainbowRecentImport(paper, highlightKeys)) {
+            return isMarkedPaper(paper) ? getMarkedRainbowImportSymbol() : getRainbowImportSymbol();
+        }
+        return 'circle';
     }
 
     function getPaperNodeStyle(paper, baseStyle = {}, highlightKeys = null) {
@@ -2225,6 +2312,15 @@
                 opacity: 1,
                 shadowBlur: Math.max(nextStyle.shadowBlur || 0, 20),
                 shadowColor: 'rgba(79, 70, 229, 0.24)'
+            };
+        }
+        if (isMarkedPaper(paper)) {
+            nextStyle = {
+                ...nextStyle,
+                borderColor: '#312e81',
+                borderWidth: Math.max(nextStyle.borderWidth || 0, 2.5),
+                shadowBlur: Math.max(nextStyle.shadowBlur || 0, 18),
+                shadowColor: 'rgba(49, 46, 129, 0.22)'
             };
         }
         return nextStyle;
@@ -2583,7 +2679,7 @@ Summary rules:
     }
 
     function getNetworkSelectionKeyFromPaper(paperData) {
-        return paperData?.isCenter ? '__TARGET_CENTER__' : paperData?.filename || null;
+        return paperData?.isCenter ? '__TARGET_CENTER__' : getStablePaperGraphKey(paperData) || null;
     }
 
     function escapeHtml(value) {
@@ -2761,22 +2857,45 @@ Summary rules:
         try {
             const raw = localStorage.getItem(getProjectSettingsStorageKey(projectId));
             const parsed = raw ? JSON.parse(raw) : {};
+            const legacyDiscipline = typeof parsed.literature_watch_discipline === 'string'
+                ? parsed.literature_watch_discipline
+                : '';
+            const disciplineList = Array.isArray(parsed.literature_watch_disciplines)
+                ? parsed.literature_watch_disciplines
+                : (legacyDiscipline ? [legacyDiscipline] : []);
             return {
                 use_background_precompute: parsed.use_background_precompute !== false,
                 use_llm_theme_naming: parsed.use_llm_theme_naming !== false,
                 use_zotero_sync_preload: parsed.use_zotero_sync_preload !== false,
                 use_fwci_filter: parsed.use_citation_count_filter === true || parsed.use_fwci_filter === true,
                 literature_watch_discipline: typeof parsed.literature_watch_discipline === 'string' ? parsed.literature_watch_discipline : '',
+                literature_watch_disciplines: disciplineList
+                    .map(item => normalizeLiteratureWatchDisciplineKey(item))
+                    .filter(Boolean)
+                    .filter((item, index, arr) => arr.indexOf(item) === index)
+                    .slice(0, 3),
                 literature_watch_range: ['3m', '1y', '3y'].includes(parsed.literature_watch_range) ? parsed.literature_watch_range : '3m',
                 literature_watch_scholars: Array.isArray(parsed.literature_watch_scholars)
                     ? parsed.literature_watch_scholars.map(item => String(item || '').trim()).filter(Boolean).slice(0, 20)
                     : [],
+                literature_watch_journals: Array.isArray(parsed.literature_watch_journals)
+                    ? parsed.literature_watch_journals
+                        .map(item => normalizeLiteratureWatchJournal(item))
+                        .filter(item => item.display_name)
+                        .slice(0, 20)
+                    : [],
+                marked_node_keys: Array.isArray(parsed.marked_node_keys)
+                    ? parsed.marked_node_keys.map(item => String(item || '').trim()).filter(Boolean).slice(0, 18)
+                    : [],
+                chart_render_limit: [150, 300, 500].includes(Number(parsed.chart_render_limit))
+                    ? Number(parsed.chart_render_limit)
+                    : 500,
                 fwci_weight_tier: Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, parsed.citation_count_weight_tier)
                     ? parsed.citation_count_weight_tier
                     : (Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, parsed.fwci_weight_tier) ? parsed.fwci_weight_tier : 'medium')
             };
         } catch {
-            return { use_background_precompute: true, use_llm_theme_naming: true, use_zotero_sync_preload: true, use_fwci_filter: false, literature_watch_discipline: '', literature_watch_range: '3m', literature_watch_scholars: [], fwci_weight_tier: 'medium' };
+            return { use_background_precompute: true, use_llm_theme_naming: true, use_zotero_sync_preload: true, use_fwci_filter: false, literature_watch_discipline: '', literature_watch_disciplines: [], literature_watch_range: '3m', literature_watch_scholars: [], literature_watch_journals: [], marked_node_keys: [], chart_render_limit: 500, fwci_weight_tier: 'medium' };
         }
     }
 
@@ -2789,6 +2908,93 @@ Summary rules:
         nextSettings.citation_count_weight_tier = nextSettings.fwci_weight_tier;
         localStorage.setItem(getProjectSettingsStorageKey(projectId), JSON.stringify(nextSettings));
         return nextSettings;
+    }
+
+    function getMarkedNodeKeys(projectId = currentProject?.id) {
+        return getProjectSearchSettings(projectId).marked_node_keys || [];
+    }
+
+    function setMarkedNodeKeys(keys = [], projectId = currentProject?.id) {
+        const nextKeys = keys
+            .map(item => String(item || '').trim())
+            .filter(Boolean)
+            .filter((item, index, arr) => arr.indexOf(item) === index)
+            .slice(0, 18);
+        saveProjectSearchSettings({ marked_node_keys: nextKeys }, projectId);
+        return nextKeys;
+    }
+
+    function getMarkedNodeKeySet(project = currentProject) {
+        return new Set(getMarkedNodeKeys(project?.id));
+    }
+
+    function isMarkedPaper(paper, project = currentProject) {
+        const key = getStablePaperGraphKey(paper);
+        if (!key) return false;
+        return getMarkedNodeKeySet(project).has(key);
+    }
+
+    function updateMarkedPaperButton(paper = getCurrentOpenedPaper()) {
+        const btn = document.getElementById('btn-toggle-mark-node');
+        if (!btn) return;
+        if (!paper || paper.isCenter) {
+            btn.classList.add('hidden');
+            return;
+        }
+        btn.classList.remove('hidden');
+        const marked = isMarkedPaper(paper);
+        btn.innerText = marked ? '✓ Marked Node' : '🔖 Mark Node';
+        btn.style.borderColor = marked ? 'rgba(79,70,229,0.34)' : '';
+        btn.style.color = marked ? '#4338ca' : '';
+        btn.style.background = marked ? '#eef2ff' : '';
+    }
+
+    function renderMarkedNodesPanel() {
+        const panel = document.getElementById('marked-node-panel');
+        if (!panel) return;
+        if (!currentProject?.top_papers?.length) {
+            panel.classList.add('hidden');
+            panel.innerHTML = '';
+            return;
+        }
+        const savedKeys = getMarkedNodeKeys(currentProject.id);
+        const keyToPaper = new Map((currentProject.top_papers || []).map(paper => [getStablePaperGraphKey(paper), paper]));
+        const validKeys = savedKeys.filter(key => keyToPaper.has(key));
+        if (validKeys.length !== savedKeys.length) {
+            setMarkedNodeKeys(validKeys, currentProject.id);
+        }
+        if (!validKeys.length) {
+            panel.classList.add('hidden');
+            panel.innerHTML = '';
+            return;
+        }
+        panel.classList.remove('hidden');
+        panel.innerHTML = `
+            <div style="padding:12px 14px; border-radius:18px; border:1px solid rgba(79,70,229,0.14); background:rgba(255,255,255,0.92); box-shadow:0 10px 24px rgba(15,23,42,0.06); backdrop-filter:blur(4px);">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;">
+                    <div style="font-size:11px; font-weight:800; color:#4338ca; text-transform:uppercase; letter-spacing:0.06em;">Marked Nodes</div>
+                    <div style="font-size:11px; color:#64748b;">Jump back to your saved exploration anchors.</div>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    ${validKeys.map(key => {
+                        const paper = keyToPaper.get(key);
+                        const title = truncateText(paper?.title || 'Untitled', 34);
+                        return `
+                            <div style="display:inline-flex; align-items:center; gap:8px; padding:8px 10px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:12px; font-weight:700; max-width:100%;">
+                                <button onclick="focusMarkedNode('${encodeURIComponent(key)}')" style="background:transparent; border:none; color:inherit; cursor:pointer; padding:0; font:inherit; text-align:left; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(title)}</button>
+                                <button onclick="removeMarkedNode('${encodeURIComponent(key)}')" style="background:transparent; border:none; cursor:pointer; color:#64748b; font-size:12px; padding:0;">✕</button>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+    }
+
+    function setChartRenderLimitButtons() {
+        [150, 300, 500].forEach(limit => {
+            document.getElementById(`chart-limit-${limit}`)?.classList.toggle('active', currentChartRenderLimit === limit);
+        });
     }
 
     function shouldUseLlmSearch(projectId = currentProject?.id) {
@@ -2960,21 +3166,102 @@ Summary rules:
         document.getElementById('review-modal').classList.remove('hidden');
     }
 
-    function getLiteratureWatchCacheKey(projectId = currentProject?.id, range = literatureWatchState.range, discipline = literatureWatchState.discipline, mode = literatureWatchState.mode, scholars = literatureWatchState.scholars) {
+    function normalizeLiteratureWatchJournal(rawJournal) {
+        if (!rawJournal) return { id: '', display_name: '' };
+        if (typeof rawJournal === 'string') {
+            return { id: '', display_name: String(rawJournal || '').trim().slice(0, 220) };
+        }
+        return {
+            id: String(rawJournal.id || '').trim().slice(0, 300),
+            display_name: String(rawJournal.display_name || rawJournal.name || '').trim().slice(0, 220)
+        };
+    }
+
+    const LITERATURE_WATCH_DISCIPLINE_OPTIONS = [
+        { value: 'a_general_economics_teaching', label: 'A. General Economics and Teaching' },
+        { value: 'b_history_methodology_heterodox', label: 'B. History of Economic Thought, Methodology, and Heterodox Approaches' },
+        { value: 'c_mathematical_quantitative_methods', label: 'C. Mathematical and Quantitative Methods' },
+        { value: 'd_microeconomics', label: 'D. Microeconomics' },
+        { value: 'e_macroeconomics_monetary', label: 'E. Macroeconomics and Monetary Economics' },
+        { value: 'f_international_economics', label: 'F. International Economics' },
+        { value: 'g_financial_economics', label: 'G. Financial Economics' },
+        { value: 'h_public_economics', label: 'H. Public Economics' },
+        { value: 'i_health_education_welfare', label: 'I. Health, Education, and Welfare' },
+        { value: 'j_labor_demographic_economics', label: 'J. Labor and Demographic Economics' },
+        { value: 'k_law_economics', label: 'K. Law and Economics' },
+        { value: 'l_industrial_organization', label: 'L. Industrial Organization' },
+        { value: 'm_business_administration_business_economics', label: 'M. Business Administration and Business Economics • Marketing • Accounting • Personnel Economics' },
+        { value: 'n_economic_history', label: 'N. Economic History' },
+        { value: 'o_development_innovation_growth', label: 'O. Economic Development, Innovation, Technological Change, and Growth' },
+        { value: 'p_political_economy_comparative_systems', label: 'P. Political Economy and Comparative Economic Systems' },
+        { value: 'q_agricultural_environmental_resource', label: 'Q. Agricultural and Natural Resource Economics • Environmental and Ecological Economics' },
+        { value: 'r_urban_regional_real_estate_transportation', label: 'R. Urban, Rural, Regional, Real Estate, and Transportation Economics' },
+        { value: 'y_miscellaneous', label: 'Y. Miscellaneous Categories' },
+        { value: 'z_other_special_topics', label: 'Z. Other Special Topics' }
+    ];
+
+    function getLiteratureWatchDisciplineLabel(value = '') {
+        return LITERATURE_WATCH_DISCIPLINE_OPTIONS.find(option => option.value === value)?.label || value;
+    }
+
+    function getLiteratureWatchCacheKey(projectId = currentProject?.id, range = literatureWatchState.range, disciplines = literatureWatchState.disciplines, mode = literatureWatchState.mode, scholars = literatureWatchState.scholars, journals = literatureWatchState.journals) {
         const scholarKey = Array.isArray(scholars) ? scholars.map(item => String(item || '').trim().toLowerCase()).sort().join('|') : '';
-        return `${projectId || 'none'}::${mode || 'target'}::${discipline || 'none'}::${range || '3m'}::${scholarKey}`;
+        const journalKey = Array.isArray(journals)
+            ? journals
+                .map(item => normalizeLiteratureWatchJournal(item))
+                .filter(item => item.display_name)
+                .map(item => `${item.id || 'no-id'}::${item.display_name.toLowerCase()}`)
+                .sort()
+                .join('|')
+            : '';
+        const disciplineKey = Array.isArray(disciplines)
+            ? disciplines.map(item => normalizeLiteratureWatchDisciplineKey(item)).filter(Boolean).sort().join('|')
+            : normalizeLiteratureWatchDisciplineKey(disciplines || '');
+        return `${projectId || 'none'}::${mode || 'target'}::${disciplineKey || 'none'}::${range || '3m'}::${scholarKey}::${journalKey}`;
+    }
+
+    function normalizeLiteratureWatchDisciplineKey(rawValue) {
+        const key = String(rawValue || '').trim().toLowerCase();
+        const aliases = {
+            macroeconomics_monetary: 'e_macroeconomics_monetary',
+            international_finance_sovereign_debt: 'f_international_economics',
+            banking_credit_financial_intermediation: 'g_financial_economics',
+            asset_pricing_corporate_finance: 'g_financial_economics',
+            public_finance_political_economy: 'h_public_economics',
+            development_international_political_economy: 'o_development_innovation_growth',
+            political_economy_public_policy: 'p_political_economy_comparative_systems',
+            management_strategy_organizations: 'm_business_administration_business_economics',
+            marketing_operations_business_analytics: 'm_business_administration_business_economics',
+            computer_science_ai: 'c_mathematical_quantitative_methods',
+            general_social_science: 'y_miscellaneous'
+        };
+        return aliases[key] || key;
     }
 
     function getLiteratureWatchRecommendationKey(paper) {
         return cleanDoiLocal(paper?.doi) || String(paper?.openalex_id || '').trim() || `${String(paper?.title || '').trim().toLowerCase()}::${String(paper?.year || '').trim()}`;
     }
 
-    function getLiteratureWatchDiscipline(projectId = currentProject?.id) {
-        return getProjectSearchSettings(projectId).literature_watch_discipline || '';
+    function getLiteratureWatchDisciplines(projectId = currentProject?.id) {
+        const settings = getProjectSearchSettings(projectId);
+        return (settings.literature_watch_disciplines || [])
+            .map(item => normalizeLiteratureWatchDisciplineKey(item))
+            .filter(Boolean)
+            .filter((item, index, arr) => arr.indexOf(item) === index)
+            .slice(0, 3);
     }
 
-    function setLiteratureWatchDiscipline(projectId = currentProject?.id, discipline = '') {
-        return saveProjectSearchSettings({ literature_watch_discipline: discipline }, projectId).literature_watch_discipline || '';
+    function setLiteratureWatchDisciplines(projectId = currentProject?.id, disciplines = []) {
+        const normalized = (disciplines || [])
+            .map(item => normalizeLiteratureWatchDisciplineKey(item))
+            .filter(Boolean)
+            .filter((item, index, arr) => arr.indexOf(item) === index)
+            .slice(0, 3);
+        const saved = saveProjectSearchSettings({
+            literature_watch_disciplines: normalized,
+            literature_watch_discipline: normalized[0] || ''
+        }, projectId);
+        return Array.isArray(saved.literature_watch_disciplines) ? saved.literature_watch_disciplines : normalized;
     }
 
     function getLiteratureWatchRange(projectId = currentProject?.id) {
@@ -2996,6 +3283,22 @@ Summary rules:
         }, projectId).literature_watch_scholars || [];
     }
 
+    function getLiteratureWatchJournals(projectId = currentProject?.id) {
+        return (getProjectSearchSettings(projectId).literature_watch_journals || [])
+            .map(item => normalizeLiteratureWatchJournal(item))
+            .filter(item => item.display_name)
+            .slice(0, 20);
+    }
+
+    function setLiteratureWatchJournals(projectId = currentProject?.id, journals = []) {
+        return saveProjectSearchSettings({
+            literature_watch_journals: (journals || [])
+                .map(item => normalizeLiteratureWatchJournal(item))
+                .filter(item => item.display_name)
+                .slice(0, 20)
+        }, projectId).literature_watch_journals || [];
+    }
+
     function setLiteratureWatchRangeButtons() {
         ['3m', '1y', '3y'].forEach(range => {
             document.getElementById(`literature-watch-range-${range}`)?.classList.toggle('active', literatureWatchState.range === range);
@@ -3003,16 +3306,38 @@ Summary rules:
     }
 
     function setLiteratureWatchModeButtons() {
-        ['target', 'scholar'].forEach(mode => {
+        ['target', 'scholar', 'journal'].forEach(mode => {
             document.getElementById(`literature-watch-mode-${mode}`)?.classList.toggle('active', literatureWatchState.mode === mode);
         });
         const modeCopyEl = document.getElementById('literature-watch-mode-copy');
         if (modeCopyEl) {
-            modeCopyEl.innerText = literatureWatchState.mode === 'scholar'
-                ? 'Track recent work from specific scholars, then filter it back down to what still fits your target thesis.'
-                : 'Use your thesis, abstract, and Core papers to scan recent literature in this direction.';
+            if (literatureWatchState.mode === 'scholar') {
+                modeCopyEl.innerText = 'Track recent work from specific scholars, then filter it back down to what still fits your target thesis.';
+            } else if (literatureWatchState.mode === 'journal') {
+                modeCopyEl.innerText = 'Confirm the journals you care about first, then scan recent papers from those journals and rerank them against your target thesis.';
+            } else {
+                modeCopyEl.innerText = 'Use your thesis, abstract, and Core papers to scan recent literature in this direction.';
+            }
         }
         document.getElementById('literature-watch-scholar-tools')?.classList.toggle('hidden', literatureWatchState.mode !== 'scholar');
+        document.getElementById('literature-watch-journal-tools')?.classList.toggle('hidden', literatureWatchState.mode !== 'journal');
+    }
+
+    function renderLiteratureWatchDisciplineList() {
+        const pickerEl = document.getElementById('literature-watch-discipline-picker');
+        const listEl = document.getElementById('literature-watch-discipline-list');
+        if (pickerEl) pickerEl.value = '';
+        if (!listEl) return;
+        if (!literatureWatchState.disciplines.length) {
+            listEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:12px 14px; border:1px dashed rgba(148,163,184,0.22); border-radius:16px;">Choose up to 3 economics fields to guide this watch.</div>';
+            return;
+        }
+        listEl.innerHTML = literatureWatchState.disciplines.map(scope => `
+            <div style="display:inline-flex; align-items:center; gap:8px; padding:8px 10px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:12px; font-weight:700;">
+                <span>${escapeHtml(getLiteratureWatchDisciplineLabel(scope))}</span>
+                <button onclick="removeLiteratureWatchDiscipline('${encodeURIComponent(scope)}')" style="background:transparent; border:none; cursor:pointer; color:#64748b; font-size:12px;">✕</button>
+            </div>
+        `).join('');
     }
 
     function renderLiteratureWatchScholarList() {
@@ -3030,24 +3355,150 @@ Summary rules:
         `).join('');
     }
 
+    function renderLiteratureWatchJournalList() {
+        const listEl = document.getElementById('literature-watch-journal-list');
+        const suggestionsEl = document.getElementById('literature-watch-journal-suggestions');
+        if (suggestionsEl) {
+            if (literatureWatchState.journalSearchLoading) {
+                suggestionsEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:12px 14px; border:1px solid rgba(148,163,184,0.18); border-radius:16px; background:#fff;">Searching OpenAlex journal sources...</div>';
+            } else if (literatureWatchState.journalSuggestions?.length) {
+                suggestionsEl.innerHTML = `
+                    <div style="font-size:12px; color:#475569; font-weight:700; margin-bottom:10px;">Confirm the best OpenAlex journal match.</div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:10px;">
+                        ${literatureWatchState.journalSuggestions.map(item => `
+                            <div style="border:1px solid rgba(148,163,184,0.18); border-radius:16px; padding:12px; background:#fff;">
+                                <div style="font-size:14px; font-weight:800; color:#1f2a69; margin-bottom:6px;">${escapeHtml(item.display_name || 'Unknown journal')}</div>
+                                <div style="font-size:11px; color:#64748b; line-height:1.6; margin-bottom:10px;">
+                                    ${(item.host_organization_name ? `Publisher: ${escapeHtml(item.host_organization_name)} · ` : '') + `Works ${Number(item.works_count || 0).toLocaleString()} · Citations ${Number(item.cited_by_count || 0).toLocaleString()}`}
+                                </div>
+                                <button class="btn btn-outline" style="padding:8px 12px; font-size:12px;" onclick="confirmLiteratureWatchJournal('${encodeURIComponent(item.id || '')}','${encodeURIComponent(item.display_name || '')}')">Use This Journal</button>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            } else {
+                suggestionsEl.innerHTML = '';
+            }
+        }
+        if (!listEl) return;
+        if (!literatureWatchState.journals.length) {
+            listEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:12px 14px; border:1px dashed rgba(148,163,184,0.22); border-radius:16px;">No journals confirmed yet.</div>';
+            return;
+        }
+        listEl.innerHTML = literatureWatchState.journals.map(journal => `
+            <div style="display:inline-flex; align-items:center; gap:8px; padding:8px 10px; border-radius:999px; background:#fff7ed; color:#c2410c; font-size:12px; font-weight:700;">
+                <span>${escapeHtml(journal.display_name)}</span>
+                <button onclick="removeLiteratureWatchJournal('${encodeURIComponent(journal.id || journal.display_name)}')" style="background:transparent; border:none; cursor:pointer; color:#64748b; font-size:12px;">✕</button>
+            </div>
+        `).join('');
+    }
+
+    function renderLiteratureWatchFeedback() {
+        const el = document.getElementById('literature-watch-feedback');
+        if (!el) return;
+        const rawMessage = String(literatureWatchState.error || literatureWatchState.status || '').trim();
+        const partialWarning = String(literatureWatchState.partialWarning || '').trim();
+        const lower = rawMessage.toLowerCase();
+        const shouldShowStatus = !!literatureWatchState.error || (
+            rawMessage
+            && (
+                lower.includes('already in')
+                || lower.includes('confirm')
+                || lower.includes('pick a discipline')
+                || lower.includes('add at least one')
+                || lower.includes('search and confirm')
+            )
+        );
+        const message = shouldShowStatus ? rawMessage : '';
+        if (!message && !partialWarning) {
+            el.classList.add('hidden');
+            el.innerHTML = '';
+            return;
+        }
+        el.classList.remove('hidden');
+        const notices = [];
+        if (message) {
+            let palette = {
+                bg: 'linear-gradient(180deg, rgba(239,246,255,0.98), rgba(248,250,252,0.96))',
+                border: 'rgba(59,130,246,0.16)',
+                title: '#1d4ed8',
+                body: '#475569',
+                label: 'Watch Update'
+            };
+            if (literatureWatchState.error) {
+                palette = {
+                    bg: 'linear-gradient(180deg, rgba(254,242,242,0.98), rgba(255,250,250,0.96))',
+                    border: 'rgba(239,68,68,0.18)',
+                    title: '#b91c1c',
+                    body: '#7f1d1d',
+                    label: 'Watch Error'
+                };
+            } else if (lower.includes('already in') || lower.includes('confirm') || lower.includes('pick a discipline') || lower.includes('add at least one') || lower.includes('search and confirm')) {
+                palette = {
+                    bg: 'linear-gradient(180deg, rgba(255,247,237,0.98), rgba(255,251,235,0.96))',
+                    border: 'rgba(245,158,11,0.22)',
+                    title: '#c2410c',
+                    body: '#7c2d12',
+                    label: 'Action Needed'
+                };
+            }
+            notices.push({ message, palette });
+        }
+        if (partialWarning) {
+            notices.push({
+                message: partialWarning,
+                palette: {
+                    bg: 'linear-gradient(180deg, rgba(255,247,237,0.98), rgba(255,251,235,0.96))',
+                    border: 'rgba(245,158,11,0.22)',
+                    title: '#c2410c',
+                    body: '#7c2d12',
+                    label: 'Partial Results'
+                }
+            });
+        }
+        el.innerHTML = notices.map(({ message: noticeMessage, palette }) => `
+            <div style="padding:14px 16px; border-radius:18px; border:1px solid ${palette.border}; background:${palette.bg}; box-shadow:0 10px 24px rgba(15,23,42,0.04); ${notices.length > 1 ? 'margin-bottom:10px;' : ''}">
+                <div style="font-size:11px; font-weight:800; letter-spacing:0.06em; text-transform:uppercase; color:${palette.title}; margin-bottom:6px;">${palette.label}</div>
+                <div style="font-size:14px; line-height:1.55; color:${palette.body}; font-weight:700;">${escapeHtml(noticeMessage)}</div>
+            </div>
+        `).join('');
+    }
+
     function renderLiteratureWatchSummary() {
         const container = document.getElementById('literature-watch-summary');
         if (!container) return;
         setLiteratureWatchModeButtons();
+        renderLiteratureWatchDisciplineList();
         renderLiteratureWatchScholarList();
-        if (!literatureWatchState.discipline) {
-            container.innerHTML = '<div style="font-size:13px; color:var(--text-muted);">Choose a discipline scope first. Literature Watch will use it to prefer field-appropriate journals and to keep semantic reranking inside the right literature neighborhood.</div>';
+        renderLiteratureWatchJournalList();
+        renderLiteratureWatchFeedback();
+        if (!literatureWatchState.disciplines.length) {
+            container.innerHTML = '<div style="font-size:13px; color:var(--text-muted);">Choose at least one discipline scope first.</div>';
             return;
         }
         if (literatureWatchState.mode === 'scholar' && !literatureWatchState.scholars.length) {
-            container.innerHTML = '<div style="font-size:13px; color:var(--text-muted);">Add at least one scholar to start Scholar Watch. You can type names here or click bars in Repository Analytics → Top Authors.</div>';
+            container.innerHTML = '<div style="font-size:13px; color:var(--text-muted);">Add at least one scholar to start Scholar Watch.</div>';
+            return;
+        }
+        if (literatureWatchState.mode === 'journal' && !literatureWatchState.journals.length) {
+            container.innerHTML = '<div style="font-size:13px; color:var(--text-muted);">Search and confirm at least one journal first.</div>';
             return;
         }
         if (literatureWatchState.loading) {
+            const percent = Math.max(4, Math.min(94, Math.round(literatureWatchState.progressPercent || 8)));
+            const progressDetail = literatureWatchState.progressDetail || 'Preparing this watch scan...';
+            const progressStepsRemaining = literatureWatchState.progressStepsRemaining || 'A few steps remaining';
             container.innerHTML = `
-                <div style="font-size:13px; color:var(--text-muted); margin-bottom:10px;">Scanning recent scholar literature for this project...</div>
-                <div class="progress-track"><div class="progress-fill" style="width:65%;"></div></div>
-                <div style="font-size:12px; color:var(--text-muted); margin-top:10px;">Reading the target thesis, target abstract, and up to 50 Core papers, then querying recent OpenAlex results.</div>
+                <div style="font-size:13px; color:var(--text-muted); margin-bottom:10px;">Scanning recent ${literatureWatchState.mode === 'scholar' ? 'scholar' : (literatureWatchState.mode === 'journal' ? 'journal' : 'target')} literature for this project...</div>
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:6px;">
+                    <div style="font-size:13px; font-weight:700; color:#334155;">${escapeHtml(progressDetail)}</div>
+                    <div style="font-size:12px; font-weight:800; color:#4f46e5;">${percent}%</div>
+                </div>
+                <div class="progress-track"><div class="progress-fill" style="width:${percent}%;"></div></div>
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:10px; flex-wrap:wrap;">
+                    <div style="font-size:12px; color:var(--text-muted);">${escapeHtml(progressStepsRemaining)}</div>
+                    <div style="font-size:12px; color:var(--text-muted);">${escapeHtml(literatureWatchState.status || 'Waiting for Scholar API results...')}</div>
+                </div>
             `;
             return;
         }
@@ -3066,6 +3517,8 @@ Summary rules:
         const queries = Array.isArray(strategy.queries) ? strategy.queries : [];
         const resolvedScholars = Array.isArray(response.resolved_scholars) ? response.resolved_scholars : [];
         const unresolvedScholars = Array.isArray(response.unresolved_scholars) ? response.unresolved_scholars : [];
+        const resolvedJournals = Array.isArray(response.resolved_journals) ? response.resolved_journals : [];
+        const unresolvedJournals = Array.isArray(response.unresolved_journals) ? response.unresolved_journals : [];
         container.innerHTML = `
             <div style="display:grid; grid-template-columns:minmax(0, 1.5fr) minmax(280px, 1fr); gap:16px; align-items:start;">
                 <div style="border:1px solid rgba(59,130,246,0.14); border-radius:20px; padding:18px; background:
@@ -3075,21 +3528,28 @@ Summary rules:
                     <div style="display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; background:${strategy.mode === 'llm' ? 'rgba(99,102,241,0.10)' : 'rgba(148,163,184,0.14)'}; color:${strategy.mode === 'llm' ? '#4f46e5' : '#475569'}; font-size:11px; font-weight:800; margin-bottom:10px;">
                         ${strategy.mode === 'llm' ? 'LLM-guided watch plan' : 'Fallback watch plan'}
                     </div>
-                    <div style="font-size:30px; line-height:1.04; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px;">${escapeHtml(strategy.focus_phrase || (literatureWatchState.mode === 'scholar' ? 'Scholar Watch' : 'Target Watch'))}</div>
+                    <div style="font-size:30px; line-height:1.04; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px;">${escapeHtml(strategy.focus_phrase || (literatureWatchState.mode === 'scholar' ? 'Scholar Watch' : (literatureWatchState.mode === 'journal' ? 'Journal Watch' : 'Target Watch')))}</div>
                     <div style="font-size:13px; color:#475569; line-height:1.7; margin-bottom:14px;">${escapeHtml(strategy.summary || 'Recent literature recommendations derived from your project context.')}</div>
                     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
                         ${(facets.length ? facets : ['target thesis', 'target abstract', 'core papers']).map(facet => `<div style="padding:6px 10px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:11px; font-weight:700;">${escapeHtml(facet)}</div>`).join('')}
                     </div>
-                    <div style="font-size:12px; color:#64748b;">Input sources: ${literatureWatchState.mode === 'scholar'
-                        ? `selected scholars (${escapeHtml((response.scholar_sources || []).length)}) + target thesis + target abstract + top ${escapeHtml(sourceSummary.core_papers_used ?? 0)} Core papers`
-                        : `target thesis + target abstract + top ${escapeHtml(sourceSummary.core_papers_used ?? 0)} Core papers`
-                    }.</div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
+                        <div style="padding:6px 10px; border-radius:999px; background:#f8fafc; color:#64748b; font-size:11px; font-weight:700;">Core papers ${escapeHtml(sourceSummary.core_papers_used ?? 0)}</div>
+                        ${literatureWatchState.mode === 'scholar' ? `<div style="padding:6px 10px; border-radius:999px; background:#f8fafc; color:#64748b; font-size:11px; font-weight:700;">Scholars ${(response.scholar_sources || []).length}</div>` : ''}
+                        ${literatureWatchState.mode === 'journal' ? `<div style="padding:6px 10px; border-radius:999px; background:#f8fafc; color:#64748b; font-size:11px; font-weight:700;">Journals ${(response.journal_sources || []).length}</div>` : ''}
+                    </div>
                     ${literatureWatchState.mode === 'scholar' ? `
                         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
                             <div style="padding:6px 10px; border-radius:999px; background:#ecfeff; color:#0f766e; font-size:11px; font-weight:700;">Resolved ${resolvedScholars.length}</div>
                             <div style="padding:6px 10px; border-radius:999px; background:${unresolvedScholars.length ? '#fef2f2' : '#f8fafc'}; color:${unresolvedScholars.length ? '#b91c1c' : '#64748b'}; font-size:11px; font-weight:700;">Unresolved ${unresolvedScholars.length}</div>
                         </div>
                         ${unresolvedScholars.length ? `<div style="font-size:12px; color:#b91c1c; margin-top:8px; line-height:1.6;">Could not confidently map these names to OpenAlex author profiles: ${unresolvedScholars.map(item => escapeHtml(item)).join(', ')}.</div>` : ''}
+                    ` : literatureWatchState.mode === 'journal' ? `
+                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+                            <div style="padding:6px 10px; border-radius:999px; background:#ecfeff; color:#0f766e; font-size:11px; font-weight:700;">Resolved ${resolvedJournals.length}</div>
+                            <div style="padding:6px 10px; border-radius:999px; background:${unresolvedJournals.length ? '#fef2f2' : '#f8fafc'}; color:${unresolvedJournals.length ? '#b91c1c' : '#64748b'}; font-size:11px; font-weight:700;">Unresolved ${unresolvedJournals.length}</div>
+                        </div>
+                        ${unresolvedJournals.length ? `<div style="font-size:12px; color:#b91c1c; margin-top:8px; line-height:1.6;">Could not confidently map these journal names to OpenAlex journal sources: ${unresolvedJournals.map(item => escapeHtml(item)).join(', ')}.</div>` : ''}
                     ` : ''}
                 </div>
                 <div style="display:grid; gap:10px;">
@@ -3097,16 +3557,19 @@ Summary rules:
                         <div style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;">Search Window</div>
                         <div style="font-size:20px; font-weight:900; color:#24307b;">${escapeHtml(response.range_label || 'Past 3 months')}</div>
                         <div style="font-size:12px; color:#475569; margin-top:4px;">${escapeHtml(response.discipline?.label || '')}</div>
-                        <div style="font-size:12px; color:#64748b; margin-top:4px;">Freshness is secondary inside this window. Relevance and objective quality drive ranking.</div>
                     </div>
                     <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:14px 16px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.96));">
-                        <div style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;">${literatureWatchState.mode === 'scholar' ? 'Watched Scholars' : 'Search Queries'}</div>
-                        <div style="display:flex; gap:6px; flex-wrap:wrap;">${(literatureWatchState.mode === 'scholar' ? (response.scholar_sources || literatureWatchState.scholars) : queries).map(item => `<div style="padding:6px 9px; border-radius:999px; background:#fff7ed; color:#c2410c; font-size:11px; font-weight:700;">${escapeHtml(item)}</div>`).join('')}</div>
+                        <div style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;">${literatureWatchState.mode === 'scholar' ? 'Watched Scholars' : (literatureWatchState.mode === 'journal' ? 'Watched Journals' : 'Search Queries')}</div>
+                        <div style="display:flex; gap:6px; flex-wrap:wrap;">${(literatureWatchState.mode === 'scholar' ? (response.scholar_sources || literatureWatchState.scholars) : (literatureWatchState.mode === 'journal' ? (response.journal_sources || literatureWatchState.journals.map(item => item.display_name)) : queries)).map(item => `<div style="padding:6px 9px; border-radius:999px; background:#fff7ed; color:#c2410c; font-size:11px; font-weight:700;">${escapeHtml(typeof item === 'string' ? item : item?.display_name || '')}</div>`).join('')}</div>
                         ${literatureWatchState.mode === 'scholar' && resolvedScholars.length ? `<div style="font-size:11px; color:#64748b; margin-top:8px; line-height:1.6;">Resolved matches: ${resolvedScholars.slice(0, 6).map(item => {
                             const requested = String(item?.requested || '');
                             const resolved = String(item?.resolved || '');
                             return escapeHtml(requested.toLowerCase() === resolved.toLowerCase() ? resolved : `${requested} → ${resolved}`);
-                        }).join(' • ')}${resolvedScholars.length > 6 ? ' ...' : ''}</div>` : ''}
+                        }).join(' • ')}${resolvedScholars.length > 6 ? ' ...' : ''}</div>` : (literatureWatchState.mode === 'journal' && resolvedJournals.length ? `<div style="font-size:11px; color:#64748b; margin-top:8px; line-height:1.6;">Resolved journals: ${resolvedJournals.slice(0, 6).map(item => {
+                            const requested = String(item?.requested || '');
+                            const resolved = String(item?.resolved || '');
+                            return escapeHtml(requested.toLowerCase() === resolved.toLowerCase() ? resolved : `${requested} → ${resolved}`);
+                        }).join(' • ')}${resolvedJournals.length > 6 ? ' ...' : ''}</div>` : '')}
                     </div>
                 </div>
             </div>
@@ -3119,10 +3582,7 @@ Summary rules:
         const statusEl = document.getElementById('literature-watch-status');
         const addBtn = document.getElementById('literature-watch-add-btn');
         const selectAllEl = document.getElementById('literature-watch-select-all');
-        const disciplineEl = document.getElementById('literature-watch-discipline');
         if (!listEl) return;
-
-        if (disciplineEl) disciplineEl.value = literatureWatchState.discipline || '';
 
         if (addBtn) {
             addBtn.disabled = literatureWatchState.loading || !literatureWatchState.selections.size;
@@ -3132,8 +3592,8 @@ Summary rules:
         }
 
         if (statusEl) {
-            statusEl.style.color = literatureWatchState.error ? '#ef4444' : 'var(--text-muted)';
-            statusEl.innerText = literatureWatchState.error || literatureWatchState.status || '';
+            statusEl.classList.add('hidden');
+            statusEl.innerText = '';
         }
 
         if (literatureWatchState.loading) {
@@ -3142,17 +3602,23 @@ Summary rules:
                 selectAllEl.checked = false;
                 selectAllEl.disabled = true;
             }
-            listEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted);">Scanning recent papers through Scholar API and ranking them against your project thesis...</div>';
+            listEl.innerHTML = `<div style="font-size:12px; color:var(--text-muted);">${
+                literatureWatchState.mode === 'scholar'
+                    ? 'Scanning recent papers from your selected scholars and reranking them against the project thesis...'
+                    : (literatureWatchState.mode === 'journal'
+                        ? 'Scanning recent papers from your selected journals and reranking them against the project thesis...'
+                        : 'Scanning recent papers through Scholar API and ranking them against your project thesis...')
+            }</div>`;
             return;
         }
 
-        if (!literatureWatchState.discipline) {
-            if (statsEl) statsEl.innerText = 'Discipline scope required';
+        if (!literatureWatchState.disciplines.length) {
+            if (statsEl) statsEl.innerText = 'Discipline scopes required';
             if (selectAllEl) {
                 selectAllEl.checked = false;
                 selectAllEl.disabled = true;
             }
-            listEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted);">Select a discipline scope above before running Literature Watch for this project.</div>';
+            listEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted);">Select one to three discipline scopes above before running Literature Watch for this project.</div>';
             return;
         }
         if (literatureWatchState.mode === 'scholar' && !literatureWatchState.scholars.length) {
@@ -3162,6 +3628,15 @@ Summary rules:
                 selectAllEl.disabled = true;
             }
             listEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted);">Add one or more scholars to start Scholar Watch.</div>';
+            return;
+        }
+        if (literatureWatchState.mode === 'journal' && !literatureWatchState.journals.length) {
+            if (statsEl) statsEl.innerText = 'Confirm journals first';
+            if (selectAllEl) {
+                selectAllEl.checked = false;
+                selectAllEl.disabled = true;
+            }
+            listEl.innerHTML = '<div style="font-size:12px; color:var(--text-muted);">Search and confirm one or more journals above to start Journal Watch.</div>';
             return;
         }
 
@@ -3202,6 +3677,7 @@ Summary rules:
                                         <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
                                             <div style="padding:4px 8px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:11px; font-weight:800;">Recommended ${index + 1}</div>
                                             ${paper.source_scholar ? `<div style="padding:4px 8px; border-radius:999px; background:#ecfeff; color:#0f766e; font-size:11px; font-weight:700;">${escapeHtml(paper.source_scholar)}</div>` : ''}
+                                            ${paper.source_journal ? `<div style="padding:4px 8px; border-radius:999px; background:#fff7ed; color:#c2410c; font-size:11px; font-weight:700;">${escapeHtml(paper.source_journal)}</div>` : ''}
                                             ${paper.publication_date ? `<div style="padding:4px 8px; border-radius:999px; background:#fff7ed; color:#c2410c; font-size:11px; font-weight:700;">${escapeHtml(paper.publication_date)}</div>` : ''}
                                         </div>
                                         <div style="font-size:15px; line-height:1.35; font-weight:800; color:#3340a7; margin-bottom:6px;">${escapeHtml(paper.title || 'Untitled')}</div>
@@ -3237,32 +3713,129 @@ Summary rules:
 
     function renderLiteratureWatchModal() {
         setLiteratureWatchRangeButtons();
+        const runBtn = document.getElementById('literature-watch-run-btn');
+        if (runBtn) {
+            runBtn.disabled = !!literatureWatchState.loading;
+            runBtn.innerText = literatureWatchState.loading ? 'Scanning…' : 'Run Watch';
+        }
         renderLiteratureWatchSummary();
         renderLiteratureWatchList();
+    }
+
+    function clearLiteratureWatchProgressTimer() {
+        if (literatureWatchState.progressTimer) {
+            clearTimeout(literatureWatchState.progressTimer);
+            literatureWatchState.progressTimer = null;
+        }
+    }
+
+    function getLiteratureWatchProgressPlan(mode) {
+        const stepsByMode = {
+            target: [
+                { percent: 8, detail: 'Reading your thesis, abstract, and Core papers', remaining: '3 steps left' },
+                { percent: 24, detail: 'Building a watch plan from your project context', remaining: '2 steps left' },
+                { percent: 48, detail: 'Querying recent OpenAlex literature', remaining: '1 step left' },
+                { percent: 74, detail: 'Filtering, deduplicating, and ranking candidate papers', remaining: 'Final step' }
+            ],
+            scholar: [
+                { percent: 6, detail: 'Resolving scholar names to OpenAlex author profiles', remaining: '4 steps left' },
+                { percent: 18, detail: 'Reading your thesis, abstract, and Core papers', remaining: '3 steps left' },
+                { percent: 34, detail: 'Building a scholar watch plan for this project', remaining: '2 steps left' },
+                { percent: 58, detail: 'Querying recent OpenAlex papers from watched scholars', remaining: '1 step left' },
+                { percent: 78, detail: 'Filtering, deduplicating, and ranking candidate papers', remaining: 'Final step' }
+            ],
+            journal: [
+                { percent: 6, detail: 'Resolving watched journals to OpenAlex sources', remaining: '4 steps left' },
+                { percent: 18, detail: 'Reading your thesis, abstract, and Core papers', remaining: '3 steps left' },
+                { percent: 34, detail: 'Building a journal watch plan for this project', remaining: '2 steps left' },
+                { percent: 58, detail: 'Querying recent OpenAlex papers from watched journals', remaining: '1 step left' },
+                { percent: 78, detail: 'Filtering, deduplicating, and ranking candidate papers', remaining: 'Final step' }
+            ]
+        };
+        return stepsByMode[mode] || stepsByMode.target;
+    }
+
+    function setLiteratureWatchProgressState(percent, detail, remaining) {
+        literatureWatchState.progressPercent = percent;
+        literatureWatchState.progressDetail = detail;
+        literatureWatchState.progressStepsRemaining = remaining;
+    }
+
+    function startLiteratureWatchProgress(mode) {
+        clearLiteratureWatchProgressTimer();
+        const plan = getLiteratureWatchProgressPlan(mode);
+        let index = 0;
+
+        const advance = () => {
+            const currentStep = plan[Math.min(index, plan.length - 1)];
+            setLiteratureWatchProgressState(currentStep.percent, currentStep.detail, currentStep.remaining);
+            renderLiteratureWatchModal();
+            index += 1;
+            if (index < plan.length) {
+                literatureWatchState.progressTimer = setTimeout(advance, index === 1 ? 700 : 1100);
+            } else {
+                literatureWatchState.progressTimer = setTimeout(() => {
+                    literatureWatchState.progressPercent = Math.max(literatureWatchState.progressPercent || 0, 86);
+                    literatureWatchState.progressDetail = 'Waiting for Scholar API results to return';
+                    literatureWatchState.progressStepsRemaining = 'Wrapping up the final step';
+                    literatureWatchState.progressTimer = null;
+                    renderLiteratureWatchModal();
+                }, 1400);
+            }
+        };
+
+        advance();
+    }
+
+    function stopLiteratureWatchProgress() {
+        clearLiteratureWatchProgressTimer();
+        literatureWatchState.progressPercent = 100;
+        literatureWatchState.progressDetail = '';
+        literatureWatchState.progressStepsRemaining = '';
+    }
+
+    function markLiteratureWatchPendingRun(message = 'Settings updated. Click Run Watch to scan with the latest scope.') {
+        literatureWatchState.response = null;
+        literatureWatchState.error = '';
+        literatureWatchState.partialWarning = '';
+        literatureWatchState.loading = false;
+        literatureWatchState.selections = new Set();
+        literatureWatchState.status = message;
+        stopLiteratureWatchProgress();
     }
 
     async function loadLiteratureWatch(options = {}) {
         if (!currentProject?.id) return;
         const mode = options.mode || literatureWatchState.mode || 'target';
         const range = options.range || literatureWatchState.range || '3m';
-        const discipline = options.discipline ?? literatureWatchState.discipline ?? '';
+        const disciplines = (options.disciplines || literatureWatchState.disciplines || [])
+            .map(item => normalizeLiteratureWatchDisciplineKey(item))
+            .filter(Boolean)
+            .filter((item, index, arr) => arr.indexOf(item) === index)
+            .slice(0, 3);
         const scholars = (options.scholars || literatureWatchState.scholars || []).map(item => String(item || '').trim()).filter(Boolean).slice(0, 20);
+        const journals = (options.journals || literatureWatchState.journals || [])
+            .map(item => normalizeLiteratureWatchJournal(item))
+            .filter(item => item.display_name)
+            .slice(0, 20);
         if (literatureWatchState.loading) {
-            literatureWatchQueuedOptions = { mode, range, discipline, scholars, force: true };
+            literatureWatchQueuedOptions = { mode, range, disciplines, scholars, journals, force: true };
             literatureWatchState.status = 'Finishing the current scan, then reloading Literature Watch with your latest settings...';
             renderLiteratureWatchModal();
             return;
         }
-        if (!discipline) {
+        if (!disciplines.length) {
             literatureWatchState.projectId = currentProject.id;
             literatureWatchState.mode = mode;
             literatureWatchState.range = range;
-            literatureWatchState.discipline = '';
+            literatureWatchState.disciplines = [];
             literatureWatchState.loading = false;
             literatureWatchState.response = null;
             literatureWatchState.error = '';
-            literatureWatchState.status = 'Pick a discipline scope before running Project Literature Watch.';
+            literatureWatchState.partialWarning = '';
+            literatureWatchState.status = 'Pick one to three discipline scopes before running Project Literature Watch.';
             literatureWatchState.selections = new Set();
+            literatureWatchState.journals = journals;
             renderLiteratureWatchModal();
             return;
         }
@@ -3270,26 +3843,46 @@ Summary rules:
             literatureWatchState.projectId = currentProject.id;
             literatureWatchState.mode = mode;
             literatureWatchState.range = range;
-            literatureWatchState.discipline = discipline;
+            literatureWatchState.disciplines = disciplines;
             literatureWatchState.scholars = scholars;
             literatureWatchState.loading = false;
             literatureWatchState.response = null;
             literatureWatchState.error = '';
+            literatureWatchState.partialWarning = '';
             literatureWatchState.status = 'Add at least one scholar before running Scholar Watch.';
+            literatureWatchState.selections = new Set();
+            literatureWatchState.journals = journals;
+            renderLiteratureWatchModal();
+            return;
+        }
+        if (mode === 'journal' && !journals.length) {
+            literatureWatchState.projectId = currentProject.id;
+            literatureWatchState.mode = mode;
+            literatureWatchState.range = range;
+            literatureWatchState.disciplines = disciplines;
+            literatureWatchState.scholars = scholars;
+            literatureWatchState.journals = journals;
+            literatureWatchState.loading = false;
+            literatureWatchState.response = null;
+            literatureWatchState.error = '';
+            literatureWatchState.partialWarning = '';
+            literatureWatchState.status = 'Search and confirm at least one journal before running Journal Watch.';
             literatureWatchState.selections = new Set();
             renderLiteratureWatchModal();
             return;
         }
         const force = !!options.force;
-        const cacheKey = getLiteratureWatchCacheKey(currentProject.id, range, discipline, mode, scholars);
+        const cacheKey = getLiteratureWatchCacheKey(currentProject.id, range, disciplines, mode, scholars, journals);
         if (!force && literatureWatchCache[cacheKey]) {
             literatureWatchState.projectId = currentProject.id;
             literatureWatchState.mode = mode;
             literatureWatchState.range = range;
-            literatureWatchState.discipline = discipline;
+            literatureWatchState.disciplines = disciplines;
             literatureWatchState.scholars = scholars;
+            literatureWatchState.journals = journals;
             literatureWatchState.response = literatureWatchCache[cacheKey];
             literatureWatchState.error = '';
+            literatureWatchState.partialWarning = literatureWatchCache[cacheKey]?.partial_failure_warning || '';
             literatureWatchState.status = literatureWatchState.selections.size
                 ? literatureWatchState.status
                 : 'Review the recommendations below, then add only the papers you want.';
@@ -3301,13 +3894,18 @@ Summary rules:
         literatureWatchState.projectId = currentProject.id;
         literatureWatchState.mode = mode;
         literatureWatchState.range = range;
-        literatureWatchState.discipline = discipline;
+        literatureWatchState.disciplines = disciplines;
         literatureWatchState.scholars = scholars;
+        literatureWatchState.journals = journals;
         literatureWatchState.loading = true;
         literatureWatchState.error = '';
+        literatureWatchState.partialWarning = '';
         literatureWatchState.status = mode === 'scholar'
             ? 'Scanning recent papers from selected scholars...'
-            : 'Scanning recent papers for this project...';
+            : (mode === 'journal'
+                ? 'Scanning recent papers from selected journals...'
+                : 'Scanning recent papers for this project...');
+        startLiteratureWatchProgress(mode);
         literatureWatchState.response = force ? null : literatureWatchState.response;
         literatureWatchState.selections = new Set();
         renderLiteratureWatchModal();
@@ -3316,7 +3914,7 @@ Summary rules:
             const res = await fetch(`${API_BASE}/projects/${currentProject.id}/literature_watch`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mode, lookback_window: range, limit: 18, discipline, scholar_names: scholars })
+                body: JSON.stringify({ mode, lookback_window: range, limit: 18, discipline_scopes: disciplines, scholar_names: scholars, journal_sources: journals })
             });
             const data = await res.json();
             if (!res.ok) {
@@ -3324,13 +3922,16 @@ Summary rules:
             }
             literatureWatchCache[cacheKey] = data;
             literatureWatchState.response = data;
+            literatureWatchState.partialWarning = data.partial_failure_warning || '';
             literatureWatchState.status = data.recommendations?.length
                 ? 'Recommended New Papers are ready. Select the papers you want, then add them to StarMap.'
                 : 'No recommendations cleared the current project watch filters in this range.';
         } catch (error) {
             literatureWatchState.error = error.message || 'Literature Watch failed.';
+            literatureWatchState.partialWarning = '';
             literatureWatchState.status = '';
         } finally {
+            stopLiteratureWatchProgress();
             literatureWatchState.loading = false;
             renderLiteratureWatchModal();
             if (literatureWatchQueuedOptions) {
@@ -3344,17 +3945,29 @@ Summary rules:
     window.openLiteratureWatchModal = async () => {
         if (!currentProject?.id) return;
         literatureWatchState.projectId = currentProject.id;
-        literatureWatchState.discipline = getLiteratureWatchDiscipline(currentProject.id);
+        literatureWatchState.disciplines = getLiteratureWatchDisciplines(currentProject.id);
         literatureWatchState.range = getLiteratureWatchRange(currentProject.id);
         literatureWatchState.scholars = getLiteratureWatchScholars(currentProject.id);
+        literatureWatchState.journals = getLiteratureWatchJournals(currentProject.id);
+        const cacheKey = getLiteratureWatchCacheKey(
+            currentProject.id,
+            literatureWatchState.range || '3m',
+            literatureWatchState.disciplines,
+            literatureWatchState.mode,
+            literatureWatchState.scholars,
+            literatureWatchState.journals
+        );
+        const cached = literatureWatchCache[cacheKey];
+        literatureWatchState.response = cached || null;
+        literatureWatchState.error = '';
+        literatureWatchState.partialWarning = cached?.partial_failure_warning || '';
+        literatureWatchState.loading = false;
+        literatureWatchState.selections = new Set();
+        literatureWatchState.status = cached
+            ? 'Showing the latest cached recommendations for this watch setup. Click Run Watch to rescan.'
+            : 'Set the scope you want, then click Run Watch.';
         renderLiteratureWatchModal();
         scrollLiteratureWatchIntoView();
-        await loadLiteratureWatch({
-            mode: literatureWatchState.mode,
-            range: literatureWatchState.range || '3m',
-            discipline: literatureWatchState.discipline,
-            scholars: literatureWatchState.scholars
-        });
     };
 
     window.closeLiteratureWatchModal = () => {};
@@ -3366,49 +3979,70 @@ Summary rules:
     window.setLiteratureWatchRange = async (range) => {
         if (!['3m', '1y', '3y'].includes(range)) return;
         literatureWatchState.range = setLiteratureWatchRangePreference(currentProject?.id, range);
-        literatureWatchState.selections = new Set();
+        markLiteratureWatchPendingRun();
         renderLiteratureWatchModal();
-        await loadLiteratureWatch({ mode: literatureWatchState.mode, range: literatureWatchState.range, discipline: literatureWatchState.discipline, scholars: literatureWatchState.scholars });
+    };
+
+    window.runLiteratureWatch = async () => {
+        await loadLiteratureWatch({
+            mode: literatureWatchState.mode,
+            range: literatureWatchState.range,
+            disciplines: literatureWatchState.disciplines,
+            scholars: literatureWatchState.scholars,
+            journals: literatureWatchState.journals
+        });
     };
 
     window.refreshLiteratureWatch = async () => {
-        const cacheKey = getLiteratureWatchCacheKey(currentProject?.id, literatureWatchState.range, literatureWatchState.discipline, literatureWatchState.mode, literatureWatchState.scholars);
+        const cacheKey = getLiteratureWatchCacheKey(currentProject?.id, literatureWatchState.range, literatureWatchState.disciplines, literatureWatchState.mode, literatureWatchState.scholars, literatureWatchState.journals);
         delete literatureWatchCache[cacheKey];
         await loadLiteratureWatch({
             mode: literatureWatchState.mode,
             range: literatureWatchState.range,
-            discipline: literatureWatchState.discipline,
+            disciplines: literatureWatchState.disciplines,
             scholars: literatureWatchState.scholars,
+            journals: literatureWatchState.journals,
             force: true
         });
     };
 
-    window.handleLiteratureWatchDisciplineChange = async () => {
-        const nextDiscipline = document.getElementById('literature-watch-discipline')?.value || '';
-        literatureWatchState.discipline = setLiteratureWatchDiscipline(currentProject?.id, nextDiscipline);
-        literatureWatchState.response = null;
-        literatureWatchState.error = '';
-        literatureWatchState.status = nextDiscipline
-            ? 'Discipline scope updated. Refreshing Literature Watch...'
-            : 'Pick a discipline scope before running Project Literature Watch.';
-        literatureWatchState.selections = new Set();
-        renderLiteratureWatchModal();
-        if (nextDiscipline) {
-            await loadLiteratureWatch({ mode: literatureWatchState.mode, range: literatureWatchState.range, discipline: nextDiscipline, scholars: literatureWatchState.scholars, force: true });
+    window.addLiteratureWatchDisciplineFromPicker = async () => {
+        const picker = document.getElementById('literature-watch-discipline-picker');
+        const nextDiscipline = picker?.value || '';
+        if (!nextDiscipline) return;
+        const existing = literatureWatchState.disciplines || [];
+        if (existing.includes(nextDiscipline)) {
+            literatureWatchState.status = `${getLiteratureWatchDisciplineLabel(nextDiscipline)} is already in Discipline Scope.`;
+            renderLiteratureWatchModal();
+            return;
         }
+        if (existing.length >= 3) {
+            literatureWatchState.status = 'Discipline Scope supports up to 3 fields.';
+            renderLiteratureWatchModal();
+            return;
+        }
+        literatureWatchState.disciplines = setLiteratureWatchDisciplines(currentProject?.id, [...existing, nextDiscipline]);
+        markLiteratureWatchPendingRun(`${getLiteratureWatchDisciplineLabel(nextDiscipline)} added. Click Run Watch to rescan with the updated field mix.`);
+        renderLiteratureWatchModal();
+    };
+
+    window.removeLiteratureWatchDiscipline = async (encodedScope) => {
+        const scope = decodeURIComponent(encodedScope || '');
+        literatureWatchState.disciplines = setLiteratureWatchDisciplines(
+            currentProject?.id,
+            (literatureWatchState.disciplines || []).filter(item => item !== scope)
+        );
+        markLiteratureWatchPendingRun(literatureWatchState.disciplines.length
+            ? `${getLiteratureWatchDisciplineLabel(scope)} removed from Discipline Scope.`
+            : 'Pick one to three discipline scopes before running Project Literature Watch.');
+        renderLiteratureWatchModal();
     };
 
     window.setLiteratureWatchMode = async (mode) => {
-        if (!['target', 'scholar'].includes(mode)) return;
+        if (!['target', 'scholar', 'journal'].includes(mode)) return;
         literatureWatchState.mode = mode;
-        literatureWatchState.selections = new Set();
+        markLiteratureWatchPendingRun(`Switched to ${mode === 'target' ? 'Target Watch' : mode === 'scholar' ? 'Scholar Watch' : 'Journal Watch'}. Click Run Watch to scan with this mode.`);
         renderLiteratureWatchModal();
-        await loadLiteratureWatch({
-            mode,
-            range: literatureWatchState.range,
-            discipline: literatureWatchState.discipline,
-            scholars: literatureWatchState.scholars
-        });
     };
 
     window.handleLiteratureWatchScholarInputKey = (event) => {
@@ -3418,12 +4052,58 @@ Summary rules:
         }
     };
 
+    window.handleLiteratureWatchJournalInputKey = (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            searchLiteratureWatchJournals();
+        }
+    };
+
     window.addLiteratureWatchScholarFromInput = async () => {
         const input = document.getElementById('literature-watch-scholar-input');
         const value = String(input?.value || '').trim();
         if (!value) return;
         await addScholarToLiteratureWatch(value);
         if (input) input.value = '';
+    };
+
+    window.searchLiteratureWatchJournals = async () => {
+        const input = document.getElementById('literature-watch-journal-input');
+        const query = String(input?.value || '').trim();
+        if (!query) return;
+        literatureWatchState.journalSearchLoading = true;
+        literatureWatchState.journalSuggestions = [];
+        literatureWatchState.error = '';
+        literatureWatchState.status = `Searching for journal matches for "${query}"...`;
+        renderLiteratureWatchModal();
+        try {
+            const res = await fetch(`${API_BASE}/literature_watch/journal_search`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, limit: 6 })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Could not search for journal matches.');
+            }
+            literatureWatchState.journalSuggestions = Array.isArray(data.results)
+                ? data.results.map(item => ({
+                    ...normalizeLiteratureWatchJournal(item),
+                    host_organization_name: String(item?.host_organization_name || '').trim(),
+                    works_count: Number(item?.works_count || 0),
+                    cited_by_count: Number(item?.cited_by_count || 0)
+                })).filter(item => item.display_name)
+                : [];
+            literatureWatchState.status = literatureWatchState.journalSuggestions.length
+                ? 'Confirm the best journal match below.'
+                : 'No journal matches were found. Try a more specific journal name.';
+        } catch (error) {
+            literatureWatchState.status = '';
+            literatureWatchState.error = error.message || 'Could not search for journal matches.';
+        } finally {
+            literatureWatchState.journalSearchLoading = false;
+            renderLiteratureWatchModal();
+        }
     };
 
     async function addScholarToLiteratureWatch(name) {
@@ -3441,18 +4121,31 @@ Summary rules:
             return;
         }
         literatureWatchState.scholars = setLiteratureWatchScholars(currentProject?.id, [...existing, cleaned]);
-        literatureWatchState.response = null;
-        literatureWatchState.status = `${cleaned} added to Scholar Watch.`;
+        markLiteratureWatchPendingRun(`${cleaned} added to Scholar Watch. Click Run Watch to rescan.`);
         renderLiteratureWatchModal();
-        if (literatureWatchState.mode === 'scholar') {
-            await loadLiteratureWatch({
-                mode: 'scholar',
-                range: literatureWatchState.range,
-                discipline: literatureWatchState.discipline,
-                scholars: literatureWatchState.scholars,
-                force: true
-            });
+    }
+
+    async function addJournalToLiteratureWatch(journal) {
+        const nextJournal = normalizeLiteratureWatchJournal(journal);
+        if (!nextJournal.display_name) return;
+        const existing = literatureWatchState.journals || [];
+        const nextIdentity = String(nextJournal.id || nextJournal.display_name).toLowerCase();
+        if (existing.some(item => String(item.id || item.display_name).toLowerCase() === nextIdentity)) {
+            literatureWatchState.status = `${nextJournal.display_name} is already in Journal Watch.`;
+            renderLiteratureWatchModal();
+            return;
         }
+        if (existing.length >= 20) {
+            literatureWatchState.status = 'Journal Watch supports up to 20 journals.';
+            renderLiteratureWatchModal();
+            return;
+        }
+        literatureWatchState.journals = setLiteratureWatchJournals(currentProject?.id, [...existing, nextJournal]);
+        literatureWatchState.journalSuggestions = [];
+        markLiteratureWatchPendingRun(`${nextJournal.display_name} added to Journal Watch. Click Run Watch to rescan.`);
+        const input = document.getElementById('literature-watch-journal-input');
+        if (input) input.value = '';
+        renderLiteratureWatchModal();
     }
 
     window.removeLiteratureWatchScholar = async (encodedName) => {
@@ -3461,28 +4154,37 @@ Summary rules:
             currentProject?.id,
             (literatureWatchState.scholars || []).filter(item => item.toLowerCase() !== name.toLowerCase())
         );
-        literatureWatchState.response = null;
-        literatureWatchState.selections = new Set();
-        literatureWatchState.status = literatureWatchState.scholars.length
+        markLiteratureWatchPendingRun(literatureWatchState.scholars.length
             ? `${name} removed from Scholar Watch.`
-            : 'Add at least one scholar before running Scholar Watch.';
+            : 'Add at least one scholar before running Scholar Watch.');
         renderLiteratureWatchModal();
-        if (literatureWatchState.mode === 'scholar' && literatureWatchState.scholars.length) {
-            await loadLiteratureWatch({
-                mode: 'scholar',
-                range: literatureWatchState.range,
-                discipline: literatureWatchState.discipline,
-                scholars: literatureWatchState.scholars,
-                force: true
-            });
-        }
+    };
+
+    window.confirmLiteratureWatchJournal = async (encodedId, encodedDisplayName) => {
+        await addJournalToLiteratureWatch({
+            id: decodeURIComponent(encodedId || ''),
+            display_name: decodeURIComponent(encodedDisplayName || '')
+        });
+    };
+
+    window.removeLiteratureWatchJournal = async (encodedIdentity) => {
+        const identity = decodeURIComponent(encodedIdentity || '');
+        literatureWatchState.journals = setLiteratureWatchJournals(
+            currentProject?.id,
+            (literatureWatchState.journals || []).filter(item => String(item.id || item.display_name || '').toLowerCase() !== identity.toLowerCase())
+        );
+        markLiteratureWatchPendingRun(literatureWatchState.journals.length
+            ? `${identity} removed from Journal Watch.`
+            : 'Search and confirm at least one journal before running Journal Watch.');
+        renderLiteratureWatchModal();
     };
 
     window.addRepositoryAuthorToScholarWatch = async (authorName) => {
         if (!currentProject?.id) return;
         literatureWatchState.mode = 'scholar';
-        literatureWatchState.discipline = getLiteratureWatchDiscipline(currentProject.id);
+        literatureWatchState.disciplines = getLiteratureWatchDisciplines(currentProject.id);
         literatureWatchState.scholars = getLiteratureWatchScholars(currentProject.id);
+        literatureWatchState.journals = getLiteratureWatchJournals(currentProject.id);
         switchView('workspace');
         renderLiteratureWatchModal();
         scrollLiteratureWatchIntoView();
@@ -3549,21 +4251,19 @@ Summary rules:
         renderLiteratureWatchModal();
 
         try {
-            const result = await mergeImportedPapersIntoProject(selectedPapers, 'Project literature watch', { deferSimilarity: true });
+            const result = await mergeImportedPapersIntoProject(selectedPapers, 'Project literature watch', {
+                deferSimilarity: true,
+                partialWorkspaceRefresh: true
+            });
             const selectedKeys = new Set(selectedPapers.map(getLiteratureWatchRecommendationKey));
             literatureWatchState.response.recommendations = (literatureWatchState.response.recommendations || [])
                 .filter(paper => !selectedKeys.has(getLiteratureWatchRecommendationKey(paper)));
             literatureWatchState.response.candidate_count = literatureWatchState.response.recommendations.length;
             Object.keys(literatureWatchCache)
                 .filter(key => key.startsWith(`${currentProject?.id || ''}::`))
-                .forEach(key => {
-                    if (!literatureWatchCache[key]?.recommendations) return;
-                    literatureWatchCache[key].recommendations = literatureWatchCache[key].recommendations
-                        .filter(paper => !selectedKeys.has(getLiteratureWatchRecommendationKey(paper)));
-                    literatureWatchCache[key].candidate_count = literatureWatchCache[key].recommendations.length;
-                });
+                .forEach(key => delete literatureWatchCache[key]);
             literatureWatchState.selections = new Set();
-            literatureWatchState.status = `Added ${result.imported} new paper(s) and updated ${result.updated} existing paper(s). Similarity scoring will finish in the background.`;
+            literatureWatchState.status = `Added ${result.imported} new paper(s) and updated ${result.updated} existing paper(s). Similarity scoring will finish in the background. Run Watch again to fetch a fresh recommendation set.`;
         } catch (error) {
             literatureWatchState.error = error.message || 'Could not add selected papers to StarMap.';
         } finally {
@@ -5334,6 +6034,7 @@ Return ONLY a JSON object matching this exact schema:
         document.getElementById('pm-display-mode').classList.remove('hidden');
         document.getElementById('pm-edit-mode').classList.add('hidden');
         document.getElementById('btn-toggle-edit').innerText = "✏️ Edit Metadata";
+        updateMarkedPaperButton(canonicalPaper);
 
         if (!canonicalPaper.isCenter) {
             const status = getPaperStatus(canonicalPaper);
@@ -5366,6 +6067,128 @@ Return ONLY a JSON object matching this exact schema:
             }
         }
         currentPaperModalMode = 'center';
+    };
+
+    function refreshMarkedNodeVisualInCurrentChart(paper) {
+        if (!paper || !myChart) return;
+        const selectionKey = getStablePaperGraphKey(paper);
+        if (!selectionKey) return;
+        const recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject);
+
+        if (currentChartMode === 'network' && currentNetworkGraphState?.baseNodes?.length) {
+            const baseNode = currentNetworkGraphState.baseNodes.find(node => node.selectionKey === selectionKey);
+            if (!baseNode) return;
+            const baseColor = baseNode.paperData?.isCenter ? '#eab308' : getPaperColor(baseNode.paperData);
+            baseNode.symbol = getPaperNodeSymbol(baseNode.paperData, recentImportHighlightKeys);
+            baseNode.itemStyle = getPaperNodeStyle(baseNode.paperData, {
+                color: baseColor,
+                opacity: 0.92,
+                shadowBlur: 10,
+                shadowColor: hexToRgba(baseColor, 0.2)
+            }, recentImportHighlightKeys);
+            applyMarkedStylesToNetworkBaseLinks();
+            applyNetworkSelection();
+            return;
+        }
+
+        if (currentChartMode === 'citation' && currentCitationGraphState?.baseNodes?.length) {
+            const baseNode = currentCitationGraphState.baseNodes.find(node => node.selectionKey === selectionKey);
+            if (!baseNode) return;
+            const degree = Number(baseNode.value || 0);
+            const baseColor = getPaperColor(baseNode.paperData);
+            const isCore = getPaperStatus(baseNode.paperData) === 'Core';
+            baseNode.symbol = getPaperNodeSymbol(baseNode.paperData, recentImportHighlightKeys);
+            baseNode.itemStyle = getPaperNodeStyle(baseNode.paperData, {
+                color: degree <= 1 && !isCore ? hexToRgba(baseColor, 0.4) : baseColor,
+                opacity: degree === 0 && !isCore ? 0.28 : 0.9,
+                shadowBlur: isCore ? 14 : 8,
+                shadowColor: hexToRgba(baseColor, 0.2)
+            }, recentImportHighlightKeys);
+            applyMarkedStylesToCitationBaseLinks();
+            applyCitationSelection();
+            return;
+        }
+
+        if (currentChartMode === 'orbital') {
+            const option = myChart.getOption();
+            const nextData = (option?.series?.[0]?.data || []).map(node => {
+                if (node.selectionKey !== selectionKey) return node;
+                const baseColor = getPaperColor(paper);
+                return {
+                    ...node,
+                    symbol: getPaperNodeSymbol(paper, recentImportHighlightKeys),
+                    itemStyle: getPaperNodeStyle(paper, {
+                        color: baseColor,
+                        opacity: 0.88,
+                        shadowBlur: 10,
+                        shadowColor: hexToRgba(baseColor, 0.2)
+                    }, recentImportHighlightKeys)
+                };
+            });
+            myChart.setOption({
+                series: [{
+                    data: nextData
+                }]
+            });
+        }
+    }
+
+    function togglePaperMarkForPaper(paper) {
+        if (!paper || !currentProject?.id || paper.isCenter) return;
+        const key = getStablePaperGraphKey(paper);
+        if (!key) return;
+        const currentKeys = getMarkedNodeKeys(currentProject.id);
+        const isMarked = currentKeys.includes(key);
+        const nextKeys = isMarked
+            ? currentKeys.filter(item => item !== key)
+            : [...currentKeys, key];
+        setMarkedNodeKeys(nextKeys, currentProject.id);
+        updateMarkedPaperButton(paper);
+        renderMarkedNodesPanel();
+        refreshMarkedNodeVisualInCurrentChart(paper);
+    }
+
+    window.toggleCurrentPaperMark = () => {
+        const paper = getCurrentOpenedPaper();
+        togglePaperMarkForPaper(paper);
+    };
+
+    window.removeMarkedNode = (encodedKey) => {
+        if (!currentProject?.id) return;
+        const key = decodeURIComponent(encodedKey || '');
+        const paper = currentProject?.top_papers?.find(item => getStablePaperGraphKey(item) === key);
+        setMarkedNodeKeys(getMarkedNodeKeys(currentProject.id).filter(item => item !== key), currentProject.id);
+        renderMarkedNodesPanel();
+        updateMarkedPaperButton();
+        if (paper) refreshMarkedNodeVisualInCurrentChart(paper);
+    };
+
+    window.focusMarkedNode = async (encodedKey) => {
+        if (!currentProject?.top_papers?.length) return;
+        const key = decodeURIComponent(encodedKey || '');
+        const paper = currentProject.top_papers.find(item => getStablePaperGraphKey(item) === key);
+        if (!paper) {
+            setMarkedNodeKeys(getMarkedNodeKeys(currentProject.id).filter(item => item !== key), currentProject.id);
+            renderMarkedNodesPanel();
+            return;
+        }
+        if (currentChartMode === 'network') {
+            openPaperModal(paper, { source: 'network-node' });
+            return;
+        }
+        if (currentChartMode === 'citation') {
+            openPaperModal(paper, { source: 'citation-node' });
+            return;
+        }
+        const orbitalNode = currentOrbitalGraphState?.nodeByKey?.[key];
+        if (orbitalNode && myChart) {
+            const halfSpan = 95;
+            myChart.setOption({
+                xAxis: { min: orbitalNode.x - halfSpan, max: orbitalNode.x + halfSpan },
+                yAxis: { min: orbitalNode.y - halfSpan, max: orbitalNode.y + halfSpan }
+            });
+        }
+        openPaperModal(paper);
     };
 
     window.toggleMetadataEdit = () => {
@@ -7666,15 +8489,25 @@ About 500 words of literature review draft in markdown.`;
             projectId: currentProject.id,
             mode: 'target',
             range: getLiteratureWatchRange(currentProject.id),
-            discipline: getLiteratureWatchDiscipline(currentProject.id),
+            disciplines: getLiteratureWatchDisciplines(currentProject.id),
             loading: false,
             response: null,
             selections: new Set(),
             status: '',
             error: '',
-            scholars: getLiteratureWatchScholars(currentProject.id)
+            partialWarning: '',
+            scholars: getLiteratureWatchScholars(currentProject.id),
+            journals: getLiteratureWatchJournals(currentProject.id),
+            journalSuggestions: [],
+            journalSearchLoading: false,
+            progressPercent: 0,
+            progressDetail: '',
+            progressStepsRemaining: '',
+            progressTimer: null
         };
         const projectSettings = getProjectSearchSettings(currentProject.id);
+        currentChartRenderLimit = projectSettings.chart_render_limit || 500;
+        setChartRenderLimitButtons();
         zoteroSyncCache = { projectId: null, collections: [], previewsByCollection: {} };
         currentNetworkSelectionKey = null;
         currentNetworkGraphState = null;
@@ -7692,6 +8525,13 @@ About 500 words of literature review draft in markdown.`;
                         : 'default';
                     openPaperModal(params.data.paperData, { source }); 
                 }
+            });
+            myChart.on('contextmenu', function(params) {
+                if (!params?.data || params.dataType === 'edge' || !params.data.paperData || params.data.paperData.isCenter) return;
+                if (typeof params.event?.event?.preventDefault === 'function') {
+                    params.event.event.preventDefault();
+                }
+                togglePaperMarkForPaper(resolvePaperInCurrentProject(params.data.paperData) || params.data.paperData);
             });
             myChart.getZr().on('click', function(event) {
                 if (!event.target && (currentChartMode === 'network' || currentChartMode === 'citation')) {
@@ -7786,6 +8626,60 @@ About 500 words of literature review draft in markdown.`;
         await updateWorkspaceUI(); 
     };
 
+    window.setChartRenderLimit = async (limit) => {
+        const normalizedLimit = [150, 300, 500].includes(Number(limit)) ? Number(limit) : 500;
+        currentChartRenderLimit = normalizedLimit;
+        if (currentProject?.id) {
+            saveProjectSearchSettings({ chart_render_limit: normalizedLimit }, currentProject.id);
+        }
+        setChartRenderLimitButtons();
+        if (!currentProject?.top_papers?.length) return;
+        await renderChart(currentProject.top_papers);
+    };
+
+    async function focusPaperInVisualization(paperData) {
+        if (!currentProject?.top_papers?.length) {
+            openPaperModal(paperData);
+            return;
+        }
+        const canonicalPaper = resolvePaperInCurrentProject(paperData) || findCurrentProjectPaperByFilename(paperData?.filename) || paperData;
+        const sortedPapers = [...(currentProject.top_papers || [])].sort((a, b) => Number(b.similarity || 0) - Number(a.similarity || 0));
+        const paperRank = sortedPapers.findIndex(item => getStablePaperGraphKey(item) === getStablePaperGraphKey(canonicalPaper)) + 1;
+        if (!paperRank || paperRank > 500) {
+            openPaperModal(canonicalPaper);
+            return;
+        }
+        const requiredLimit = paperRank <= 150 ? 150 : (paperRank <= 300 ? 300 : 500);
+        if (currentChartRenderLimit < requiredLimit) {
+            currentChartRenderLimit = requiredLimit;
+            if (currentProject?.id) {
+                saveProjectSearchSettings({ chart_render_limit: requiredLimit }, currentProject.id);
+            }
+            setChartRenderLimitButtons();
+        }
+        if (currentChartMode !== 'network') {
+            closePaperModal();
+            currentChartMode = 'network';
+            document.getElementById('btn-orbital').classList.remove('active');
+            document.getElementById('btn-network').classList.add('active');
+            document.getElementById('btn-citation').classList.remove('active');
+            updateCitationControlVisibility();
+        }
+        document.getElementById('starmap-visualization-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        await renderChart(currentProject.top_papers || []);
+        openPaperModal(canonicalPaper, { source: 'network-node' });
+    }
+
+    window.handleWorkspacePaperCardOpen = async (paperData) => {
+        const canonicalPaper = resolvePaperInCurrentProject(paperData) || findCurrentProjectPaperByFilename(paperData?.filename) || paperData;
+        const query = String(workspaceSearchState.query || '').trim();
+        if (!query) {
+            openPaperModal(canonicalPaper);
+            return;
+        }
+        await focusPaperInVisualization(canonicalPaper);
+    };
+
     window.forceRefreshChart = async () => {
         const btn = document.getElementById('btn-refresh-chart');
         const originalText = btn.innerHTML;
@@ -7825,35 +8719,123 @@ About 500 words of literature review draft in markdown.`;
         if (searchTimeout) clearTimeout(searchTimeout);
     };
 
-    function updateWorkspaceUI() {
+    let deferredChartRenderHandle = null;
+    let deferredChartRenderProjectId = null;
+    let deferredChartRenderIdle = false;
+
+    function cancelDeferredChartRender() {
+        if (deferredChartRenderHandle == null) return;
+        if (deferredChartRenderIdle && typeof window.cancelIdleCallback === 'function') {
+            window.cancelIdleCallback(deferredChartRenderHandle);
+        } else {
+            window.cancelAnimationFrame(deferredChartRenderHandle);
+        }
+        deferredChartRenderHandle = null;
+        deferredChartRenderProjectId = null;
+        deferredChartRenderIdle = false;
+    }
+
+    function scheduleDeferredChartRender(project = currentProject) {
+        if (!project?.id) return;
+        cancelDeferredChartRender();
+        deferredChartRenderProjectId = Number(project.id);
+
+        const runRender = async () => {
+            deferredChartRenderHandle = null;
+            deferredChartRenderIdle = false;
+            if (!currentProject || Number(currentProject.id) !== deferredChartRenderProjectId) return;
+            await renderChart(currentProject.top_papers || []);
+        };
+
+        if (typeof window.requestIdleCallback === 'function') {
+            deferredChartRenderIdle = true;
+            deferredChartRenderHandle = window.requestIdleCallback(() => {
+                void runRender();
+            }, { timeout: 450 });
+            return;
+        }
+
+        deferredChartRenderHandle = window.requestAnimationFrame(() => {
+            void runRender();
+        });
+    }
+
+    function syncWorkspaceSearchAndFilterControls(resetSearchAndFilter = false) {
+        const searchBox = document.getElementById('workspace-search');
+        const filterTypeEl = document.getElementById('workspace-filter-type');
+        const filterValueEl = document.getElementById('workspace-filter-value');
+
+        if (resetSearchAndFilter) {
+            if (searchBox) searchBox.value = '';
+            workspaceSearchState = { query: '', results: null, llmFallbackRequested: false, llmFallbackLoading: false };
+            workspaceFilterState = { type: 'none', value: '' };
+            if (filterTypeEl) filterTypeEl.value = 'none';
+            populateWorkspaceFilterValueOptions();
+            return;
+        }
+
+        if (searchBox) searchBox.value = workspaceSearchState.query || '';
+        if (filterTypeEl) filterTypeEl.value = workspaceFilterState.type || 'none';
+        populateWorkspaceFilterValueOptions();
+        if (filterValueEl && !filterValueEl.disabled) {
+            filterValueEl.value = workspaceFilterState.value || '';
+        }
+
+        const query = (workspaceSearchState.query || '').trim();
+        if (!query) {
+            workspaceSearchState = { query: '', results: null, llmFallbackRequested: false, llmFallbackLoading: false };
+            return;
+        }
+
+        let localFiltered = filterWorkspacePapersLocally(query, currentProject?.top_papers || []);
+        if (shouldPrioritizeSearchSimilarity(query)) {
+            localFiltered = sortWorkspaceSearchResultsByQuery(localFiltered, query);
+        }
+        workspaceSearchState.results = localFiltered;
+        workspaceSearchState.llmFallbackRequested = false;
+        workspaceSearchState.llmFallbackLoading = false;
+    }
+
+    function updateWorkspacePanels({ resetSearchAndFilter = false, deferChart = false } = {}) {
+        if (!currentProject) return;
         if (myChart) myChart.resize();
         applyLatestImportBatchFlags(currentProject);
         document.getElementById('ws-proj-name').innerText = currentProject.project_name;
         updateSimilarityRefreshUi();
         refreshThemeClusterCacheIndicator(currentProject);
         updateImportActionButton();
-        renderChart(currentProject.top_papers);
-        
+
         const refreshBtn = document.getElementById('btn-refresh-chart');
-        if (currentProject.top_papers && currentProject.top_papers.some(p => p.is_new)) {
-            refreshBtn.classList.remove('hidden');
-        } else {
-            refreshBtn.classList.add('hidden');
+        if (refreshBtn) {
+            if (currentProject.top_papers && currentProject.top_papers.some(p => p.is_new)) {
+                refreshBtn.classList.remove('hidden');
+            } else {
+                refreshBtn.classList.add('hidden');
+            }
         }
 
-        const searchBox = document.getElementById('workspace-search');
-        if (searchBox) searchBox.value = '';
-        workspaceSearchState = { query: '', results: null, llmFallbackRequested: false, llmFallbackLoading: false };
-        workspaceFilterState = { type: 'none', value: '' };
-        const filterTypeEl = document.getElementById('workspace-filter-type');
-        if (filterTypeEl) filterTypeEl.value = 'none';
-        populateWorkspaceFilterValueOptions();
+        syncWorkspaceSearchAndFilterControls(resetSearchAndFilter);
         literatureWatchState.projectId = currentProject?.id || null;
-        literatureWatchState.discipline = getLiteratureWatchDiscipline(currentProject?.id);
+        literatureWatchState.disciplines = getLiteratureWatchDisciplines(currentProject?.id);
         literatureWatchState.range = getLiteratureWatchRange(currentProject?.id);
         literatureWatchState.scholars = getLiteratureWatchScholars(currentProject?.id);
+        literatureWatchState.journals = getLiteratureWatchJournals(currentProject?.id);
+        literatureWatchState.journalSuggestions = [];
+        literatureWatchState.journalSearchLoading = false;
+        renderMarkedNodesPanel();
         renderLiteratureWatchModal();
         renderWorkspacePaperView();
+
+        if (deferChart) {
+            scheduleDeferredChartRender(currentProject);
+        } else {
+            cancelDeferredChartRender();
+            void renderChart(currentProject.top_papers || []);
+        }
+    }
+
+    function updateWorkspaceUI() {
+        updateWorkspacePanels({ resetSearchAndFilter: true, deferChart: false });
     }
 
     function renderWorkspaceList(papers, isSearching = false) {
@@ -7906,7 +8888,7 @@ About 500 words of literature review draft in markdown.`;
             const scoreLabel = p.similarity_pending ? 'Scoring…' : `${(p.similarity * 100).toFixed(1)}%`;
 
             return `
-                <div class="rank-item" onclick='openPaperModal(${paperStr})'>
+                <div class="rank-item" onclick='handleWorkspacePaperCardOpen(${paperStr})'>
                     <div class="rank-info">
                         <div class="rank-title">${badge}<span>${p.title}</span>${p.is_new ? '<span class="badge-new">NEW</span>' : ''}</div>
                         ${zoteroPdfHint}
@@ -8708,8 +9690,7 @@ About 500 words of literature review draft in markdown.`;
                         ...currentProject,
                         top_papers: projectRef.top_papers
                     });
-                    updateWorkspaceUI();
-                    updateSimilarityRefreshUi();
+                    updateWorkspacePanels({ resetSearchAndFilter: false, deferChart: true });
                 }
 
                 await new Promise(resolve => setTimeout(resolve, 0));
@@ -8725,6 +9706,7 @@ About 500 words of literature review draft in markdown.`;
     async function mergeImportedPapersIntoProject(rawPapers, sourceLabel = 'Imported papers', options = {}) {
         if (!currentProject) throw new Error("Please open a project first.");
         const deferSimilarity = !!options.deferSimilarity;
+        const partialWorkspaceRefresh = !!options.partialWorkspaceRefresh;
 
         const defaultSource = (rawPapers[0]?.import_source || sourceLabel || 'import')
             .toLowerCase()
@@ -8786,7 +9768,11 @@ About 500 words of literature review draft in markdown.`;
             currentProject.top_papers = data.top_papers || currentProject.top_papers;
         }
 
-        updateWorkspaceUI();
+        if (partialWorkspaceRefresh) {
+            updateWorkspacePanels({ resetSearchAndFilter: false, deferChart: true });
+        } else {
+            updateWorkspaceUI();
+        }
         if (deferSimilarity) {
             queueBackgroundSimilarityRefresh(
                 currentProject.id,
@@ -9200,20 +10186,25 @@ ${rawText}`;
 
     async function renderChart(papers) {
         if (myChart) myChart.resize();
+        setChartRenderLimitButtons();
         if (!papers || papers.length === 0) { 
+            currentOrbitalGraphState = null;
             currentNetworkGraphState = null;
             currentCitationGraphState = null;
             currentNetworkSelectionKey = null;
             myChart.clear(); 
             return; 
         }
-        const sortedPapers = [...papers].sort((a,b) => b.similarity - a.similarity);
+        const sortedPapers = [...papers]
+            .sort((a,b) => b.similarity - a.similarity)
+            .slice(0, currentChartRenderLimit);
         const recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject);
         myChart.clear(); 
         
         const hintBtn = document.getElementById('network-hint');
         updateCitationControlVisibility();
         if (currentChartMode === 'orbital') { 
+            currentOrbitalGraphState = null;
             currentNetworkGraphState = null;
             currentCitationGraphState = null;
             currentNetworkSelectionKey = null;
@@ -9221,19 +10212,21 @@ ${rawText}`;
             if (hintBtn) hintBtn.classList.add('hidden');
             await renderOrbital(sortedPapers, recentImportHighlightKeys); 
         } else if (currentChartMode === 'network') { 
+            currentOrbitalGraphState = null;
             currentCitationGraphState = null;
             currentCitationSelectionKey = null;
             if (hintBtn) {
                 hintBtn.classList.remove('hidden');
-                hintBtn.innerText = `⚡ Network mode displays Top 200 papers only for performance`;
+                hintBtn.innerText = `⚡ Network mode is currently rendering the Top ${sortedPapers.length} papers`;
             }
             await renderNetwork(sortedPapers, recentImportHighlightKeys); 
         } else {
+            currentOrbitalGraphState = null;
             currentNetworkGraphState = null;
             currentNetworkSelectionKey = null;
             if (hintBtn) {
                 hintBtn.classList.remove('hidden');
-                hintBtn.innerText = `↗ Citation graph uses retained Top 500 papers and draws A → B when A cites B`;
+                hintBtn.innerText = `↗ Citation graph uses the retained Top ${sortedPapers.length} papers and draws A → B when A cites B`;
             }
             await renderCitationGraph(sortedPapers, recentImportHighlightKeys);
         }
@@ -9273,9 +10266,17 @@ ${rawText}`;
                 value: [radius * Math.cos(angle), radius * Math.sin(angle), p.similarity], 
                 itemStyle: getPaperNodeStyle(p, { color: color, opacity: 0.88, shadowBlur: 10, shadowColor: hexToRgba(color, 0.2) }, recentImportHighlightKeys), 
                 symbolSize: getLatestImportSymbolSize(nodeSize, p, recentImportHighlightKeys), 
-                paperData: p 
+                paperData: p,
+                selectionKey: getStablePaperGraphKey(p)
             });
         });
+        currentOrbitalGraphState = {
+            nodeByKey: Object.fromEntries(
+                data
+                    .filter(node => node.selectionKey)
+                    .map(node => [node.selectionKey, { x: node.value?.[0] || 0, y: node.value?.[1] || 0 }])
+            )
+        };
         myChart.setOption({ 
             backgroundColor: 'transparent', 
             tooltip: getTooltipFormatter(), 
@@ -9321,6 +10322,51 @@ ${rawText}`;
         };
     }
 
+    function getMarkedTrailLineStyle(baseLineStyle = {}) {
+        return {
+            ...baseLineStyle,
+            width: Math.max((baseLineStyle.width || 1) * 1.18, 2.2),
+            opacity: Math.max(baseLineStyle.opacity || 0, 0.42),
+            color: '#c98a4a',
+            shadowBlur: 6,
+            shadowColor: 'rgba(201, 138, 74, 0.18)'
+        };
+    }
+
+    function applyMarkedStylesToNetworkBaseLinks() {
+        if (!currentNetworkGraphState?.baseLinks?.length || !currentNetworkGraphState?.nodeKeyByName) return;
+        const markedKeys = getMarkedNodeKeySet(currentProject);
+        currentNetworkGraphState.baseLinks.forEach(link => {
+            const sourceKey = currentNetworkGraphState.nodeKeyByName[link.source];
+            const targetKey = currentNetworkGraphState.nodeKeyByName[link.target];
+            const touchesMarked = (sourceKey && markedKeys.has(sourceKey)) || (targetKey && markedKeys.has(targetKey));
+            const baseWidth = link.isTargetLine ? 5 : 1.25;
+            const nextBaseStyle = {
+                width: link.isTargetLine ? Math.max(link.lineStyle?.width || 0, 3.2) : (link.lineStyle?.width || baseWidth),
+                opacity: link.isTargetLine ? 0.92 : 0.6,
+                color: link.isTargetLine ? '#f97316' : '#cbd5e1'
+            };
+            link.lineStyle = touchesMarked ? getMarkedTrailLineStyle(nextBaseStyle) : nextBaseStyle;
+        });
+    }
+
+    function applyMarkedStylesToCitationBaseLinks() {
+        if (!currentCitationGraphState?.baseLinks?.length || !currentCitationGraphState?.nodeKeyByName) return;
+        const markedKeys = getMarkedNodeKeySet(currentProject);
+        currentCitationGraphState.baseLinks.forEach(link => {
+            const sourceKey = currentCitationGraphState.nodeKeyByName[link.source];
+            const targetKey = currentCitationGraphState.nodeKeyByName[link.target];
+            const touchesMarked = (sourceKey && markedKeys.has(sourceKey)) || (targetKey && markedKeys.has(targetKey));
+            const nextBaseStyle = {
+                width: 1.6,
+                opacity: 0.5,
+                color: '#94a3b8',
+                curveness: 0.08
+            };
+            link.lineStyle = touchesMarked ? getMarkedTrailLineStyle(nextBaseStyle) : nextBaseStyle;
+        });
+    }
+
     function setNetworkSelection(selectionKey) {
         currentNetworkSelectionKey = selectionKey;
         applyNetworkSelection();
@@ -9329,7 +10375,7 @@ ${rawText}`;
     function applyNetworkSelection() {
         if (!myChart || !currentNetworkGraphState) return;
 
-        const { baseNodes, baseLinks, adjacency, nodeNameByKey, recentImportHighlightKeys } = currentNetworkGraphState;
+        const { baseNodes, baseLinks, adjacency, nodeNameByKey, nodeKeyByName, recentImportHighlightKeys } = currentNetworkGraphState;
         const selectedNodeName = currentNetworkSelectionKey ? nodeNameByKey[currentNetworkSelectionKey] : null;
 
         if (!selectedNodeName) {
@@ -9345,6 +10391,12 @@ ${rawText}`;
 
         const firstDegree = new Set(adjacency[selectedNodeName] || []);
         const secondDegree = new Set();
+        const markedKeys = getMarkedNodeKeySet(currentProject);
+        const selectedNode = baseNodes.find(node => node.name === selectedNodeName);
+        const selectedAccentColor = selectedNode?.paperData?.isCenter
+            ? '#eab308'
+            : getPaperColor(selectedNode?.paperData);
+        const selectedLinkColor = hexToRgba(selectedAccentColor || '#6366f1', 0.78);
         firstDegree.forEach(nodeName => {
             (adjacency[nodeName] || []).forEach(neighborName => {
                 if (neighborName !== selectedNodeName && !firstDegree.has(neighborName)) {
@@ -9364,19 +10416,19 @@ ${rawText}`;
                     ...nextNode.itemStyle,
                     color: baseColor,
                     opacity: 1,
-                    borderColor: '#0f172a',
+                    borderColor: '#334155',
                     borderWidth: isRecentImport ? 3 : 2.5,
                     borderType: 'solid',
-                    shadowBlur: 24,
-                    shadowColor: hexToRgba(baseColor, 0.45)
+                    shadowBlur: 20,
+                    shadowColor: 'rgba(51, 65, 85, 0.18)'
                 };
             } else if (firstDegree.has(node.name)) {
                 nextNode.itemStyle = {
                     ...nextNode.itemStyle,
                     color: baseColor,
                     opacity: 1,
-                    shadowBlur: 14,
-                    shadowColor: hexToRgba(baseColor, 0.22)
+                    shadowBlur: 12,
+                    shadowColor: hexToRgba(baseColor, 0.16)
                 };
             } else if (secondDegree.has(node.name)) {
                 nextNode.itemStyle = {
@@ -9403,17 +10455,23 @@ ${rawText}`;
                 (firstDegree.has(link.target) && secondDegree.has(link.source));
 
             if (touchesSelected) {
+                const touchesTargetCenter = link.source === 'TARGET_CENTER' || link.target === 'TARGET_CENTER';
                 nextLink.lineStyle = {
                     ...nextLink.lineStyle,
-                    width: nextLink.lineStyle.width * 1.35,
-                    opacity: 0.95,
-                    color: '#0f172a'
+                    width: touchesTargetCenter ? 2.9 : Math.max((nextLink.lineStyle.width || 1) * 1.28, 3.0),
+                    opacity: touchesTargetCenter ? 0.88 : 0.84,
+                    color: touchesTargetCenter ? '#f97316' : selectedLinkColor,
+                    shadowBlur: touchesTargetCenter ? 10 : 8,
+                    shadowColor: touchesTargetCenter ? 'rgba(249, 115, 22, 0.24)' : hexToRgba(selectedAccentColor || '#6366f1', 0.22),
+                    curveness: touchesTargetCenter ? 0.08 : 0.04
                 };
+            } else if ((nodeKeyByName[link.source] && markedKeys.has(nodeKeyByName[link.source])) || (nodeKeyByName[link.target] && markedKeys.has(nodeKeyByName[link.target]))) {
+                nextLink.lineStyle = getMarkedTrailLineStyle(nextLink.lineStyle || {});
             } else if (connectsVisibleRing) {
                 nextLink.lineStyle = {
                     ...nextLink.lineStyle,
-                    opacity: 0.22,
-                    color: '#94a3b8'
+                    opacity: 0.16,
+                    color: '#a8b3c7'
                 };
             } else {
                 nextLink.lineStyle = {
@@ -9442,7 +10500,7 @@ ${rawText}`;
     function applyCitationSelection() {
         if (!myChart || !currentCitationGraphState) return;
 
-        const { baseNodes, baseLinks, incomingAdjacency, outgoingAdjacency, nodeNameByKey, baseMode, recentImportHighlightKeys } = currentCitationGraphState;
+        const { baseNodes, baseLinks, incomingAdjacency, outgoingAdjacency, nodeNameByKey, nodeKeyByName, baseMode, recentImportHighlightKeys } = currentCitationGraphState;
         const selectedNodeName = currentCitationSelectionKey ? nodeNameByKey[currentCitationSelectionKey] : null;
 
         if (!selectedNodeName) {
@@ -9460,6 +10518,7 @@ ${rawText}`;
         const incoming = new Set(incomingAdjacency[selectedNodeName] || []);
         const firstDegree = new Set([...outgoing, ...incoming]);
         const secondDegree = new Set();
+        const markedKeys = getMarkedNodeKeySet(currentProject);
 
         const visitSecondDegree = (nodeName) => {
             [...(outgoingAdjacency[nodeName] || []), ...(incomingAdjacency[nodeName] || [])].forEach(neighborName => {
@@ -9545,6 +10604,8 @@ ${rawText}`;
                     opacity: 0.95,
                     color: isOutgoing ? '#2563eb' : '#ef4444'
                 };
+            } else if ((nodeKeyByName[link.source] && markedKeys.has(nodeKeyByName[link.source])) || (nodeKeyByName[link.target] && markedKeys.has(nodeKeyByName[link.target]))) {
+                nextLink.lineStyle = getMarkedTrailLineStyle(nextLink.lineStyle || {});
             } else if (touchesFirstDegree) {
                 nextLink.lineStyle = {
                     ...nextLink.lineStyle,
@@ -9569,10 +10630,8 @@ ${rawText}`;
         });
     }
 
-   // 注意：这里的参数名变成了 inputPapers
     async function renderNetwork(inputPapers, recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject)) {
-        // --- 核心修改：暴力截取前 200 篇文章，保护浏览器性能 ---
-        const papers = inputPapers.slice(0, 200);
+        const papers = inputPapers.slice(0, currentChartRenderLimit);
 
         const loadingBox = document.getElementById('chart-loading'); 
         const loadingText = document.getElementById('loading-text'); 
@@ -9686,7 +10745,7 @@ ${rawText}`;
                     symbolSize: getLatestImportSymbolSize(size, p, recentImportHighlightKeys), 
                     itemStyle: getPaperNodeStyle(p, { color: color, opacity: 0.92, shadowBlur: 10, shadowColor: hexToRgba(color, 0.2) }, recentImportHighlightKeys), 
                     paperData: p,
-                    selectionKey: p.filename
+                    selectionKey: getStablePaperGraphKey(p)
                 }); 
             });
 
@@ -9698,9 +10757,9 @@ ${rawText}`;
                     weight: l.weight, 
                     isTargetLine: l.isTargetLine,
                     lineStyle: { 
-                        width: isNaN(thickness) ? (l.isTargetLine ? 5 : 1.25) : (l.isTargetLine ? thickness * 4 : thickness), 
-                        opacity: l.isTargetLine ? 1.0 : 0.6, 
-                        color: l.isTargetLine ? '#eab308' : '#cbd5e1' 
+                        width: isNaN(thickness) ? (l.isTargetLine ? 3.2 : 1.25) : (l.isTargetLine ? thickness * 2.35 : thickness), 
+                        opacity: l.isTargetLine ? 0.92 : 0.6, 
+                        color: l.isTargetLine ? '#f97316' : '#cbd5e1' 
                     } 
                 }; 
             });
@@ -9719,8 +10778,10 @@ ${rawText}`;
                 baseLinks: edgesData.map(cloneBaseLink),
                 adjacency,
                 recentImportHighlightKeys,
-                nodeNameByKey: Object.fromEntries(nodesData.map(node => [node.selectionKey, node.name]))
+                nodeNameByKey: Object.fromEntries(nodesData.map(node => [node.selectionKey, node.name])),
+                nodeKeyByName: Object.fromEntries(nodesData.map(node => [node.name, node.selectionKey]))
             };
+            applyMarkedStylesToNetworkBaseLinks();
 
             myChart.setOption({ 
                 tooltip: getTooltipFormatter(), 
@@ -9731,7 +10792,7 @@ ${rawText}`;
                     animationDurationUpdate: 250,
                     force: { repulsion: 250, edgeLength: 80, gravity: 0.1 }, 
                     data: nodesData, 
-                    links: edgesData 
+                    links: currentNetworkGraphState.baseLinks.map(cloneBaseLink) 
                 }] 
             });
             applyNetworkSelection();
@@ -9744,7 +10805,7 @@ ${rawText}`;
     }
 
     async function renderCitationGraph(inputPapers, recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject)) {
-        const papers = inputPapers.slice(0, 500).map(paper => {
+        const papers = inputPapers.slice(0, currentChartRenderLimit).map(paper => {
             normalizePaperState(paper);
             return paper;
         });
@@ -9869,8 +10930,10 @@ ${rawText}`;
                 recentImportHighlightKeys,
                 incomingAdjacency: Object.fromEntries(nodesData.map(node => [node.name, []])),
                 outgoingAdjacency: Object.fromEntries(nodesData.map(node => [node.name, []])),
-                nodeNameByKey: Object.fromEntries(nodesData.map(node => [node.selectionKey, node.name]))
+                nodeNameByKey: Object.fromEntries(nodesData.map(node => [node.selectionKey, node.name])),
+                nodeKeyByName: Object.fromEntries(nodesData.map(node => [node.name, node.selectionKey]))
             };
+            applyMarkedStylesToCitationBaseLinks();
             edgesData.forEach(link => {
                 currentCitationGraphState.outgoingAdjacency[link.source]?.push(link.target);
                 currentCitationGraphState.incomingAdjacency[link.target]?.push(link.source);
@@ -9885,7 +10948,7 @@ ${rawText}`;
                     animationDurationUpdate: 250,
                     force: { repulsion: 150, edgeLength: 110, gravity: 0.06 },
                     data: nodesData,
-                    links: edgesData,
+                    links: currentCitationGraphState.baseLinks.map(cloneBaseLink),
                     lineStyle: {
                         opacity: 0.5,
                         color: '#94a3b8'
@@ -9942,6 +11005,9 @@ ${rawText}`;
                 const recentImportNote = isRainbowRecentImport(d)
                     ? `<div style="font-size:12px; color:#f8fafc; margin-top:4px;">Recently imported: highlighted with the rainbow recent-import icon</div>`
                     : '';
+                const markedNodeNote = isMarkedPaper(d)
+                    ? `<div style="font-size:12px; color:#c4b5fd; margin-top:4px;">Marked node: saved as an exploration anchor</div>`
+                    : '';
                 return `<div style="max-width:300px; white-space:normal; line-height:1.5;">
                             <div style="font-weight:700; color:${statusMeta.color}; margin-bottom:4px;">${d.title}</div>
                             <div style="margin-bottom:4px;"><span class="status-badge" style="background:${hexToRgba(statusMeta.color, 0.14)}; color:${statusMeta.color};">${statusMeta.label}</span></div>
@@ -9951,6 +11017,7 @@ ${rawText}`;
                                 ? `<div style="font-weight:800; color:#38bdf8; margin-top:4px;">Citation Degree: ${escapeHtml(p.data.value ?? 0)}</div>`
                                 : `<div style="font-weight:800; color:#10b981; margin-top:4px;">Target Similarity: ${(d.similarity*100).toFixed(1)}%</div>`}
                             ${recentImportNote}
+                            ${markedNodeNote}
                         </div>`; 
             } 
         };
