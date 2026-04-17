@@ -1,205 +1,218 @@
 # StarMap System
 
-StarMap System 是一个面向学术研究场景的文献整理与分析网站，用来帮助用户从论文导入、相似度匹配、主题聚类、引用追踪到 BibTeX 导出，形成一套可视化的研究工作流。它特别适合论文选题、文献综述、研究脉络梳理，以及与 Zotero、Overleaf/LaTeX 配合使用的场景。
+StarMap System is a thesis-centered literature analysis workspace for academic research. It combines PDF import, similarity ranking, citation exploration, theme clustering, literature-watch workflows, Zotero sync, repository analytics, and BibTeX export in one interface.
 
-## 1. 系统定位
+The product is designed for users who do not just want to store papers, but want to actively shape a research repository around a live argument: define the target thesis, build a focused seed library, identify core papers, inspect citation structure, monitor new literature, and keep writing-ready references close at hand.
 
-这个网站的核心目标，是把“找文献、筛文献、读文献、组织文献、导出引用”这些分散步骤集中到一个界面中完成。
+## What StarMap Is For
 
-用户可以：
+StarMap works best when one project represents one research direction. A project stores the thesis title, target abstract, and current draft content, then uses that context to rank papers, explain match quality, support clustering, and guide watch recommendations.
 
-- 创建多个研究项目，分别维护不同课题的文献池
-- 导入本地 PDF，并自动抽取论文元数据与文本信息
-- 根据目标论文题目、摘要、关键词和当前研究内容，计算相关论文的匹配度
-- 通过可视化图谱观察文献分布、主题结构和引用关系
-- 同步 Zotero 文库，减少手动搬运文献的工作量
-- 生成标准 BibTeX，便于复制到 Overleaf 或其他 LaTeX 环境中使用
+Typical use cases include:
 
-## 2. 主要功能
+- thesis scoping and early-stage literature mapping
+- literature review building and maintenance
+- citation-structure inspection for a focused repository
+- Zotero-assisted paper curation
+- BibTeX preparation for Overleaf or other LaTeX workflows
+- monitoring newly published work around a target topic, scholar set, or journal set
 
-### 2.1 账号与项目管理
+## Core Workflow
 
-- 支持注册、登录与会话保持
-- 每个账号可以创建多个项目
-- 每个项目有独立的研究目标信息：
+1. Create a project and define the target thesis context.
+2. Import a focused seed library from local PDFs or Zotero.
+3. Curate `Top Related Papers` and assign statuses such as `Core`, `Pending`, `Underweight`, or `Unread`.
+4. Inspect the repository through `Workspace Atlas` in orbital, network, and citation views.
+5. Run `Auto Cluster Themes` as either `Semantic Cluster` or `Citation Cluster`.
+6. Audit library quality through `Repository Analytics`.
+7. Use `Project Literature Watch` to keep the frontier current.
+8. Export BibTeX and move selected papers into writing workflows.
+
+## Feature Overview
+
+### 1. Project-Based Research Workspace
+
+- user registration, login, session persistence, and multi-project management
+- per-project thesis framing with:
   - `Target Title`
   - `Target Abstract`
-  - `Target Keywords`
   - `Target Current Content`
+- project settings for background precompute, LLM theme naming, Zotero preload, and citation-count quality assist
 
-这些信息会作为后续论文匹配和推荐的参考基准。
+### 2. PDF Import, Metadata Extraction, and Rollback
 
-### 2.2 PDF 导入与回滚
+- drag-and-drop local PDF import
+- PDF parsing in the browser with PDF.js
+- metadata and text extraction for titles, abstracts, authors, year, and body content
+- retry handling for temporary LLM-assisted extraction failures
+- `Rollback Latest Import` support to undo the most recent import batch
 
-- 支持将本地 PDF 直接拖拽到工作区中
-- 系统会解析 PDF 内容，并尝试提取论文标题、摘要、作者、年份等信息
-- 导入完成后自动合并到当前项目的论文列表中
-- 支持 `Rollback Latest Import`，用于撤销最近一次导入，避免误操作造成污染
+### 3. Similarity Ranking and Match Explanations
 
-### 2.3 相关论文匹配
+- `Top Related Papers` acts as the main review queue
+- ranking uses the project target context together with paper metadata and extracted content
+- optional citation-count quality assist blends compressed citation signal from OpenAlex into similarity ranking
+- match explanation cards show weighted signal contributions such as title, abstract, current content, and citation support
 
-系统会根据以下信号综合计算论文与当前项目的匹配度：
+### 4. Paper Detail and Review Actions
 
-- 标题
-- 摘要
-- 当前研究内容
-- 引用数量辅助权重（可选）
+Each paper can open in a centered modal or a side drawer depending on the visualization flow. The paper view includes:
 
-每篇论文都会显示一个相似度分数，帮助用户快速判断其与当前研究主题的相关程度。
+- title, authors, year, venue, citation count, abstract, and notes
+- match explanations and weighted contribution breakdowns
+- reading status and project-level note-taking
+- direct actions such as:
+  - `Generate BibTeX`
+  - `Cited By`
+  - `References`
+  - `Read the Paper`
+  - `See Paper Info`
+  - `Mark Node`
 
-### 2.4 论文详情面板
+### 5. Workspace Atlas
 
-点击某篇论文后，可以查看更完整的信息，包括：
+`Workspace Atlas` is the main visualization layer of the system. It provides three coordinated views of the same repository:
 
-- 标题、作者、年份、引用数
-- 摘要
-- 匹配原因说明
-- 各个信号对最终得分的贡献占比
-- 阅读状态
-- 个人笔记
+- `Orbital (Uni-directional)` for broad orientation around the target
+- `Network (Bi-directional)` for neighborhood structure and paper-to-paper relationship inspection
+- `Citation Graph` for explicit citation flow
 
-在详情面板中，用户还可以直接执行以下操作：
+Additional visualization behavior in the current version includes:
 
-- `Sync to Zotero`
-- `Generate BibTeX`
-- `Cited By`
-- `References`
-- `Read the Paper`
-- `See Paper Info`
+- density controls for `Top 150`, `Top 300`, and `Top 500`
+- performance warnings for higher-density rendering
+- zoom controls with press-and-hold support
+- high-density gesture restrictions to reduce lag
+- marked-node highlighting for saved exploration anchors
 
-### 2.5 BibTeX 生成与引用键
+### 6. Theme Clusters
 
-系统支持自动生成 BibTeX，用于在 Overleaf 或 LaTeX 中直接使用。
+`Auto Cluster Themes` now lets the user choose which clustering mode to run instead of computing all modes at once.
 
-功能特点：
+- `Semantic Cluster` groups papers by topic similarity
+- `Citation Cluster` groups papers by citation topology inside the project citation graph
 
-- 自动生成 `citation_key`
-- 采用 `AuthorYearTitle` 格式
-- 会清洗特殊字符，避免 LaTeX 报错
-- 多作者在 BibTeX 的 `author` 字段中使用 `and` 连接，符合 BibTeX 标准
-- 同一账号跨项目时，会自动避免 `citation_key` 重名
+Current citation-cluster behavior includes:
 
-例如：
+- local citation topology maps for each selected cluster
+- in-cluster core-paper ranking based on citation indegree
+- hop-based local exploration modes
+- LLM naming and overview generation
+- `LLM Re-overview` for rerunning failed citation-cluster naming or overview attempts
 
-```bibtex
-@article{Zhang2024Large,
-  author = {San Zhang and Li Wei},
-  title = {The Large Language Models for Finance},
-  year = {2024},
-  journal = {Journal of Testing}
-}
+### 7. Project Literature Watch
+
+`Project Literature Watch` helps users track new literature without leaving the StarMap workflow. The current version supports three modes:
+
+- `Target Watch` for thesis-direction scanning
+- `Scholar Watch` for watched authors
+- `Journal Watch` for watched journals
+
+The watch workflow also supports:
+
+- configurable time windows
+- discipline scoping
+- journal-to-target weighting logic
+
+The current version adds a dedicated `Adjust Journal Weightings` flow for `Target Watch`, so journals saved in `Journal Watch` do not all contribute the same lift. Users can place watched journals into tiers such as `No lift`, `Standard lift`, and `Priority lift`.
+
+### 8. Zotero Integration
+
+StarMap integrates with Zotero for both repository building and repository maintenance.
+
+Supported workflows include:
+
+- checking Zotero connectivity
+- loading collection lists
+- previewing unmatched Zotero items
+- syncing StarMap papers to Zotero
+- fetching Zotero items into the current project
+- syncing Zotero PDF text into existing StarMap papers
+
+Runtime defaults can be read from `.env`, so users do not need to re-enter Zotero credentials in every session.
+
+### 9. OpenAlex-Powered Citation Enrichment
+
+StarMap uses OpenAlex to enrich repository metadata and citation structure. This supports:
+
+- paper lookup and metadata completion
+- citation count enrichment
+- `Cited By` and `References` expansion
+- full citation graph construction
+- citation-community detection used by `Citation Cluster`
+
+### 10. Repository Analytics
+
+`Repository Analytics` is the repository-readiness dashboard. It helps users decide whether the library is clean enough for ranking, clustering, and drafting.
+
+Current analytics include:
+
+- `Repository Health`
+- `Metadata Completeness`
+- venue, author, and year-level repository summaries
+
+The new metadata completeness view separates missing-data problems such as:
+
+- author missing
+- venue missing
+- year missing
+- multiple metadata fields missing
+
+### 11. BibTeX and Writing Support
+
+StarMap can generate project-ready BibTeX entries and supports citation-key cleaning for LaTeX workflows. It also includes literature-review assistance built from curated core papers and user notes, making it easier to turn repository structure into early writing scaffolds.
+
+## Architecture
+
+### Frontend
+
+- single-page web app
+- main UI defined in `frontend/index.html`
+- ECharts-based visualizations
+- PDF.js-based local PDF reading and parsing
+- lightweight client-side state for project interaction, visualization, clustering, and watch workflows
+
+### Backend
+
+- FastAPI application in `backend/main.py`
+- SQLite-backed storage for users, projects, sessions, papers, and settings
+- OpenAlex and Zotero integration endpoints
+- LLM proxy and cluster-overview support
+- citation-graph job endpoints for heavier repository graph work
+
+## Local Development
+
+The repository currently ships as a lightweight source tree without a packaged dependency manifest, so local setup is simple but manual.
+
+### Backend
+
+Install the Python dependencies you need for `backend/main.py`, then run:
+
+```bash
+python backend/main.py
 ```
 
-### 2.6 Zotero 集成
+The backend starts on:
 
-系统支持与 Zotero 协同工作，包括：
+- `http://127.0.0.1:8001`
 
-- 检测 Zotero API 是否可达
-- 预览 Zotero 文库内容
-- 将当前项目中的论文同步到 Zotero
-- 从 Zotero 中拉取尚未匹配到当前项目的论文
-- 同步 Zotero 附件 PDF 内容，用于提升文本相似度计算效果
+### Frontend
 
-如果用户已登录，系统可以通过后端读取 `.env` 中配置的 Zotero 凭证，而不要求用户每次在前端重新输入。
+Serve the `frontend` directory with any static file server. For example:
 
-### 2.7 OpenAlex 学术数据支持
+```bash
+python -m http.server 8000 --directory frontend
+```
 
-系统会结合 OpenAlex 获取和补全学术元数据，例如：
+Then open:
 
-- 论文标题
-- 作者
-- 出版年份
-- DOI
-- 期刊或会议名称
-- 引用数
-- 被引论文列表
-- 参考文献列表
+- `http://127.0.0.1:8000`
 
-这使得用户不仅能管理本地导入的 PDF，也能围绕论文进一步展开引用网络探索。
+The frontend automatically probes common local API origins and will try the backend on port `8001`.
 
-### 2.8 LLM 能力支持
+## Configuration
 
-系统可以接入外部大模型 API，用于增强检索与表达能力。当前设计支持通过后端代理访问大模型服务，并通过 `.env` 管理密钥。
-
-LLM 相关用途包括：
-
-- 语义增强搜索
-- 主题聚类命名优化
-- 某些元数据补全与文本处理任务
-
-如果未启用相关开关，系统仍可使用本地规则与传统检索逻辑运行。
-
-### 2.9 项目级设置开关
-
-每个项目都可以单独配置以下开关：
-
-- `Use LLM-assisted search`
-  - 用于增强搜索和长列表筛选
-- `Enable Background Precompute`
-  - 在进入项目时预加载部分结果，换取后续更流畅的交互体验
-- `Use LLM Theme Naming`
-  - 用更清晰的自然语言为主题聚类命名
-- `Use citation-count quality assist`
-  - 在相似度排序中引入压缩后的引用数量权重
-
-其中，`Background Precompute` 开启时，页面顶部会显示预加载提示，说明正在预计算哪些内容、预计耗时，以及可能带来的暂时卡顿。
-
-### 2.10 文献可视化
-
-系统提供多种图谱模式来帮助用户理解文献结构：
-
-- `Orbital (Uni-directional)`
-  - 以中心论文为核心，观察相关论文的分层分布
-- `Network (Bi-directional)`
-  - 展示论文之间更丰富的关系网络
-- `Citation Graph`
-  - 聚焦论文间的引用关系
-
-此外，还支持：
-
-- `Paper Status Overview`
-- `Auto Cluster Themes`
-- `Sync Zotero`
-- `View Repository`
-
-这些功能共同构成一个围绕研究问题展开的“文献地图”。
-
-### 2.11 文献综述草稿辅助
-
-系统支持基于核心论文和用户笔记生成 `Literature Review Draft`，帮助用户更快整理研究思路。这个功能更像是一个写作辅助入口，适合在完成初步筛选后，用于生成结构化综述草稿。
-
-## 3. 典型使用流程
-
-一个常见的使用流程如下：
-
-1. 注册并登录账号
-2. 创建一个新的研究项目
-3. 填写目标题目、摘要、关键词与当前研究内容
-4. 导入本地 PDF，或从 Zotero 拉取相关论文
-5. 查看系统生成的相关论文列表与相似度分数
-6. 在详情面板中阅读摘要、记录笔记、调整状态
-7. 使用 `Cited By` 和 `References` 扩展文献池
-8. 使用可视化图谱观察主题和引用结构
-9. 为目标论文生成 BibTeX 并复制到 Overleaf / LaTeX
-
-## 4. 技术与配置说明
-
-### 4.1 前端
-
-- 单页网页应用
-- 主要界面定义在 `frontend/index.html`
-- 使用 ECharts 实现图谱可视化
-- 使用 PDF.js 处理 PDF 阅读与解析相关能力
-
-### 4.2 后端
-
-- 使用 FastAPI 提供 API
-- 主要逻辑位于 `backend/main.py`
-- 使用 SQLite 保存用户、项目、会话和设置
-
-### 4.3 配置方式
-
-系统支持通过项目根目录的 `.env` 管理运行配置，常见变量包括：
+Runtime configuration is read from the project-level `.env` file. Common variables include:
 
 - `STARMAP_LLM_PROVIDER`
 - `STARMAP_LLM_API_KEY`
@@ -209,19 +222,19 @@ LLM 相关用途包括：
 - `STARMAP_ZOTERO_API_KEY`
 - `STARMAP_ZOTERO_COLLECTION_KEY`
 
-这类配置主要由后端读取，避免浏览器直接接触敏感密钥。
+The backend reads these values so API keys do not need to be exposed directly in the browser.
 
-## 5. 适用场景
+## Recommended Usage Pattern
 
-这个网站尤其适合以下场景：
+StarMap is most effective when the repository stays selective. A good default pattern is:
 
-- 论文开题前的文献摸底
-- 系统性整理某一研究主题的核心论文
-- 跟踪一篇论文的引用与被引脉络
-- 将 Zotero 文库与研究项目联动
-- 为 Overleaf 写作准备 BibTeX
-- 生成和维护文献综述草稿
+1. define the target clearly
+2. import a focused seed set
+3. curate `Top Related Papers`
+4. identify `Core` papers
+5. inspect the library in `Workspace Atlas`
+6. run `Semantic Cluster` or `Citation Cluster` when structure matters
+7. audit metadata quality in `Repository Analytics`
+8. keep the frontier current with `Project Literature Watch`
 
-## 6. 总结
-
-StarMap System 本质上是一个“研究项目驱动”的文献管理与分析平台。它不是单纯的 PDF 阅读器，也不是单纯的文献库，而是把文献导入、相关性分析、引用追踪、可视化探索、Zotero 协同和 BibTeX 导出整合到同一个研究工作流中，帮助用户更系统地组织学术材料并推进写作。
+This leads to a cleaner and more thesis-relevant repository than bulk-importing first and trying to clean it later.
