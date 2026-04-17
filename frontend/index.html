@@ -1440,7 +1440,7 @@
                 <div class="search-toggle-copy">
                     <div style="font-weight:800; color:var(--primary); margin-bottom:4px;">Enable Background Precompute</div>
                     <div class="search-helper-note">
-                        Preloads Theme Clusters as soon as you open the project. Recommended ON for higher-performance devices, OFF when conserving battery.
+                        Preloads semantic theme-cluster seeds when you open the project so the cluster modal can start faster later. Recommended ON for higher-performance devices, OFF when conserving battery.
                     </div>
                 </div>
                 <label class="switch" aria-label="Toggle background precompute">
@@ -1916,6 +1916,7 @@
     let similarityRecalcProjectId = null;
     let currentThemeClusterResult = null;
     let currentThemeClusterSeedResult = null;
+    let currentCitationClusterResult = null;
     const CITATION_WEIGHT_TIERS = {
         low: 0.10,
         medium: 0.12,
@@ -2421,6 +2422,65 @@
             changed = true;
         }
 
+        if (paper.citation_cluster_id == null) {
+            paper.citation_cluster_id = '';
+            changed = true;
+        }
+        if (paper.citation_cluster_theme_name == null) {
+            paper.citation_cluster_theme_name = '';
+            changed = true;
+        }
+        if (paper.citation_cluster_theme_summary == null) {
+            paper.citation_cluster_theme_summary = '';
+            changed = true;
+        }
+        if (paper.citation_cluster_llm_overview_status == null) {
+            paper.citation_cluster_llm_overview_status = '';
+            changed = true;
+        }
+        const parsedCitationClusterIndegree = paper.citation_cluster_indegree == null || paper.citation_cluster_indegree === ''
+            ? null
+            : Number(paper.citation_cluster_indegree);
+        if ((parsedCitationClusterIndegree == null || Number.isNaN(parsedCitationClusterIndegree)) && paper.citation_cluster_indegree !== null) {
+            paper.citation_cluster_indegree = null;
+            changed = true;
+        } else if (parsedCitationClusterIndegree != null && !Number.isNaN(parsedCitationClusterIndegree) && paper.citation_cluster_indegree !== parsedCitationClusterIndegree) {
+            paper.citation_cluster_indegree = parsedCitationClusterIndegree;
+            changed = true;
+        }
+        const parsedCitationClusterCoreRank = paper.citation_cluster_core_rank == null || paper.citation_cluster_core_rank === ''
+            ? null
+            : Number(paper.citation_cluster_core_rank);
+        if ((parsedCitationClusterCoreRank == null || Number.isNaN(parsedCitationClusterCoreRank)) && paper.citation_cluster_core_rank !== null) {
+            paper.citation_cluster_core_rank = null;
+            changed = true;
+        } else if (parsedCitationClusterCoreRank != null && !Number.isNaN(parsedCitationClusterCoreRank) && paper.citation_cluster_core_rank !== parsedCitationClusterCoreRank) {
+            paper.citation_cluster_core_rank = parsedCitationClusterCoreRank;
+            changed = true;
+        }
+        if (typeof paper.citation_cluster_is_core !== 'boolean') {
+            paper.citation_cluster_is_core = !!paper.citation_cluster_is_core;
+            changed = true;
+        }
+        const parsedCitationClusterSize = paper.citation_cluster_size == null || paper.citation_cluster_size === ''
+            ? null
+            : Number(paper.citation_cluster_size);
+        if ((parsedCitationClusterSize == null || Number.isNaN(parsedCitationClusterSize)) && paper.citation_cluster_size !== null) {
+            paper.citation_cluster_size = null;
+            changed = true;
+        } else if (parsedCitationClusterSize != null && !Number.isNaN(parsedCitationClusterSize) && paper.citation_cluster_size !== parsedCitationClusterSize) {
+            paper.citation_cluster_size = parsedCitationClusterSize;
+            changed = true;
+        }
+        if (paper.citation_cluster_graph_signature == null) {
+            paper.citation_cluster_graph_signature = '';
+            changed = true;
+        }
+        if (paper.citation_cluster_version == null) {
+            paper.citation_cluster_version = '';
+            changed = true;
+        }
+
         return changed;
     }
 
@@ -2480,6 +2540,17 @@
         }
     }
 
+    function invalidateCitationClusterResult(projectId = currentProject?.id) {
+        if (currentCitationClusterResult && (!projectId || currentCitationClusterResult.projectId === Number(projectId))) {
+            currentCitationClusterResult = null;
+        }
+    }
+
+    function invalidateClusterResults(projectId = currentProject?.id, reason = 'new imports') {
+        invalidateThemeClusterResult(projectId, reason);
+        invalidateCitationClusterResult(projectId);
+    }
+
     function markThemeClusterCacheReady(ready, reason = '') {
         themeClusterCacheStatus = { ready: !!ready, reason: String(reason || '') };
     }
@@ -2500,6 +2571,9 @@
     const THEME_CLUSTER_ATTEMPTS = 2;
     const THEME_CLUSTER_MAX_DISPLAY_PAPERS = 10;
     const THEME_CLUSTER_MIN_SIZE = 4;
+    const CITATION_CLUSTER_ALGORITHM_VERSION = 'v1';
+    const CITATION_CLUSTER_CORE_PAPER_LIMIT = 5;
+    const CITATION_CLUSTER_MAX_MODAL_CLUSTERS = 5;
 
     function getAllAnalyzableClusterPapers(project = currentProject) {
         if (!project?.top_papers?.length) return [];
@@ -2639,6 +2713,607 @@ Summary rules:
                 usedLlmThemeNaming: false
             };
         }
+    }
+
+    function hashCitationClusterSignature(source) {
+        let hash = 2166136261;
+        const text = String(source || '');
+        for (let i = 0; i < text.length; i += 1) {
+            hash ^= text.charCodeAt(i);
+            hash = Math.imul(hash, 16777619);
+        }
+        return (hash >>> 0).toString(16);
+    }
+
+    function buildCitationClusterGraphSignature(papers = [], edges = []) {
+        const nodeKeys = (papers || [])
+            .map(getStablePaperGraphKey)
+            .filter(Boolean)
+            .sort();
+        const edgeKeys = (edges || [])
+            .map(edge => `${String(edge?.source || '').trim()}->${String(edge?.target || '').trim()}`)
+            .filter(Boolean)
+            .sort();
+        return `${CITATION_CLUSTER_ALGORITHM_VERSION}:${hashCitationClusterSignature(`${nodeKeys.join('|')}::${edgeKeys.join('|')}`)}`;
+    }
+
+    function buildCitationTopologyGraph(papers = [], edges = []) {
+        const paperByKey = new Map();
+        const nodeIds = [];
+        (papers || []).forEach(paper => {
+            const key = getStablePaperGraphKey(paper);
+            if (!key || paperByKey.has(key)) return;
+            paperByKey.set(key, paper);
+            nodeIds.push(key);
+        });
+        const nodeSet = new Set(nodeIds);
+        const adjacency = new Map(nodeIds.map(id => [id, new Map()]));
+        const indegreeByKey = Object.fromEntries(nodeIds.map(id => [id, 0]));
+        const degreeByKey = Object.fromEntries(nodeIds.map(id => [id, 0]));
+
+        (edges || []).forEach(edge => {
+            const source = String(edge?.source || '').trim();
+            const target = String(edge?.target || '').trim();
+            if (!source || !target || source === target) return;
+            if (!nodeSet.has(source) || !nodeSet.has(target)) return;
+            indegreeByKey[target] = (indegreeByKey[target] || 0) + 1;
+            const sourceAdj = adjacency.get(source);
+            const targetAdj = adjacency.get(target);
+            sourceAdj.set(target, (sourceAdj.get(target) || 0) + 1);
+            targetAdj.set(source, (targetAdj.get(source) || 0) + 1);
+        });
+
+        nodeIds.forEach(nodeId => {
+            degreeByKey[nodeId] = [...(adjacency.get(nodeId)?.values() || [])].reduce((sum, value) => sum + value, 0);
+        });
+
+        return { nodeIds, paperByKey, adjacency, indegreeByKey, degreeByKey };
+    }
+
+    function computeCitationWeakComponents(nodeIds = [], adjacency = new Map()) {
+        const visited = new Set();
+        const components = [];
+        nodeIds.forEach(nodeId => {
+            if (visited.has(nodeId)) return;
+            const stack = [nodeId];
+            const component = [];
+            visited.add(nodeId);
+            while (stack.length) {
+                const current = stack.pop();
+                component.push(current);
+                for (const neighbor of adjacency.get(current)?.keys() || []) {
+                    if (visited.has(neighbor)) continue;
+                    visited.add(neighbor);
+                    stack.push(neighbor);
+                }
+            }
+            components.push(component);
+        });
+        return components;
+    }
+
+    function detectCitationCommunitiesLouvain(componentNodeIds = [], adjacency = new Map()) {
+        if (componentNodeIds.length <= 1) return [componentNodeIds.slice()];
+        const componentSet = new Set(componentNodeIds);
+        const degreeByNode = Object.fromEntries(componentNodeIds.map(nodeId => [
+            nodeId,
+            [...(adjacency.get(nodeId)?.entries() || [])]
+                .filter(([neighbor]) => componentSet.has(neighbor))
+                .reduce((sum, [, weight]) => sum + Number(weight || 0), 0)
+        ]));
+        const totalWeightTwice = componentNodeIds.reduce((sum, nodeId) => sum + (degreeByNode[nodeId] || 0), 0);
+        if (totalWeightTwice <= 0) return componentNodeIds.map(nodeId => [nodeId]);
+
+        const communityByNode = new Map(componentNodeIds.map(nodeId => [nodeId, nodeId]));
+        const communityWeight = new Map(componentNodeIds.map(nodeId => [nodeId, degreeByNode[nodeId] || 0]));
+        const orderedNodes = componentNodeIds
+            .slice()
+            .sort((a, b) => (degreeByNode[b] || 0) - (degreeByNode[a] || 0) || String(a).localeCompare(String(b)));
+
+        let moved = true;
+        let guard = 0;
+        while (moved && guard < 25) {
+            guard += 1;
+            moved = false;
+            for (const nodeId of orderedNodes) {
+                const nodeDegree = degreeByNode[nodeId] || 0;
+                const currentCommunity = communityByNode.get(nodeId);
+                const weightsToCommunity = new Map();
+                for (const [neighborId, weight] of adjacency.get(nodeId)?.entries() || []) {
+                    if (!componentSet.has(neighborId)) continue;
+                    const neighborCommunity = communityByNode.get(neighborId);
+                    weightsToCommunity.set(neighborCommunity, (weightsToCommunity.get(neighborCommunity) || 0) + Number(weight || 0));
+                }
+
+                communityWeight.set(currentCommunity, (communityWeight.get(currentCommunity) || 0) - nodeDegree);
+                let bestCommunity = currentCommunity;
+                let bestGain = 0;
+
+                for (const [candidateCommunity, internalWeight] of weightsToCommunity.entries()) {
+                    const gain = internalWeight - ((nodeDegree * (communityWeight.get(candidateCommunity) || 0)) / totalWeightTwice);
+                    if (gain > bestGain + 1e-9) {
+                        bestGain = gain;
+                        bestCommunity = candidateCommunity;
+                    }
+                }
+
+                communityByNode.set(nodeId, bestCommunity);
+                communityWeight.set(bestCommunity, (communityWeight.get(bestCommunity) || 0) + nodeDegree);
+                if (bestCommunity !== currentCommunity) moved = true;
+            }
+        }
+
+        const grouped = new Map();
+        componentNodeIds.forEach(nodeId => {
+            const community = communityByNode.get(nodeId);
+            if (!grouped.has(community)) grouped.set(community, []);
+            grouped.get(community).push(nodeId);
+        });
+
+        const clusters = [...grouped.values()].filter(group => group.length);
+        if (clusters.length <= 1) return clusters;
+
+        const nodeToCluster = new Map();
+        clusters.forEach((cluster, clusterIndex) => {
+            cluster.forEach(nodeId => nodeToCluster.set(nodeId, clusterIndex));
+        });
+
+        const minimumStableClusterSize = componentNodeIds.length >= 6 ? 2 : 1;
+        clusters.forEach(cluster => {
+            if (cluster.length >= minimumStableClusterSize) return;
+            cluster.slice().forEach(nodeId => {
+                const candidateWeights = new Map();
+                for (const [neighborId, weight] of adjacency.get(nodeId)?.entries() || []) {
+                    if (!componentSet.has(neighborId)) continue;
+                    const candidateClusterIndex = nodeToCluster.get(neighborId);
+                    if (candidateClusterIndex == null || clusters[candidateClusterIndex] === cluster) continue;
+                    candidateWeights.set(candidateClusterIndex, (candidateWeights.get(candidateClusterIndex) || 0) + Number(weight || 0));
+                }
+                const bestTarget = [...candidateWeights.entries()]
+                    .sort((a, b) => b[1] - a[1])[0]?.[0];
+                if (bestTarget == null) return;
+                clusters[bestTarget].push(nodeId);
+                const selfIndex = nodeToCluster.get(nodeId);
+                clusters[selfIndex] = clusters[selfIndex].filter(item => item !== nodeId);
+                nodeToCluster.set(nodeId, bestTarget);
+            });
+        });
+
+        return clusters.filter(cluster => cluster.length);
+    }
+
+    function buildCitationTopologyClusters(papers = [], edges = [], representativeLimit = CITATION_CLUSTER_CORE_PAPER_LIMIT) {
+        const { nodeIds, paperByKey, adjacency, indegreeByKey, degreeByKey } = buildCitationTopologyGraph(papers, edges);
+        const weakComponents = computeCitationWeakComponents(nodeIds, adjacency);
+        const rawClusters = weakComponents.flatMap(componentNodeIds => {
+            if (componentNodeIds.length <= 3) return [componentNodeIds.slice()];
+            return detectCitationCommunitiesLouvain(componentNodeIds, adjacency);
+        });
+
+        const clusterRecords = rawClusters.map(nodeKeys => {
+            const rankedPapers = nodeKeys
+                .map(nodeKey => paperByKey.get(nodeKey))
+                .filter(Boolean)
+                .sort((a, b) => {
+                    const indegreeDiff = (indegreeByKey[getStablePaperGraphKey(b)] || 0) - (indegreeByKey[getStablePaperGraphKey(a)] || 0);
+                    if (indegreeDiff !== 0) return indegreeDiff;
+                    const degreeDiff = (degreeByKey[getStablePaperGraphKey(b)] || 0) - (degreeByKey[getStablePaperGraphKey(a)] || 0);
+                    if (degreeDiff !== 0) return degreeDiff;
+                    return Number(b?.similarity || 0) - Number(a?.similarity || 0);
+                });
+            return {
+                nodeKeys,
+                size: nodeKeys.length,
+                totalIndegree: nodeKeys.reduce((sum, nodeKey) => sum + (indegreeByKey[nodeKey] || 0), 0),
+                papers: rankedPapers,
+                representativePapers: rankedPapers.slice(0, Math.max(1, representativeLimit))
+            };
+        }).sort((a, b) => b.size - a.size || b.totalIndegree - a.totalIndegree);
+
+        clusterRecords.forEach((cluster, index) => {
+            cluster.id = `CC${index + 1}`;
+            cluster.label = `Citation Cluster ${index + 1}`;
+            cluster.summary = `${cluster.size} paper(s) grouped by dense citation connectivity.`;
+        });
+
+        return {
+            clusters: clusterRecords,
+            indegreeByKey,
+            degreeByKey
+        };
+    }
+
+    function buildCitationEdgesFromProjectPapers(projectPapers = []) {
+        const papers = (projectPapers || []).filter(Boolean);
+        const openAlexIdToKey = new Map();
+        papers.forEach(paper => {
+            const nodeKey = getStablePaperGraphKey(paper);
+            const openAlexId = String(paper?.openalex_id || '').trim();
+            if (!nodeKey || !openAlexId || openAlexIdToKey.has(openAlexId)) return;
+            openAlexIdToKey.set(openAlexId, nodeKey);
+        });
+
+        const seen = new Set();
+        const edges = [];
+        papers.forEach(paper => {
+            const sourceKey = getStablePaperGraphKey(paper);
+            if (!sourceKey) return;
+            const references = Array.isArray(paper?.referenced_openalex_ids) ? paper.referenced_openalex_ids : [];
+            references.forEach(referenceId => {
+                const targetKey = openAlexIdToKey.get(String(referenceId || '').trim());
+                if (!targetKey || targetKey === sourceKey) return;
+                const edgeKey = `${sourceKey}->${targetKey}`;
+                if (seen.has(edgeKey)) return;
+                seen.add(edgeKey);
+                edges.push({ source: sourceKey, target: targetKey });
+            });
+        });
+        return edges;
+    }
+
+    function isFallbackCitationClusterLabel(label = '', clusterId = '') {
+        const normalized = String(label || '').trim();
+        return !normalized
+            || /^Citation Cluster\s+\d+$/i.test(normalized)
+            || (clusterId && normalized.toLowerCase() === String(clusterId).trim().toLowerCase());
+    }
+
+    function isFallbackCitationClusterSummary(summary = '') {
+        const normalized = String(summary || '').trim();
+        return !normalized
+            || /dense citation connectivity/i.test(normalized)
+            || /^citation-defined community\.?$/i.test(normalized);
+    }
+
+    function isUsableCitationClusterOverview(label = '', summary = '', clusterId = '') {
+        return !isFallbackCitationClusterLabel(label, clusterId) && !isFallbackCitationClusterSummary(summary);
+    }
+
+    function inferCitationClusterOverviewStatus(cluster) {
+        const explicitStatus = String(cluster?.llmOverviewStatus || '').trim();
+        if (explicitStatus) return explicitStatus;
+        return isUsableCitationClusterOverview(cluster?.label, cluster?.summary, cluster?.id) ? 'success' : 'failed';
+    }
+
+    async function applyLlmCitationClusterNaming(clusterResult, project = currentProject) {
+        if (!clusterResult?.clusters?.length) {
+            return {
+                ...clusterResult,
+                llmOverviewStatus: 'skipped'
+            };
+        }
+        if (!appSettings?.llm_api_key) {
+            return {
+                ...clusterResult,
+                llmOverviewStatus: 'missing-key',
+                clusters: clusterResult.clusters.map(cluster => ({
+                    ...cluster,
+                    llmOverviewStatus: 'missing-key'
+                }))
+            };
+        }
+
+        const prompt = `You are writing theme names and cluster overviews for citation-network communities discovered purely from citation topology.
+Do not use generic labels like "Cluster 1".
+For each community, read the core paper abstracts and infer what substantive literature theme they collectively represent.
+
+Project context:
+- Title: ${project?.target_title || ''}
+- Abstract: ${project?.target_abstract || ''}
+
+Citation communities:
+${JSON.stringify(clusterResult.clusters.map(cluster => ({
+    id: cluster.id,
+    size: cluster.size,
+    core_papers: cluster.representativePapers.map((paper, index) => ({
+        rank: index + 1,
+        title: paper.title || '',
+        abstract: String(paper.abstract || '').slice(0, 900),
+        year: paper.year || '',
+        venue: paper.publication_venue || '',
+        indegree: Number(
+            clusterResult?.indegreeByKey?.[getStablePaperGraphKey(paper)]
+            ?? paper?.citation_cluster_indegree
+            ?? 0
+        )
+    }))
+})))}
+
+Return ONLY valid JSON with this exact schema:
+{"clusters":[{"id":"CC1","label":"Readable theme name","overview":"2-3 sentence overview of the literature represented by this community."}]}
+
+Rules:
+- The label should be a clear literature-review topic phrase.
+- Keep it concise, normally 4 to 10 words.
+- The overview should explain what these papers are about in plain academic English.
+- The overview should describe the actual literature content, common research question, and core mechanism or empirical focus when visible.
+- Do not mention citation topology, graph structure, or community detection in the label or overview.
+- Do not mention citation topology in the label.`;
+
+        try {
+            const result = await callConfiguredJsonLLM(prompt);
+            const renameMap = new Map((Array.isArray(result?.clusters) ? result.clusters : []).map(item => [String(item?.id || '').trim(), item]));
+            const namedClusters = clusterResult.clusters.map(cluster => {
+                const next = renameMap.get(cluster.id);
+                const nextLabel = String(next?.label || '').trim();
+                const nextSummary = String(next?.overview || next?.summary || '').trim();
+                const label = nextLabel || cluster.label;
+                const summary = nextSummary || cluster.summary;
+                const llmOverviewStatus = isUsableCitationClusterOverview(label, summary, cluster.id) ? 'success' : 'failed';
+                return {
+                    ...cluster,
+                    label,
+                    summary,
+                    llmOverviewStatus
+                };
+            });
+            return {
+                ...clusterResult,
+                llmOverviewStatus: namedClusters.every(cluster => cluster.llmOverviewStatus === 'success') ? 'success' : 'partial',
+                clusters: namedClusters
+            };
+        } catch (error) {
+            console.warn('Citation cluster LLM naming failed, using fallback labels instead.', error);
+            return {
+                ...clusterResult,
+                llmOverviewStatus: 'failed',
+                clusters: clusterResult.clusters.map(cluster => ({
+                    ...cluster,
+                    llmOverviewStatus: 'failed'
+                }))
+            };
+        }
+    }
+
+    function hasPersistedCitationClusterAssignments(papers = [], graphSignature = '') {
+        const keyedPapers = (papers || []).filter(paper => getStablePaperGraphKey(paper));
+        if (!keyedPapers.length || !graphSignature) return false;
+        return keyedPapers.every(paper =>
+            String(paper.citation_cluster_graph_signature || '') === graphSignature
+            && String(paper.citation_cluster_version || '') === CITATION_CLUSTER_ALGORITHM_VERSION
+            && String(paper.citation_cluster_id || '').trim()
+            && String(paper.citation_cluster_theme_name || '').trim()
+        );
+    }
+
+    function writeCitationClusterMetadataToPapers(projectPapers = [], clusterResult, graphSignature = '') {
+        if (!Array.isArray(projectPapers)) return false;
+        const metadataByKey = new Map();
+        (clusterResult?.clusters || []).forEach(cluster => {
+            cluster.papers.forEach((paper, index) => {
+                const nodeKey = getStablePaperGraphKey(paper);
+                if (!nodeKey) return;
+                metadataByKey.set(nodeKey, {
+                    citation_cluster_id: cluster.id,
+                    citation_cluster_theme_name: cluster.label,
+                    citation_cluster_theme_summary: cluster.summary,
+                    citation_cluster_llm_overview_status: String(cluster.llmOverviewStatus || '').trim(),
+                    citation_cluster_indegree: Number(clusterResult.indegreeByKey[nodeKey] || 0),
+                    citation_cluster_core_rank: index < cluster.representativePapers.length ? index + 1 : null,
+                    citation_cluster_is_core: index < cluster.representativePapers.length,
+                    citation_cluster_size: cluster.size,
+                    citation_cluster_graph_signature: graphSignature,
+                    citation_cluster_version: CITATION_CLUSTER_ALGORITHM_VERSION
+                });
+            });
+        });
+
+        let changed = false;
+        projectPapers.forEach(paper => {
+            const nodeKey = getStablePaperGraphKey(paper);
+            const next = nodeKey ? metadataByKey.get(nodeKey) : null;
+            const nextValues = next || {
+                citation_cluster_id: '',
+                citation_cluster_theme_name: '',
+                citation_cluster_theme_summary: '',
+                citation_cluster_llm_overview_status: '',
+                citation_cluster_indegree: null,
+                citation_cluster_core_rank: null,
+                citation_cluster_is_core: false,
+                citation_cluster_size: null,
+                citation_cluster_graph_signature: graphSignature || '',
+                citation_cluster_version: CITATION_CLUSTER_ALGORITHM_VERSION
+            };
+            Object.entries(nextValues).forEach(([field, value]) => {
+                if (paper[field] !== value) {
+                    paper[field] = value;
+                    changed = true;
+                }
+            });
+        });
+        return changed;
+    }
+
+    async function ensureCitationTopologyClusters(projectPapers = [], edges = []) {
+        const graphSignature = buildCitationClusterGraphSignature(projectPapers, edges);
+        if (hasPersistedCitationClusterAssignments(projectPapers, graphSignature)) {
+            return { changed: false, graphSignature };
+        }
+        const clusterResult = buildCitationTopologyClusters(projectPapers, edges, CITATION_CLUSTER_CORE_PAPER_LIMIT);
+        const namedClusterResult = await applyLlmCitationClusterNaming(clusterResult, currentProject);
+        const changed = writeCitationClusterMetadataToPapers(projectPapers, namedClusterResult, graphSignature);
+        return {
+            changed,
+            graphSignature,
+            clusterResult: namedClusterResult
+        };
+    }
+
+    function getCitationClusterPersistedSignature(project = currentProject) {
+        const keyedPapers = (project?.top_papers || []).filter(paper => getStablePaperGraphKey(paper));
+        if (!keyedPapers.length) return '';
+        const signatures = [...new Set(keyedPapers.map(paper => String(paper.citation_cluster_graph_signature || '').trim()).filter(Boolean))];
+        const versions = [...new Set(keyedPapers.map(paper => String(paper.citation_cluster_version || '').trim()).filter(Boolean))];
+        if (signatures.length !== 1 || versions.length !== 1 || versions[0] !== CITATION_CLUSTER_ALGORITHM_VERSION) return '';
+        return signatures[0];
+    }
+
+    function buildCitationClusterModalResult(project = currentProject) {
+        if (!project?.id || !project?.top_papers?.length) return null;
+        const graphSignature = getCitationClusterPersistedSignature(project);
+        if (!graphSignature) return null;
+        const keyedPapers = project.top_papers.filter(paper => getStablePaperGraphKey(paper));
+        if (!keyedPapers.length) return null;
+        const invalidPaper = keyedPapers.find(paper => !String(paper.citation_cluster_id || '').trim() || !String(paper.citation_cluster_theme_name || '').trim());
+        if (invalidPaper) return null;
+
+        const grouped = new Map();
+        keyedPapers.forEach(paper => {
+            const clusterId = String(paper.citation_cluster_id || '').trim();
+            if (!clusterId) return;
+            if (!grouped.has(clusterId)) {
+                grouped.set(clusterId, {
+                    id: clusterId,
+                    label: String(paper.citation_cluster_theme_name || '').trim() || clusterId,
+                    summary: String(paper.citation_cluster_theme_summary || '').trim() || 'Citation-defined community.',
+                    llmOverviewStatus: String(paper.citation_cluster_llm_overview_status || '').trim(),
+                    size: Number(paper.citation_cluster_size || 0) || 0,
+                    papers: []
+                });
+            }
+            grouped.get(clusterId).papers.push(paper);
+        });
+
+        const allClusters = [...grouped.values()].map(cluster => {
+            const rankedPapers = [...cluster.papers].sort((a, b) => {
+                const indegreeDiff = Number(b.citation_cluster_indegree || 0) - Number(a.citation_cluster_indegree || 0);
+                if (indegreeDiff !== 0) return indegreeDiff;
+                const coreRankA = Number.isFinite(Number(a.citation_cluster_core_rank)) ? Number(a.citation_cluster_core_rank) : Infinity;
+                const coreRankB = Number.isFinite(Number(b.citation_cluster_core_rank)) ? Number(b.citation_cluster_core_rank) : Infinity;
+                if (coreRankA !== coreRankB) return coreRankA - coreRankB;
+                return Number(b.similarity || 0) - Number(a.similarity || 0);
+            });
+            const representativePapers = rankedPapers
+                .filter(paper => paper.citation_cluster_is_core)
+                .sort((a, b) => Number(a.citation_cluster_core_rank || Infinity) - Number(b.citation_cluster_core_rank || Infinity));
+            const finalRepresentativePapers = representativePapers.length
+                ? representativePapers.slice(0, THEME_CLUSTER_MAX_DISPLAY_PAPERS)
+                : rankedPapers.slice(0, THEME_CLUSTER_MAX_DISPLAY_PAPERS);
+            const similaritySample = rankedPapers.slice(0, Math.min(8, rankedPapers.length));
+            const targetRelevance = similaritySample.length
+                ? similaritySample.reduce((sum, paper) => sum + Number(paper.similarity || 0), 0) / similaritySample.length
+                : 0;
+            return {
+                ...cluster,
+                llmOverviewStatus: String(cluster.llmOverviewStatus || '').trim() || inferCitationClusterOverviewStatus(cluster),
+                size: cluster.size || rankedPapers.length,
+                target_relevance: targetRelevance,
+                papers: rankedPapers,
+                representative_papers: finalRepresentativePapers
+            };
+        }).sort((a, b) => b.size - a.size || b.target_relevance - a.target_relevance);
+
+        const clusters = allClusters.slice(0, CITATION_CLUSTER_MAX_MODAL_CLUSTERS);
+        const displayedPaperCount = clusters.reduce((sum, cluster) => sum + Number(cluster.size || 0), 0);
+
+        return {
+            projectId: Number(project.id),
+            clusterMode: 'citation',
+            clusterModeLabel: 'Citation Communities',
+            generatedAt: new Date().toISOString(),
+            signature: graphSignature,
+            graphSignature,
+            paperCount: keyedPapers.length,
+            assignedPaperCount: displayedPaperCount,
+            totalClusterCount: allClusters.length,
+            displayedClusterCount: clusters.length,
+            citationEdges: buildCitationEdgesFromProjectPapers(keyedPapers),
+            clusters
+        };
+    }
+
+    function getReusableCitationClusterResult(project = currentProject) {
+        if (currentCitationClusterResult && Number(currentCitationClusterResult.projectId) === Number(project?.id)) {
+            const persistedSignature = getCitationClusterPersistedSignature(project);
+            if (persistedSignature && String(currentCitationClusterResult.graphSignature || currentCitationClusterResult.signature || '') === persistedSignature) {
+                return currentCitationClusterResult;
+            }
+        }
+        const rebuilt = buildCitationClusterModalResult(project);
+        if (rebuilt) {
+            currentCitationClusterResult = rebuilt;
+        }
+        return rebuilt;
+    }
+
+    async function pollCitationGraphJobForClusters(jobId, onProgress = null) {
+        while (true) {
+            const res = await fetch(`${API_BASE}/papers/citation-graph/jobs/${jobId}`);
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Failed to read citation cluster progress.');
+            }
+            if (onProgress) {
+                const rawProgress = Math.max(0, Math.min(100, Number(data.progress || 0)));
+                await onProgress({
+                    stage: 'citation-graph',
+                    percent: 12 + rawProgress * 0.68,
+                    detail: `Resolving citation graph: ${data.completed || 0}/${data.total || 0} papers | resolved ${data.resolved || 0} | cached refs ${data.cached_references || 0}`
+                });
+            }
+            if (data.status === 'completed') return data.result;
+            if (data.status === 'failed') {
+                throw new Error(data.error || data.message || 'Citation graph build failed.');
+            }
+            await new Promise(resolve => setTimeout(resolve, 700));
+        }
+    }
+
+    async function computeCitationClusterResult(project = currentProject, onProgress = null, options = {}) {
+        const {
+            force = false
+        } = options;
+        if (!project?.top_papers?.length) {
+            return {
+                projectId: Number(project?.id || 0),
+                clusterMode: 'citation',
+                clusterModeLabel: 'Citation Communities',
+                paperCount: 0,
+                assignedPaperCount: 0,
+                clusters: []
+            };
+        }
+
+        const reusable = !force ? getReusableCitationClusterResult(project) : null;
+        if (reusable) {
+            return reusable;
+        }
+
+        if (onProgress) await onProgress({ stage: 'citation-start', percent: 6, detail: 'Preparing all project papers for citation community detection...' });
+        const startRes = await fetch(`${API_BASE}/papers/citation-graph/jobs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                papers: project.top_papers,
+                ...getScholarConfig()
+            })
+        });
+        const startData = await startRes.json();
+        if (!startRes.ok) {
+            throw new Error(startData.detail || 'Failed to start citation community detection.');
+        }
+        const data = await pollCitationGraphJobForClusters(startData.job_id, onProgress);
+        const updatedPapers = Array.isArray(data?.papers) ? data.papers : [];
+        if (updatedPapers.length && project?.top_papers?.length) {
+            const paperMap = new Map(updatedPapers.map(paper => [paper.filename, paper]));
+            project.top_papers = project.top_papers.map(paper => paperMap.get(paper.filename) || paper);
+        }
+        if (onProgress) await onProgress({ stage: 'citation-clustering', percent: 84, detail: 'Detecting citation communities from the full directed graph...' });
+        const clusterSync = await ensureCitationTopologyClusters(project.top_papers, data?.edges || []);
+        if (clusterSync.changed || updatedPapers.length) {
+            await syncPapersToBackend();
+        }
+        const result = buildCitationClusterModalResult(project) || {
+            projectId: Number(project?.id || 0),
+            clusterMode: 'citation',
+            clusterModeLabel: 'Citation Communities',
+            paperCount: project.top_papers.length,
+            assignedPaperCount: project.top_papers.length,
+            clusters: []
+        };
+        currentCitationClusterResult = result;
+        if (onProgress) await onProgress({ stage: 'citation-ready', percent: 96, detail: 'Preparing citation community view...' });
+        return result;
     }
 
     function getTopPapersForInsights(project = currentProject, limit = 60) {
@@ -2887,6 +3562,13 @@ Summary rules:
                 marked_node_keys: Array.isArray(parsed.marked_node_keys)
                     ? parsed.marked_node_keys.map(item => String(item || '').trim()).filter(Boolean).slice(0, 18)
                     : [],
+                marked_node_panel_collapsed: parsed.marked_node_panel_collapsed === true,
+                marked_node_panel_position: parsed.marked_node_panel_position && typeof parsed.marked_node_panel_position === 'object'
+                    ? {
+                        x: Number.isFinite(Number(parsed.marked_node_panel_position.x)) ? Number(parsed.marked_node_panel_position.x) : 18,
+                        y: Number.isFinite(Number(parsed.marked_node_panel_position.y)) ? Number(parsed.marked_node_panel_position.y) : 18
+                    }
+                    : { x: 18, y: 18 },
                 chart_render_limit: [150, 300, 500].includes(Number(parsed.chart_render_limit))
                     ? Number(parsed.chart_render_limit)
                     : 500,
@@ -2895,7 +3577,7 @@ Summary rules:
                     : (Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, parsed.fwci_weight_tier) ? parsed.fwci_weight_tier : 'medium')
             };
         } catch {
-            return { use_background_precompute: true, use_llm_theme_naming: true, use_zotero_sync_preload: true, use_fwci_filter: false, literature_watch_discipline: '', literature_watch_disciplines: [], literature_watch_range: '3m', literature_watch_scholars: [], literature_watch_journals: [], marked_node_keys: [], chart_render_limit: 500, fwci_weight_tier: 'medium' };
+            return { use_background_precompute: true, use_llm_theme_naming: true, use_zotero_sync_preload: true, use_fwci_filter: false, literature_watch_discipline: '', literature_watch_disciplines: [], literature_watch_range: '3m', literature_watch_scholars: [], literature_watch_journals: [], marked_node_keys: [], marked_node_panel_collapsed: false, marked_node_panel_position: { x: 18, y: 18 }, chart_render_limit: 500, fwci_weight_tier: 'medium' };
         }
     }
 
@@ -2934,6 +3616,87 @@ Summary rules:
         return getMarkedNodeKeySet(project).has(key);
     }
 
+    function getMarkedNodePanelUiState(projectId = currentProject?.id) {
+        const settings = getProjectSearchSettings(projectId);
+        return {
+            collapsed: settings.marked_node_panel_collapsed === true,
+            position: settings.marked_node_panel_position || { x: 18, y: 18 }
+        };
+    }
+
+    function saveMarkedNodePanelUiState(nextState = {}, projectId = currentProject?.id) {
+        const currentState = getMarkedNodePanelUiState(projectId);
+        const position = nextState.position && typeof nextState.position === 'object'
+            ? {
+                x: Number.isFinite(Number(nextState.position.x)) ? Number(nextState.position.x) : currentState.position.x,
+                y: Number.isFinite(Number(nextState.position.y)) ? Number(nextState.position.y) : currentState.position.y
+            }
+            : currentState.position;
+        return saveProjectSearchSettings({
+            marked_node_panel_collapsed: nextState.collapsed ?? currentState.collapsed,
+            marked_node_panel_position: position
+        }, projectId);
+    }
+
+    function clampMarkedNodePanelPosition(position = { x: 18, y: 18 }) {
+        const wrapper = document.getElementById('chart-wrapper');
+        const panel = document.getElementById('marked-node-panel');
+        const fallback = { x: 18, y: 18 };
+        if (!wrapper || !panel) return { ...fallback, ...position };
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const panelWidth = panel.offsetWidth || (panel.dataset.collapsed === 'true' ? 58 : 440);
+        const panelHeight = panel.offsetHeight || (panel.dataset.collapsed === 'true' ? 58 : 140);
+        return {
+            x: Math.max(12, Math.min(Number(position?.x ?? fallback.x), Math.max(12, wrapperRect.width - panelWidth - 12))),
+            y: Math.max(12, Math.min(Number(position?.y ?? fallback.y), Math.max(12, wrapperRect.height - panelHeight - 12)))
+        };
+    }
+
+    function applyMarkedNodePanelPosition(position = null) {
+        const panel = document.getElementById('marked-node-panel');
+        if (!panel) return;
+        const nextPosition = clampMarkedNodePanelPosition(position || getMarkedNodePanelUiState(currentProject?.id).position);
+        panel.style.left = `${nextPosition.x}px`;
+        panel.style.top = `${nextPosition.y}px`;
+        panel.style.right = 'auto';
+    }
+
+    function enableMarkedNodePanelDragging() {
+        const panel = document.getElementById('marked-node-panel');
+        const handle = document.getElementById('marked-node-panel-handle');
+        const wrapper = document.getElementById('chart-wrapper');
+        if (!panel || !handle || !wrapper) return;
+
+        handle.onmousedown = event => {
+            event.preventDefault();
+            const wrapperRect = wrapper.getBoundingClientRect();
+            const panelRect = panel.getBoundingClientRect();
+            const offsetX = event.clientX - panelRect.left;
+            const offsetY = event.clientY - panelRect.top;
+
+            const onMove = moveEvent => {
+                const nextPosition = clampMarkedNodePanelPosition({
+                    x: moveEvent.clientX - wrapperRect.left - offsetX,
+                    y: moveEvent.clientY - wrapperRect.top - offsetY
+                });
+                applyMarkedNodePanelPosition(nextPosition);
+            };
+
+            const onUp = () => {
+                const resolved = clampMarkedNodePanelPosition({
+                    x: parseFloat(panel.style.left || '18'),
+                    y: parseFloat(panel.style.top || '18')
+                });
+                saveMarkedNodePanelUiState({ position: resolved }, currentProject?.id);
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        };
+    }
+
     function updateMarkedPaperButton(paper = getCurrentOpenedPaper()) {
         const btn = document.getElementById('btn-toggle-mark-node');
         if (!btn) return;
@@ -2968,27 +3731,44 @@ Summary rules:
             panel.innerHTML = '';
             return;
         }
+        const panelState = getMarkedNodePanelUiState(currentProject.id);
         panel.classList.remove('hidden');
-        panel.innerHTML = `
-            <div style="padding:12px 14px; border-radius:18px; border:1px solid rgba(79,70,229,0.14); background:rgba(255,255,255,0.92); box-shadow:0 10px 24px rgba(15,23,42,0.06); backdrop-filter:blur(4px);">
-                <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;">
-                    <div style="font-size:11px; font-weight:800; color:#4338ca; text-transform:uppercase; letter-spacing:0.06em;">Marked Nodes</div>
-                    <div style="font-size:11px; color:#64748b;">Jump back to your saved exploration anchors.</div>
+        panel.dataset.collapsed = panelState.collapsed ? 'true' : 'false';
+        panel.style.maxWidth = panelState.collapsed ? '58px' : 'min(440px, calc(100% - 180px))';
+        panel.innerHTML = panelState.collapsed
+            ? `
+                <button id="marked-node-panel-handle" type="button" onclick="expandMarkedNodePanel()" title="Expand Marked Nodes" style="width:58px; height:58px; border-radius:999px; border:1px solid rgba(79,70,229,0.18); background:rgba(255,255,255,0.94); box-shadow:0 12px 24px rgba(15,23,42,0.09); backdrop-filter:blur(6px); display:flex; align-items:center; justify-content:center; color:#4338ca; font-weight:900; font-size:12px; cursor:pointer; position:relative;">
+                    <span style="display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1;">
+                        <span style="font-size:16px;">🔖</span>
+                        <span>${validKeys.length}</span>
+                    </span>
+                </button>
+            `
+            : `
+                <div style="padding:12px 14px; border-radius:18px; border:1px solid rgba(79,70,229,0.14); background:rgba(255,255,255,0.92); box-shadow:0 10px 24px rgba(15,23,42,0.06); backdrop-filter:blur(4px);">
+                    <div id="marked-node-panel-handle" style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; cursor:grab;">
+                        <div style="font-size:11px; font-weight:800; color:#4338ca; text-transform:uppercase; letter-spacing:0.06em;">Marked Nodes</div>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <div style="font-size:11px; color:#64748b;">Jump back to your saved exploration anchors.</div>
+                            <button onclick="collapseMarkedNodePanel(event)" title="Minimize Marked Nodes" style="background:transparent; border:none; color:#64748b; cursor:pointer; font-size:16px; line-height:1; padding:0 2px;">◯</button>
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        ${validKeys.map(key => {
+                            const paper = keyToPaper.get(key);
+                            const title = truncateText(paper?.title || 'Untitled', 34);
+                            return `
+                                <div style="display:inline-flex; align-items:center; gap:8px; padding:8px 10px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:12px; font-weight:700; max-width:100%;">
+                                    <button onclick="focusMarkedNode('${encodeURIComponent(key)}')" style="background:transparent; border:none; color:inherit; cursor:pointer; padding:0; font:inherit; text-align:left; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(title)}</button>
+                                    <button onclick="removeMarkedNode('${encodeURIComponent(key)}')" style="background:transparent; border:none; cursor:pointer; color:#64748b; font-size:12px; padding:0;">✕</button>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
                 </div>
-                <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                    ${validKeys.map(key => {
-                        const paper = keyToPaper.get(key);
-                        const title = truncateText(paper?.title || 'Untitled', 34);
-                        return `
-                            <div style="display:inline-flex; align-items:center; gap:8px; padding:8px 10px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:12px; font-weight:700; max-width:100%;">
-                                <button onclick="focusMarkedNode('${encodeURIComponent(key)}')" style="background:transparent; border:none; color:inherit; cursor:pointer; padding:0; font:inherit; text-align:left; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(title)}</button>
-                                <button onclick="removeMarkedNode('${encodeURIComponent(key)}')" style="background:transparent; border:none; cursor:pointer; color:#64748b; font-size:12px; padding:0;">✕</button>
-                            </div>
-                        `;
-                    }).join('')}
-                </div>
-            </div>
-        `;
+            `;
+        applyMarkedNodePanelPosition(panelState.position);
+        enableMarkedNodePanelDragging();
     }
 
     function setChartRenderLimitButtons() {
@@ -6191,6 +6971,29 @@ Return ONLY a JSON object matching this exact schema:
         openPaperModal(paper);
     };
 
+    window.collapseMarkedNodePanel = (event) => {
+        event?.stopPropagation?.();
+        if (!currentProject?.id) return;
+        const panel = document.getElementById('marked-node-panel');
+        const position = panel ? {
+            x: parseFloat(panel.style.left || '18'),
+            y: parseFloat(panel.style.top || '18')
+        } : getMarkedNodePanelUiState(currentProject.id).position;
+        saveMarkedNodePanelUiState({ collapsed: true, position }, currentProject.id);
+        renderMarkedNodesPanel();
+    };
+
+    window.expandMarkedNodePanel = () => {
+        if (!currentProject?.id) return;
+        const panel = document.getElementById('marked-node-panel');
+        const position = panel ? {
+            x: parseFloat(panel.style.left || '18'),
+            y: parseFloat(panel.style.top || '18')
+        } : getMarkedNodePanelUiState(currentProject.id).position;
+        saveMarkedNodePanelUiState({ collapsed: false, position }, currentProject.id);
+        renderMarkedNodesPanel();
+    };
+
     window.toggleMetadataEdit = () => {
         const displayDiv = document.getElementById('pm-display-mode');
         const editDiv = document.getElementById('pm-edit-mode');
@@ -6233,7 +7036,7 @@ Return ONLY a JSON object matching this exact schema:
                 p.year = nextYear;
                 p.abstract = nextAbstract;
 
-                if (clusterInputsChanged) invalidateThemeClusterResult(currentProject?.id, 'paper metadata changed');
+                if (clusterInputsChanged) invalidateClusterResults(currentProject?.id, 'paper metadata changed');
                 if (findCurrentProjectPaperByFilename(p.filename)) {
                     await syncPapersToBackend();
                 }
@@ -7453,12 +8256,138 @@ About 500 words of literature review draft in markdown.`;
         );
     }
 
+    function isCitationClusterMode(clusterResult) {
+        return String(clusterResult?.clusterMode || '') === 'citation';
+    }
+
+    function getClusterModeToggleHtml(activeMode = 'semantic') {
+        const modes = [
+            { value: 'semantic', label: 'Semantic Cluster' },
+            { value: 'citation', label: 'Citation Cluster' }
+        ];
+        return `
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                ${modes.map(mode => {
+                    const isActive = activeMode === mode.value;
+                    return `<button class="btn ${isActive ? '' : 'btn-outline'}" style="padding:9px 13px; border-radius:14px; white-space:nowrap;" onclick="switchThemeClusterMode('${mode.value}')">${mode.label}</button>`;
+                }).join('')}
+            </div>
+        `;
+    }
+
+    function getClusterModeMeta(clusterResult) {
+        if (isCitationClusterMode(clusterResult)) {
+            const displayedCount = Number(clusterResult?.displayedClusterCount || clusterResult?.clusters?.length || 0);
+            const totalCount = Number(clusterResult?.totalClusterCount || displayedCount);
+            return {
+                preface: `Showing the ${displayedCount} largest citation communities${totalCount > displayedCount ? ` out of ${totalCount}` : ''}, built from the full project citation graph.`,
+                note: 'Gold circle = target thesis reference point. Communities are built from full citation-network structure, not text similarity.',
+                prompt: 'Tap a community to load its local citation relationship map.',
+                focusBadge: 'Focus Citation Cluster',
+                clusterTabPrefix: 'Cluster',
+                focusAction: 'Focus On Chart',
+                unfocusAction: 'Show All Communities',
+                targetLabel: 'Target match',
+                paperSectionTitle: 'Core Papers In This Community',
+                paperSectionHelp: 'The left panel shows the selected community\'s local citation topology. Core rank follows in-cluster citation indegree, and the overview above is LLM-written from the core-paper abstracts.'
+            };
+        }
+        return {
+            preface: `Clustered ${clusterResult.paperCount} high-signal papers, then assigned ${clusterResult.assignedPaperCount || clusterResult.paperCount} project papers into those themes.`,
+            note: 'Gold circle = target thesis. Distance to each theme represents semantic affinity.',
+            prompt: 'Tap a theme to focus its 10 representative papers.',
+            focusBadge: 'Focus Theme',
+            clusterTabPrefix: 'Theme',
+            focusAction: 'Focus On Chart',
+            unfocusAction: 'Show All Themes',
+            targetLabel: 'Target match',
+            paperSectionTitle: 'Top 10 Papers By Theme Fit',
+            paperSectionHelp: 'Theme fit is the paper-to-theme score inside this cluster view. It is not the main workspace similarity to your target thesis.'
+        };
+    }
+
+    function clusterNeedsLlmOverview(cluster, clusterResult = window.themeClusterUiState?.clusterResult) {
+        if (!isCitationClusterMode(clusterResult) || !cluster) return false;
+        if (!appSettings?.llm_api_key) return false;
+        return inferCitationClusterOverviewStatus(cluster) !== 'success';
+    }
+
+    function getCitationTopologyModeControlsHtml() {
+        const activeMode = String(window.themeClusterUiState?.citationTopologyMode || 'all');
+        const selectedKey = String(window.themeClusterUiState?.citationTopologySelectedKey || '').trim();
+        const options = [
+            { value: 'all', label: 'All Links' },
+            { value: '1-hop', label: '1-Hop' },
+            { value: '2-hop', label: '2-Hop' }
+        ];
+        return `
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                ${options.map(option => {
+                    const isActive = activeMode === option.value;
+                    return `<button class="btn ${isActive ? '' : 'btn-outline'}" style="padding:8px 12px; font-size:12px; white-space:nowrap;" onclick="setCitationClusterTopologyMode('${option.value}')">${option.label}</button>`;
+                }).join('')}
+                <div style="font-size:12px; color:#64748b;">${selectedKey ? 'Click another node in the map to change the anchor paper.' : '1-hop and 2-hop will default to the cluster\'s top cited core paper until you click another node.'}</div>
+            </div>
+        `;
+    }
+
+    window.rerunCitationClusterOverview = async () => {
+        const clusterResult = window.themeClusterUiState?.clusterResult;
+        if (!clusterResult || !isCitationClusterMode(clusterResult) || !currentProject?.top_papers?.length) return;
+        const retryBtn = document.getElementById('citation-cluster-reoverview-btn');
+        const originalText = retryBtn?.innerText || 'LLM Re-overview';
+        if (retryBtn) {
+            retryBtn.disabled = true;
+            retryBtn.innerText = 'Re-overviewing...';
+        }
+        try {
+            const namingInput = {
+                ...clusterResult,
+                clusters: (clusterResult.clusters || []).map(cluster => ({
+                    ...cluster,
+                    representativePapers: cluster.representativePapers || cluster.representative_papers || cluster.papers?.slice(0, CITATION_CLUSTER_CORE_PAPER_LIMIT) || []
+                }))
+            };
+            const namedResult = await applyLlmCitationClusterNaming(namingInput, currentProject);
+            const namedClusters = Array.isArray(namedResult?.clusters) ? namedResult.clusters : [];
+            const hasSuccessfulRewrite = namedClusters.some(cluster => String(cluster?.llmOverviewStatus || '').trim() === 'success');
+            if (!hasSuccessfulRewrite) {
+                throw new Error(namedResult?.llmOverviewStatus === 'missing-key'
+                    ? 'LLM API key is not configured, so the citation cluster overview cannot be regenerated right now.'
+                    : 'LLM overview regeneration did not return a usable cluster name/overview yet. Please try again.');
+            }
+            const renameMap = new Map((namedResult.clusters || []).map(cluster => [String(cluster.id || '').trim(), cluster]));
+            currentProject.top_papers.forEach(paper => {
+                const clusterId = String(paper.citation_cluster_id || '').trim();
+                const next = renameMap.get(clusterId);
+                if (!next) return;
+                paper.citation_cluster_theme_name = next.label;
+                paper.citation_cluster_theme_summary = next.summary;
+                paper.citation_cluster_llm_overview_status = String(next.llmOverviewStatus || '').trim();
+            });
+            currentCitationClusterResult = buildCitationClusterModalResult(currentProject) || namedResult;
+            await syncPapersToBackend();
+            renderThemeClusterModal(currentCitationClusterResult);
+        } catch (error) {
+            alert(error.message || 'Could not regenerate the citation cluster overview.');
+        } finally {
+            if (retryBtn) {
+                retryBtn.disabled = false;
+                retryBtn.innerText = originalText;
+            }
+        }
+    };
+
     function renderThemeClusterModal(clusterResult) {
+        const clusterMode = String(clusterResult?.clusterMode || 'semantic');
         window.themeClusterUiState = {
             clusterResult,
+            clusterMode,
             selectedClusterIndex: window.themeClusterUiState?.selectedClusterIndex ?? null,
             expandedClusters: window.themeClusterUiState?.expandedClusters || {},
             chartScale: window.themeClusterUiState?.chartScale || 1,
+            citationTopologyMode: window.themeClusterUiState?.citationTopologyMode || 'all',
+            citationTopologySelectedKey: window.themeClusterUiState?.citationTopologySelectedKey || '',
             activeClusterIndex: Number.isInteger(window.themeClusterUiState?.activeClusterIndex)
                 ? window.themeClusterUiState.activeClusterIndex
                 : 0,
@@ -7470,6 +8399,7 @@ About 500 words of literature review draft in markdown.`;
         }
         const activeClusterIndex = Math.max(0, Math.min(window.themeClusterUiState.activeClusterIndex, Math.max(clusterResult.clusters.length - 1, 0)));
         const activeCluster = clusterResult.clusters[activeClusterIndex];
+        const clusterMeta = getClusterModeMeta(clusterResult);
         const selectedReviewPapers = clusterResult.clusters.flatMap((cluster, clusterIndex) =>
             getThemeClusterDisplayPapers(cluster).filter(
                 paper => window.themeClusterUiState.selectedReviewPaperKeys[getThemeClusterPaperSelectionKey(paper, clusterIndex)]
@@ -7481,10 +8411,10 @@ About 500 words of literature review draft in markdown.`;
                 <div>
                     <div style="margin-bottom:12px; display:flex; justify-content:space-between; align-items:end; gap:12px;">
                         <div>
-                            <div style="font-size:13px; color:var(--text-muted); margin-bottom:4px;">Clustered ${clusterResult.paperCount} high-signal papers, then assigned ${clusterResult.assignedPaperCount || clusterResult.paperCount} project papers into those themes.</div>
-                            <div style="font-size:12px; color:#64748b;">Gold circle = target thesis. Distance to each theme represents semantic affinity.</div>
+                            <div style="font-size:13px; color:var(--text-muted); margin-bottom:4px;">${clusterMeta.preface}</div>
+                            <div style="font-size:12px; color:#64748b;">${clusterMeta.note}</div>
                         </div>
-                        <div style="font-size:12px; color:#64748b; white-space:nowrap;">Tap a theme to focus its 10 representative papers.</div>
+                        <div style="font-size:12px; color:#64748b; white-space:nowrap;">${clusterMeta.prompt}</div>
                     </div>
                     <div style="position:relative;">
                         <div id="theme-cluster-chart" style="height:520px; border:1px solid var(--border-color); border-radius:22px; background:
@@ -7504,13 +8434,18 @@ About 500 words of literature review draft in markdown.`;
                 <div style="display:grid; gap:14px; max-height:520px; overflow:auto; padding-right:2px;">
                     ${activeCluster ? `
                         <div style="display:grid; gap:10px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+                                ${getClusterModeToggleHtml(clusterMode)}
+                                <div style="font-size:11px; font-weight:700; color:#94a3b8; text-transform:uppercase; letter-spacing:0.05em;">${clusterMode === 'citation' ? 'Citation topology' : 'Semantic embeddings'}</div>
+                            </div>
                             <div style="display:flex; gap:8px; overflow:auto; padding-bottom:2px; flex:1;">
                                 ${clusterResult.clusters.map((cluster, index) => {
                                     const color = getThemeClusterPaletteColor(index);
                                     const isActive = activeClusterIndex === index;
-                                    return `<button class="btn ${isActive ? '' : 'btn-outline'}" style="padding:10px 14px; border-radius:14px; white-space:nowrap; background:${isActive ? color : 'white'}; border-color:${hexToRgba(color, 0.4)}; color:${isActive ? 'white' : color}; box-shadow:${isActive ? `0 10px 22px ${hexToRgba(color, 0.22)}` : 'none'};" onclick="openThemeClusterFocus(${index})">Theme ${index + 1}</button>`;
+                                    return `<button class="btn ${isActive ? '' : 'btn-outline'}" style="padding:10px 14px; border-radius:14px; white-space:nowrap; background:${isActive ? color : 'white'}; border-color:${hexToRgba(color, 0.4)}; color:${isActive ? 'white' : color}; box-shadow:${isActive ? `0 10px 22px ${hexToRgba(color, 0.22)}` : 'none'};" onclick="openThemeClusterFocus(${index})">${clusterMeta.clusterTabPrefix} ${index + 1}</button>`;
                                 }).join('')}
                             </div>
+                            ${clusterMode === 'citation' ? getCitationTopologyModeControlsHtml() : ''}
                             <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
                                 <button class="btn btn-outline" style="padding:9px 12px; font-size:12px;" onclick="toggleThemeClusterReviewSelectionMode()">${window.themeClusterUiState.reviewSelectionMode ? 'Cancel Selection' : 'Generate Literature Review'}</button>
                                 ${window.themeClusterUiState.reviewSelectionMode ? `<button id="theme-cluster-generate-selected-btn" class="btn" style="padding:9px 12px; font-size:12px; opacity:${selectedReviewPapers.length === 0 ? '0.55' : '1'}; cursor:${selectedReviewPapers.length === 0 ? 'not-allowed' : 'pointer'};" ${selectedReviewPapers.length === 0 ? 'disabled' : ''} onclick="generateThemeClusterLiteratureReview()">Generate from ${selectedReviewPapers.length} Selected</button>` : ''}
@@ -7519,18 +8454,25 @@ About 500 words of literature review draft in markdown.`;
                         <div style="border:1px solid ${hexToRgba(getThemeClusterPaletteColor(activeClusterIndex), 0.38)}; border-radius:22px; padding:18px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); box-shadow:0 12px 28px ${hexToRgba(getThemeClusterPaletteColor(activeClusterIndex), 0.12)};">
                             <div style="display:flex; justify-content:space-between; gap:12px; align-items:start; margin-bottom:10px;">
                                 <div>
-                                    <div style="display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; background:${hexToRgba(getThemeClusterPaletteColor(activeClusterIndex), 0.12)}; color:${getThemeClusterPaletteColor(activeClusterIndex)}; font-size:11px; font-weight:800; margin-bottom:10px;">Focus Theme ${activeClusterIndex + 1}</div>
+                                    <div style="display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; background:${hexToRgba(getThemeClusterPaletteColor(activeClusterIndex), 0.12)}; color:${getThemeClusterPaletteColor(activeClusterIndex)}; font-size:11px; font-weight:800; margin-bottom:10px;">${clusterMeta.focusBadge} ${activeClusterIndex + 1}</div>
                                     <div style="font-size:28px; line-height:1.02; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px;">${escapeHtml(activeCluster.label)}</div>
                                     <div style="font-size:13px; line-height:1.55; color:#475569;">${escapeHtml(activeCluster.summary)}</div>
                                 </div>
-                                <button class="btn btn-outline" style="padding:8px 12px; font-size:12px; white-space:nowrap;" onclick="focusThemeCluster(${activeClusterIndex})">${window.themeClusterUiState.selectedClusterIndex === activeClusterIndex ? 'Show All Themes' : 'Focus On Chart'}</button>
+                                <div style="display:grid; gap:8px; justify-items:end;">
+                                    ${clusterMode === 'citation'
+                                        ? `<div style="padding:8px 12px; border-radius:12px; background:#f8fafc; color:#475569; font-size:12px; font-weight:700; white-space:nowrap;">Local citation map synced to this cluster</div>`
+                                        : `<button class="btn btn-outline" style="padding:8px 12px; font-size:12px; white-space:nowrap;" onclick="focusThemeCluster(${activeClusterIndex})">${window.themeClusterUiState.selectedClusterIndex === activeClusterIndex ? clusterMeta.unfocusAction : clusterMeta.focusAction}</button>`}
+                                    ${clusterNeedsLlmOverview(activeCluster, clusterResult)
+                                        ? `<button id="citation-cluster-reoverview-btn" class="btn btn-outline" style="padding:8px 12px; font-size:12px; white-space:nowrap;" onclick="rerunCitationClusterOverview()">LLM Re-overview</button>`
+                                        : ''}
+                                </div>
                             </div>
                             <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
-                                <div style="padding:6px 10px; border-radius:999px; background:#fff7ed; color:#9a3412; font-size:11px; font-weight:800;">Target match ${(Number(activeCluster.target_relevance || 0) * 100).toFixed(0)}%</div>
+                                <div style="padding:6px 10px; border-radius:999px; background:#fff7ed; color:#9a3412; font-size:11px; font-weight:800;">${clusterMeta.targetLabel} ${(Number(activeCluster.target_relevance || 0) * 100).toFixed(0)}%</div>
                                 <div style="padding:6px 10px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">${activeCluster.papers.length} assigned papers</div>
                             </div>
-                            <div style="font-size:12px; color:var(--text-muted); font-weight:800; letter-spacing:0.02em; text-transform:uppercase; margin-bottom:6px;">Top 10 Papers By Theme Fit</div>
-                            <div style="font-size:12px; color:#64748b; margin-bottom:10px;">Theme fit is the paper-to-theme score inside this cluster view. It is not the main workspace similarity to your target thesis.</div>
+                            <div style="font-size:12px; color:var(--text-muted); font-weight:800; letter-spacing:0.02em; text-transform:uppercase; margin-bottom:6px;">${clusterMeta.paperSectionTitle}</div>
+                            <div style="font-size:12px; color:#64748b; margin-bottom:10px;">${clusterMeta.paperSectionHelp}</div>
                             <div style="display:grid; gap:8px;">
                                 ${getThemeClusterDisplayPapers(activeCluster).slice(0, 5).map((paper, paperIndex) => renderThemeClusterPaperListItem(paper, activeClusterIndex, paperIndex)).join('')}
                             </div>
@@ -7547,7 +8489,9 @@ About 500 words of literature review draft in markdown.`;
         `;
         openReviewModalContent(
             'Theme Clusters',
-            'Auto-clustered from the top related papers in this project.',
+            clusterMode === 'citation'
+                ? 'Citation-defined communities built from the full project citation graph.'
+                : 'Auto-clustered from the top related papers in this project.',
             bodyHtml,
             { width: 'min(1380px, 96vw)', maxWidth: '96vw', maxHeight: '92vh' }
         );
@@ -7569,19 +8513,27 @@ About 500 words of literature review draft in markdown.`;
     }
 
     function renderThemeClusterPaperListItem(paper, clusterIndex, paperIndex) {
+        const clusterMode = String(window.themeClusterUiState?.clusterResult?.clusterMode || 'semantic');
+        const isCitationMode = clusterMode === 'citation';
         const paperStr = JSON.stringify(paper).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
         const selectionKey = getThemeClusterPaperSelectionKey(paper, clusterIndex);
         const isSelected = !!window.themeClusterUiState?.selectedReviewPaperKeys?.[selectionKey];
         const showCheckbox = !!window.themeClusterUiState?.reviewSelectionMode;
+        const metricLabel = isCitationMode
+            ? `Cited by ${formatFwciValue(paper.citation_cluster_indegree || 0)} in cluster`
+            : Number(paper.cluster_similarity || 0).toFixed(3);
+        const rankLabel = isCitationMode
+            ? `Core rank ${paperIndex + 1} in Citation Cluster ${clusterIndex + 1}`
+            : `Rank ${paperIndex + 1} in Theme ${clusterIndex + 1}`;
         return `
             <div style="display:flex; align-items:stretch; gap:10px;">
                 ${showCheckbox ? `<label data-theme-selection-key="${escapeHtml(selectionKey)}" style="display:flex; align-items:center; justify-content:center; width:34px; border:1px solid rgba(148,163,184,0.22); border-radius:12px; background:${isSelected ? 'rgba(79,70,229,0.08)' : 'rgba(255,255,255,0.88)'}; cursor:pointer;"><input type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleThemeClusterReviewPaperSelection('${selectionKey.replace(/'/g, '&#39;')}', this)" /></label>` : ''}
                 <button type="button" onclick='openPaperModal(${paperStr})' style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; width:100%; text-align:left; border:1px solid rgba(148,163,184,0.22); border-radius:14px; padding:11px 12px; background:rgba(255,255,255,0.88); cursor:pointer;">
                     <div>
                         <div style="font-size:15px; font-weight:800; line-height:1.32; color:#3341b5; margin-bottom:4px;">${escapeHtml(paper.title || 'Untitled')}</div>
-                        <div style="font-size:11px; color:#64748b;">Rank ${paperIndex + 1} in Theme ${clusterIndex + 1}</div>
+                        <div style="font-size:11px; color:#64748b;">${rankLabel}</div>
                     </div>
-                    <div style="flex:0 0 auto; padding:5px 8px; border-radius:999px; background:rgba(79,70,229,0.08); color:#4338ca; font-size:11px; font-weight:800;">${Number(paper.cluster_similarity || 0).toFixed(3)}</div>
+                    <div style="flex:0 0 auto; padding:5px 8px; border-radius:999px; background:rgba(79,70,229,0.08); color:#4338ca; font-size:11px; font-weight:800;">${metricLabel}</div>
                 </button>
             </div>
         `;
@@ -7601,15 +8553,350 @@ About 500 words of literature review draft in markdown.`;
         };
     }
 
+    function buildCitationClusterLocalTopology(clusterResult, clusterIndex = 0) {
+        const cluster = clusterResult?.clusters?.[clusterIndex];
+        if (!cluster) return { cluster: null, nodes: [], links: [] };
+
+        const clusterPapers = Array.isArray(cluster.papers) ? cluster.papers.filter(Boolean) : [];
+        const paperByKey = new Map(clusterPapers.map(paper => [getStablePaperGraphKey(paper), paper]).filter(([key]) => !!key));
+        const localEdges = (Array.isArray(clusterResult?.citationEdges) ? clusterResult.citationEdges : [])
+            .filter(edge => paperByKey.has(String(edge?.source || '').trim()) && paperByKey.has(String(edge?.target || '').trim()));
+        const degreeByKey = {};
+        localEdges.forEach(edge => {
+            const sourceKey = String(edge?.source || '').trim();
+            const targetKey = String(edge?.target || '').trim();
+            degreeByKey[sourceKey] = (degreeByKey[sourceKey] || 0) + 1;
+            degreeByKey[targetKey] = (degreeByKey[targetKey] || 0) + 1;
+        });
+
+        const rankedPapers = [...clusterPapers].sort((a, b) => {
+            const coreRankA = Number.isFinite(Number(a?.citation_cluster_core_rank)) ? Number(a.citation_cluster_core_rank) : Infinity;
+            const coreRankB = Number.isFinite(Number(b?.citation_cluster_core_rank)) ? Number(b.citation_cluster_core_rank) : Infinity;
+            if (coreRankA !== coreRankB) return coreRankA - coreRankB;
+            const indegreeDiff = Number(b?.citation_cluster_indegree || 0) - Number(a?.citation_cluster_indegree || 0);
+            if (indegreeDiff !== 0) return indegreeDiff;
+            return Number(b?.similarity || 0) - Number(a?.similarity || 0);
+        });
+        const seenNodeKeys = new Set();
+        const uniqueRankedPapers = rankedPapers.filter(paper => {
+            const nodeKey = getStablePaperGraphKey(paper);
+            if (!nodeKey || seenNodeKeys.has(nodeKey)) return false;
+            seenNodeKeys.add(nodeKey);
+            return true;
+        });
+        const nodeKeySet = new Set(uniqueRankedPapers.map(getStablePaperGraphKey).filter(Boolean));
+        const labeledNodeKeySet = new Set(
+            [...uniqueRankedPapers]
+                .sort((a, b) => Number(b?.citation_cluster_indegree || 0) - Number(a?.citation_cluster_indegree || 0))
+                .slice(0, 10)
+                .map(paper => getStablePaperGraphKey(paper))
+                .filter(Boolean)
+        );
+        const maxIndegree = Math.max(1, ...uniqueRankedPapers.map(paper => Number(paper?.citation_cluster_indegree || 0)));
+
+        const nodes = uniqueRankedPapers.map((paper, paperIndex) => {
+            const nodeKey = getStablePaperGraphKey(paper);
+            const indegree = Number(paper?.citation_cluster_indegree || 0);
+            const localDegree = degreeByKey[nodeKey] || 0;
+            const isCore = !!paper?.citation_cluster_is_core;
+            const color = getPaperColor(paper);
+            return {
+                id: nodeKey,
+                name: nodeKey,
+                symbol: getPaperNodeSymbol(paper),
+                symbolSize: (isCore ? 18 : 12) + (Math.max(0.08, indegree / maxIndegree) * 22),
+                itemStyle: getPaperNodeStyle(paper, {
+                    color,
+                    opacity: localDegree > 0 || isCore ? 0.94 : 0.68,
+                    borderColor: isCore ? '#0f172a' : hexToRgba(color, 0.88),
+                    borderWidth: isCore ? 2.2 : 1.1,
+                    shadowBlur: isCore ? 18 : 10,
+                    shadowColor: hexToRgba(color, isCore ? 0.26 : 0.16)
+                }),
+                label: {
+                    show: labeledNodeKeySet.has(nodeKey),
+                    formatter: truncateText(paper?.title || 'Untitled', 28),
+                    position: 'right',
+                    color: '#334155',
+                    fontSize: isCore ? 10 : 9,
+                    fontWeight: isCore ? 700 : 500
+                },
+                paperData: paper,
+                selectionKey: nodeKey,
+                value: indegree,
+                isLabelPriorityNode: labeledNodeKeySet.has(nodeKey)
+            };
+        });
+
+        const seenLinkKeys = new Set();
+        const links = localEdges
+            .filter(edge => nodeKeySet.has(String(edge?.source || '').trim()) && nodeKeySet.has(String(edge?.target || '').trim()))
+            .filter(edge => {
+                const key = `${String(edge?.source || '').trim()}->${String(edge?.target || '').trim()}`;
+                if (!key || seenLinkKeys.has(key)) return false;
+                seenLinkKeys.add(key);
+                return true;
+            })
+            .map(edge => ({
+            source: String(edge.source || '').trim(),
+            target: String(edge.target || '').trim(),
+            sourceTitle: paperByKey.get(String(edge.source || '').trim())?.title || '',
+            targetTitle: paperByKey.get(String(edge.target || '').trim())?.title || '',
+            lineStyle: {
+                width: 1.8,
+                opacity: 0.54,
+                color: '#94a3b8',
+                curveness: 0.12
+            },
+            emphasis: {
+                lineStyle: {
+                    width: 2.8,
+                    opacity: 0.92,
+                    color: '#0f172a'
+                }
+            }
+        }));
+
+        return { cluster, nodes, links, labeledNodeKeySet };
+    }
+
+    function buildCitationClusterTopologyAdjacency(links = []) {
+        const incoming = {};
+        const outgoing = {};
+        (links || []).forEach(link => {
+            const source = String(link?.source || '').trim();
+            const target = String(link?.target || '').trim();
+            if (!source || !target) return;
+            if (!outgoing[source]) outgoing[source] = [];
+            if (!incoming[target]) incoming[target] = [];
+            if (!incoming[source]) incoming[source] = [];
+            if (!outgoing[target]) outgoing[target] = [];
+            outgoing[source].push(target);
+            incoming[target].push(source);
+        });
+        return { incoming, outgoing };
+    }
+
+    function collectCitationClusterNeighborhood(selectionKey, links = [], hopLimit = 1) {
+        if (!selectionKey) return new Set();
+        const { incoming, outgoing } = buildCitationClusterTopologyAdjacency(links);
+        const visited = new Set([selectionKey]);
+        let frontier = new Set([selectionKey]);
+        for (let depth = 0; depth < hopLimit; depth += 1) {
+            const nextFrontier = new Set();
+            frontier.forEach(nodeKey => {
+                [...(incoming[nodeKey] || []), ...(outgoing[nodeKey] || [])].forEach(neighborKey => {
+                    if (visited.has(neighborKey)) return;
+                    visited.add(neighborKey);
+                    nextFrontier.add(neighborKey);
+                });
+            });
+            frontier = nextFrontier;
+            if (!frontier.size) break;
+        }
+        return visited;
+    }
+
+    function applyCitationClusterTopologyFocus(topology, selectionKey = '', hopMode = 'all') {
+        const normalizedMode = String(hopMode || 'all');
+        if (!selectionKey || normalizedMode === 'all') {
+            return {
+                nodes: topology.nodes.map(node => ({ ...node, itemStyle: { ...(node.itemStyle || {}) }, label: node.label ? { ...node.label } : node.label })),
+                links: topology.links.map(link => cloneBaseLink(link))
+            };
+        }
+
+        const hopLimit = normalizedMode === '2-hop' ? 2 : 1;
+        const visibleKeys = collectCitationClusterNeighborhood(selectionKey, topology.links, hopLimit);
+        const { incoming, outgoing } = buildCitationClusterTopologyAdjacency(topology.links);
+        const firstDegree = new Set([...(incoming[selectionKey] || []), ...(outgoing[selectionKey] || [])]);
+
+        const nodes = topology.nodes
+            .filter(node => visibleKeys.has(String(node?.id || '').trim()))
+            .map(node => {
+                const nextNode = {
+                    ...node,
+                    itemStyle: { ...(node.itemStyle || {}) },
+                    label: node.label ? { ...node.label } : node.label
+                };
+                const nodeId = String(node?.id || '').trim();
+                if (nodeId === selectionKey) {
+                    nextNode.symbolSize = (node.symbolSize || 12) * 1.25;
+                    nextNode.itemStyle = {
+                        ...nextNode.itemStyle,
+                        borderColor: '#0f172a',
+                        borderWidth: 2.6,
+                        shadowBlur: 24,
+                        shadowColor: 'rgba(15,23,42,0.26)'
+                    };
+                    nextNode.label = {
+                        ...(nextNode.label || {}),
+                        show: true,
+                        fontWeight: 800,
+                        color: '#0f172a'
+                    };
+                } else if (firstDegree.has(nodeId)) {
+                    nextNode.itemStyle = {
+                        ...nextNode.itemStyle,
+                        opacity: 0.98
+                    };
+                    nextNode.label = {
+                        ...(nextNode.label || {}),
+                        show: !!node.isLabelPriorityNode
+                    };
+                } else {
+                    nextNode.itemStyle = {
+                        ...nextNode.itemStyle,
+                        opacity: 0.78
+                    };
+                    nextNode.label = {
+                        ...(nextNode.label || {}),
+                        show: !!node.isLabelPriorityNode
+                    };
+                }
+                return nextNode;
+            });
+
+        const links = topology.links
+            .filter(link => visibleKeys.has(String(link?.source || '').trim()) && visibleKeys.has(String(link?.target || '').trim()))
+            .map(link => {
+                const nextLink = cloneBaseLink(link);
+                const touchesSelected = String(link?.source || '').trim() === selectionKey || String(link?.target || '').trim() === selectionKey;
+                if (touchesSelected) {
+                    const isOutgoing = String(link?.source || '').trim() === selectionKey;
+                    nextLink.lineStyle = {
+                        ...(nextLink.lineStyle || {}),
+                        width: 2.8,
+                        opacity: 0.95,
+                        color: isOutgoing ? '#2563eb' : '#ef4444'
+                    };
+                } else {
+                    nextLink.lineStyle = {
+                        ...(nextLink.lineStyle || {}),
+                        opacity: 0.26,
+                        color: '#94a3b8'
+                    };
+                }
+                return nextLink;
+            });
+
+        return { nodes, links };
+    }
+
+    function getCitationClusterDefaultSelectionKey(cluster) {
+        const representative = (cluster?.representative_papers || cluster?.representativePapers || []).find(paper => getStablePaperGraphKey(paper));
+        if (representative) return getStablePaperGraphKey(representative);
+        const corePaper = (cluster?.papers || []).find(paper => paper?.citation_cluster_is_core && getStablePaperGraphKey(paper));
+        if (corePaper) return getStablePaperGraphKey(corePaper);
+        return getStablePaperGraphKey((cluster?.papers || [])[0]) || '';
+    }
+
+    function renderCitationClusterTopologyChart(chart, clusterResult) {
+        const clusterCount = Math.max(clusterResult?.clusters?.length || 0, 1);
+        const activeClusterIndex = Math.max(0, Math.min(
+            Number.isInteger(window.themeClusterUiState?.activeClusterIndex)
+                ? window.themeClusterUiState.activeClusterIndex
+                : (window.themeClusterUiState?.selectedClusterIndex ?? 0),
+            clusterCount - 1
+        ));
+        const topology = buildCitationClusterLocalTopology(clusterResult, activeClusterIndex);
+        const { cluster } = topology;
+        const chartMode = String(window.themeClusterUiState?.citationTopologyMode || 'all');
+        const availableNodeKeys = new Set((topology.nodes || []).map(node => String(node?.id || '').trim()).filter(Boolean));
+        let selectedNodeKey = String(window.themeClusterUiState?.citationTopologySelectedKey || '').trim();
+        if (!availableNodeKeys.has(selectedNodeKey)) {
+            selectedNodeKey = chartMode === 'all' ? '' : getCitationClusterDefaultSelectionKey(cluster);
+            window.themeClusterUiState.citationTopologySelectedKey = selectedNodeKey;
+        }
+        const { nodes, links } = applyCitationClusterTopologyFocus(topology, selectedNodeKey, chartMode);
+        const hasLinks = links.length > 0;
+
+        chart.setOption({
+            animationDuration: 420,
+            tooltip: {
+                backgroundColor: 'rgba(15,23,42,0.95)',
+                borderColor: '#334155',
+                textStyle: { color: '#f8fafc' },
+                formatter: params => {
+                    if (params.dataType === 'edge') {
+                        return `<div style="max-width:260px; white-space:normal; line-height:1.5;">
+                            <div style="font-weight:700; margin-bottom:4px;">Citation Link</div>
+                            <div style="font-size:12px; color:#cbd5e1;"><b>${escapeHtml(params.data.sourceTitle || 'Unknown source')}</b> cites <b>${escapeHtml(params.data.targetTitle || 'Unknown target')}</b></div>
+                        </div>`;
+                    }
+                    const paper = params.data?.paperData;
+                    return `<div style="max-width:280px; white-space:normal;">
+                        <div style="font-weight:800; margin-bottom:4px;">${escapeHtml(paper?.title || 'Untitled')}</div>
+                        <div style="font-size:12px; color:#cbd5e1;">Citation Cluster ${activeClusterIndex + 1}</div>
+                        <div style="font-size:12px; color:#cbd5e1;">Cited by ${formatFwciValue(paper?.citation_cluster_indegree || 0)} in cluster</div>
+                        <div style="font-size:12px; color:#fcd34d; margin-top:4px;">${paper?.citation_cluster_is_core ? `Core rank ${paper?.citation_cluster_core_rank || '—'}` : 'Non-core paper in this community'}</div>
+                        ${selectedNodeKey && String(params.data?.selectionKey || params.data?.id || '').trim() === selectedNodeKey ? '<div style="font-size:12px; color:#93c5fd; margin-top:4px;">Focused anchor paper</div>' : ''}
+                    </div>`;
+                }
+            },
+            graphic: hasLinks ? [] : [{
+                type: 'text',
+                left: 'center',
+                top: 22,
+                silent: true,
+                style: {
+                    text: cluster
+                        ? (chartMode === 'all'
+                            ? `No resolved within-cluster citation links yet for ${cluster.label}.`
+                            : `No ${chartMode} neighborhood is available from the selected anchor paper in ${cluster.label}.`)
+                        : 'No citation cluster selected.',
+                    fill: '#64748b',
+                    fontSize: 12,
+                    fontWeight: 600
+                }
+            }],
+            series: [{
+                type: 'graph',
+                layout: 'force',
+                roam: true,
+                animationDurationUpdate: 260,
+                force: {
+                    repulsion: 180 * (window.themeClusterUiState?.chartScale || 1),
+                    edgeLength: [52, 126],
+                    gravity: 0.08
+                },
+                data: nodes,
+                links,
+                lineStyle: {
+                    opacity: 0.5,
+                    color: '#94a3b8'
+                },
+                edgeSymbol: ['none', 'arrow'],
+                edgeSymbolSize: [0, 8],
+                emphasis: { focus: 'adjacency' }
+            }]
+        });
+
+        chart.off('click');
+        chart.on('click', params => {
+            if (params.data?.paperData) {
+                window.themeClusterUiState = window.themeClusterUiState || {};
+                window.themeClusterUiState.citationTopologySelectedKey = String(params.data?.selectionKey || params.data?.id || '').trim();
+                renderThemeClusterModal(window.themeClusterUiState.clusterResult);
+            }
+        });
+    }
+
     function renderThemeClusterChart(clusterResult = window.themeClusterUiState?.clusterResult) {
         const container = document.getElementById('theme-cluster-chart');
         if (!container || !clusterResult) return;
+        const isCitationMode = isCitationClusterMode(clusterResult);
         if (window.themeClusterChart) {
             window.themeClusterChart.dispose();
         }
 
         const chart = echarts.init(container);
         window.themeClusterChart = chart;
+
+        if (isCitationMode) {
+            renderCitationClusterTopologyChart(chart, clusterResult);
+            return;
+        }
 
         const width = chart.getWidth() || 980;
         const height = chart.getHeight() || 520;
@@ -7689,7 +8976,7 @@ About 500 words of literature review draft in markdown.`;
                 },
                 label: {
                     show: true,
-                    formatter: `Theme ${clusterIndex + 1}\n${truncateText(cluster.label || `Theme ${clusterIndex + 1}`, 34)}`,
+                    formatter: `${isCitationMode ? 'Cluster' : 'Theme'} ${clusterIndex + 1}\n${truncateText(cluster.label || `${isCitationMode ? 'Cluster' : 'Theme'} ${clusterIndex + 1}`, 34)}`,
                     color: isDimmed ? '#94a3b8' : '#1e293b',
                     fontWeight: 800,
                     fontSize: isSelected ? 13 : 12,
@@ -7719,6 +9006,7 @@ About 500 words of literature review draft in markdown.`;
             const papersToShow = selectedClusterIndex === null
                 ? getThemeClusterDisplayPapers(cluster).slice(0, 3)
                 : (clusterIndex === selectedClusterIndex ? getThemeClusterDisplayPapers(cluster) : getThemeClusterDisplayPapers(cluster).slice(0, 3));
+            const maxIndegree = Math.max(1, ...cluster.papers.map(paper => Number(paper.citation_cluster_indegree || 0)));
 
             papersToShow.forEach((paper, paperIndex) => {
                 const angle = hashTextToAngle(`${paper.title}_${paperIndex}_${clusterIndex}`);
@@ -7726,6 +9014,9 @@ About 500 words of literature review draft in markdown.`;
                     ? 78 + paperIndex * 24
                     : (clusterIndex === selectedClusterIndex ? 78 + Math.floor(paperIndex / 8) * 24 + (paperIndex % 8) * 8 : 82 + paperIndex * 18);
                 const paperNodeName = `PAPER_CLUSTER_${clusterIndex}_${paperIndex}`;
+                const paperStrength = isCitationMode
+                    ? Math.max(0.12, Number(paper.citation_cluster_indegree || 0) / maxIndegree)
+                    : Math.max(0, Number(paper.cluster_similarity || 0));
                 nodes.push({
                     id: paperNodeName,
                     name: paper.title,
@@ -7733,7 +9024,7 @@ About 500 words of literature review draft in markdown.`;
                     y: anchor.y + Math.sin(angle) * paperOrbit,
                     fixed: true,
                     draggable: false,
-                    symbolSize: (clusterIndex === selectedClusterIndex ? 11 : 9) + Math.max(0, Number(paper.cluster_similarity || 0)) * 18,
+                    symbolSize: (clusterIndex === selectedClusterIndex ? 11 : 9) + paperStrength * 18,
                     itemStyle: {
                         color: hexToRgba(color, isDimmed ? 0.1 : (clusterIndex === selectedClusterIndex ? 0.82 : 0.52)),
                         borderColor: hexToRgba(color, isDimmed ? 0.16 : 0.86),
@@ -7779,8 +9070,8 @@ About 500 words of literature review draft in markdown.`;
                     if (params.data.paperData) {
                         return `<div style="max-width:260px; white-space:normal;">
                             <div style="font-weight:800; margin-bottom:4px;">${escapeHtml(params.data.paperData.title || 'Untitled')}</div>
-                            <div style="font-size:12px; color:#cbd5e1;">Theme ${params.data.clusterIndex + 1}</div>
-                            <div style="font-size:12px; color:#cbd5e1;">Theme fit ${Number(params.data.paperData.cluster_similarity || 0).toFixed(3)}</div>
+                            <div style="font-size:12px; color:#cbd5e1;">${isCitationMode ? 'Citation Cluster' : 'Theme'} ${params.data.clusterIndex + 1}</div>
+                            <div style="font-size:12px; color:#cbd5e1;">${isCitationMode ? `Cited by ${formatFwciValue(params.data.paperData.citation_cluster_indegree || 0)} in cluster` : `Theme fit ${Number(params.data.paperData.cluster_similarity || 0).toFixed(3)}`}</div>
                         </div>`;
                     }
                     return `<div style="max-width:260px; white-space:normal;">
@@ -7828,6 +9119,10 @@ About 500 words of literature review draft in markdown.`;
         window.themeClusterUiState = window.themeClusterUiState || {};
         window.themeClusterUiState.activeClusterIndex = clusterIndex;
         window.themeClusterUiState.selectedClusterIndex = clusterIndex;
+        if (isCitationClusterMode(window.themeClusterUiState.clusterResult)) {
+            window.themeClusterUiState.citationTopologySelectedKey = '';
+            window.themeClusterUiState.citationTopologyMode = 'all';
+        }
         renderThemeClusterModal(window.themeClusterUiState.clusterResult);
     };
 
@@ -7835,6 +9130,21 @@ About 500 words of literature review draft in markdown.`;
         window.themeClusterUiState = window.themeClusterUiState || {};
         window.themeClusterUiState.selectedClusterIndex = window.themeClusterUiState.selectedClusterIndex === clusterIndex ? null : clusterIndex;
         window.themeClusterUiState.activeClusterIndex = clusterIndex;
+        renderThemeClusterModal(window.themeClusterUiState.clusterResult);
+    };
+
+    window.setCitationClusterTopologyMode = mode => {
+        window.themeClusterUiState = window.themeClusterUiState || {};
+        const normalizedMode = ['all', '1-hop', '2-hop'].includes(String(mode)) ? String(mode) : 'all';
+        window.themeClusterUiState.citationTopologyMode = normalizedMode;
+        if (normalizedMode === 'all') {
+            window.themeClusterUiState.citationTopologySelectedKey = '';
+        } else if (!window.themeClusterUiState.citationTopologySelectedKey) {
+            const clusterResult = window.themeClusterUiState.clusterResult;
+            const clusterIndex = Number.isInteger(window.themeClusterUiState.activeClusterIndex) ? window.themeClusterUiState.activeClusterIndex : 0;
+            const cluster = clusterResult?.clusters?.[clusterIndex];
+            window.themeClusterUiState.citationTopologySelectedKey = getCitationClusterDefaultSelectionKey(cluster);
+        }
         renderThemeClusterModal(window.themeClusterUiState.clusterResult);
     };
 
@@ -7895,7 +9205,9 @@ About 500 words of literature review draft in markdown.`;
     window.recenterThemeClusterChart = () => {
         window.themeClusterUiState = window.themeClusterUiState || {};
         window.themeClusterUiState.chartScale = 1;
-        window.themeClusterUiState.selectedClusterIndex = null;
+        if (!isCitationClusterMode(window.themeClusterUiState.clusterResult)) {
+            window.themeClusterUiState.selectedClusterIndex = null;
+        }
         renderThemeClusterModal(window.themeClusterUiState.clusterResult);
     };
 
@@ -8020,33 +9332,102 @@ About 500 words of literature review draft in markdown.`;
         await generateLiteratureReviewFromPapers(selectedPapers, 'Generated from selected Core, Underweight, and Pending papers.');
     };
 
-    window.autoClusterThemes = async () => {
+    function openClusterModeChooserModal() {
+        const bodyHtml = `
+            <div style="display:grid; gap:16px;">
+                <div style="font-size:13px; line-height:1.65; color:#64748b;">
+                    Choose which clustering lens to run for this project. You can switch later, but StarMap will only compute the mode you choose now instead of kicking off both immediately.
+                </div>
+                <div style="display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px;">
+                    <button type="button" onclick="switchThemeClusterMode('semantic')" style="display:grid; gap:10px; text-align:left; padding:18px; border:1px solid rgba(79,70,229,0.18); border-radius:22px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.98)); cursor:pointer; box-shadow:0 14px 28px rgba(79,70,229,0.08);">
+                        <div style="display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; background:rgba(79,70,229,0.08); color:#4f46e5; font-size:11px; font-weight:800; width:max-content;">Semantic Cluster</div>
+                        <div style="font-size:22px; line-height:1.06; letter-spacing:-0.03em; font-weight:900; color:#26327c;">Group papers by topic similarity</div>
+                        <div style="font-size:13px; line-height:1.6; color:#475569;">Best when you want a literature-review view of which papers discuss similar concepts, mechanisms, methods, or empirical themes.</div>
+                    </button>
+                    <button type="button" onclick="switchThemeClusterMode('citation')" style="display:grid; gap:10px; text-align:left; padding:18px; border:1px solid rgba(14,165,233,0.18); border-radius:22px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.98)); cursor:pointer; box-shadow:0 14px 28px rgba(14,165,233,0.08);">
+                        <div style="display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; background:rgba(14,165,233,0.08); color:#0284c7; font-size:11px; font-weight:800; width:max-content;">Citation Cluster</div>
+                        <div style="font-size:22px; line-height:1.06; letter-spacing:-0.03em; font-weight:900; color:#0f3a66;">Group papers by who cites whom</div>
+                        <div style="font-size:13px; line-height:1.6; color:#475569;">Best when you want to see citation communities, lineage, and local topology inside the project citation graph rather than topical wording similarity.</div>
+                    </button>
+                </div>
+            </div>
+        `;
+        openReviewModalContent(
+            'Theme Clusters',
+            'Choose the clustering mode before computation starts.',
+            bodyHtml,
+            { width: 'min(1100px, 92vw)', maxWidth: '92vw', maxHeight: '88vh' }
+        );
+    }
+
+    async function openClusterModeModal(mode = 'semantic', { force = false } = {}) {
         if (!currentProject?.top_papers?.length) {
-            alert("Please import some papers first.");
+            alert('Please import some papers first.');
+            return;
+        }
+
+        const normalizedMode = mode === 'citation' ? 'citation' : 'semantic';
+        window.themeClusterUiState = {
+            ...(window.themeClusterUiState || {}),
+            clusterMode: normalizedMode,
+            selectedClusterIndex: null,
+            activeClusterIndex: 0,
+            expandedClusters: {},
+            reviewSelectionMode: false,
+            selectedReviewPaperKeys: {}
+        };
+
+        if (normalizedMode === 'citation') {
+            const reusableCitation = !force ? getReusableCitationClusterResult(currentProject) : null;
+            if (reusableCitation) {
+                renderThemeClusterModal(reusableCitation);
+                return;
+            }
+            openReviewModalContent(
+                'Theme Clusters',
+                'Choose between semantic clustering and citation-defined communities for this project.',
+                `${getClusterModeToggleHtml(normalizedMode)}<div style="margin-top:14px;">${renderThemeClusterProgressShell()}</div>`,
+                { width: 'min(1380px, 96vw)', maxWidth: '96vw', maxHeight: '92vh' }
+            );
+            setThemeClusterProgress(4, 'Preparing full-project citation graph...', 'All project papers are used for citation communities, regardless of visualization density.');
+            try {
+                currentCitationClusterResult = await computeCitationClusterResult(currentProject, async progress => {
+                    const footnote = progress.stage === 'citation-graph'
+                        ? 'Resolving OpenAlex citations for all project papers.'
+                        : 'Citation communities are built from network topology only, then named from core-paper abstracts.';
+                    setThemeClusterProgress(progress.percent, progress.detail, footnote);
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }, { force });
+                if (!currentCitationClusterResult?.clusters?.length) {
+                    document.getElementById('review-modal-body').innerHTML = `${getClusterModeToggleHtml(normalizedMode)}<div style="margin-top:14px; font-size:13px; color:var(--text-muted);">Not enough citation connectivity was available to build communities yet.</div>`;
+                    return;
+                }
+                setThemeClusterProgress(97, 'Rendering citation communities...');
+                renderThemeClusterModal(currentCitationClusterResult);
+            } catch (error) {
+                console.error('Citation clustering failed:', error);
+                document.getElementById('review-modal-body').innerHTML = `${getClusterModeToggleHtml(normalizedMode)}<div style="margin-top:14px; color:#ef4444; font-size:13px;">${escapeHtml(error.message || 'Citation clustering failed.')}</div>`;
+            }
             return;
         }
 
         const cacheContext = getThemeClusterCacheContext(currentProject, THEME_CLUSTER_TOP_PAPER_LIMIT);
-        const reusableResult = getReusableThemeClusterResult(currentProject, cacheContext);
+        const reusableResult = !force ? getReusableThemeClusterResult(currentProject, cacheContext) : null;
         if (reusableResult) {
             markThemeClusterCacheReady(true);
             populateWorkspaceFilterValueOptions();
             renderThemeClusterModal(reusableResult);
             return;
         }
-        const reusableSeed = getReusableThemeClusterSeedResult(currentProject, cacheContext);
+        const reusableSeed = !force ? getReusableThemeClusterSeedResult(currentProject, cacheContext) : null;
 
         openReviewModalContent(
             'Theme Clusters',
-            themeClusterCacheStatus.reason
-                ? `Recomputing because the previous cache is outdated: ${themeClusterCacheStatus.reason}.`
-                : (reusableSeed
-                    ? 'Using preloaded seed clusters. Finishing full-paper assignment and theme naming now.'
-                    : 'Auto-clustering top related papers with local semantic embeddings.'),
-            renderThemeClusterProgressShell(),
+            'Choose between semantic clustering and citation-defined communities for this project.',
+            `${getClusterModeToggleHtml(normalizedMode)}<div style="margin-top:14px;">${renderThemeClusterProgressShell()}</div>`,
             { width: 'min(1380px, 96vw)', maxWidth: '96vw', maxHeight: '92vh' }
         );
-        setThemeClusterProgress(3, reusableSeed ? 'Using preloaded seed clusters...' : 'Preparing candidate papers...');
+        setThemeClusterProgress(3, reusableSeed ? 'Using preloaded semantic seed clusters...' : 'Preparing candidate papers...');
 
         try {
             currentThemeClusterResult = await computeThemeClusters(currentProject, async progress => {
@@ -8060,15 +9441,23 @@ About 500 words of literature review draft in markdown.`;
             markThemeClusterCacheReady(true);
             populateWorkspaceFilterValueOptions();
             if (!currentThemeClusterResult.clusters.length) {
-                document.getElementById('review-modal-body').innerHTML = `<div style="font-size:13px; color:var(--text-muted);">Not enough analyzable papers to cluster yet.</div>`;
+                document.getElementById('review-modal-body').innerHTML = `${getClusterModeToggleHtml(normalizedMode)}<div style="margin-top:14px; font-size:13px; color:var(--text-muted);">Not enough analyzable papers to cluster yet.</div>`;
                 return;
             }
             setThemeClusterProgress(96, 'Rendering cluster map...');
             renderThemeClusterModal(currentThemeClusterResult);
         } catch (error) {
             console.error('Theme clustering failed:', error);
-            document.getElementById('review-modal-body').innerHTML = `<div style="color:#ef4444; font-size:13px;">${escapeHtml(error.message || 'Theme clustering failed.')}</div>`;
+            document.getElementById('review-modal-body').innerHTML = `${getClusterModeToggleHtml(normalizedMode)}<div style="margin-top:14px; color:#ef4444; font-size:13px;">${escapeHtml(error.message || 'Theme clustering failed.')}</div>`;
         }
+    }
+
+    window.switchThemeClusterMode = async mode => {
+        await openClusterModeModal(mode, { force: false });
+    };
+
+    window.autoClusterThemes = async () => {
+        openClusterModeChooserModal();
     };
 
     window.openRepositoryView = () => {
@@ -8553,7 +9942,7 @@ About 500 words of literature review draft in markdown.`;
             const index = currentProject.top_papers.findIndex(p => p.filename === filename); 
             if (index > -1) { 
                 currentProject.top_papers.splice(index, 1); 
-                invalidateThemeClusterResult(currentProject?.id, 'repository changed');
+                invalidateClusterResults(currentProject?.id, 'repository changed');
                 await syncPapersToBackend();
                 updateWorkspaceUI(); 
             } 
@@ -8567,7 +9956,7 @@ About 500 words of literature review draft in markdown.`;
         if (confirm("🚨 EXTREME DANGER: Are you absolutely sure you want to delete ALL related papers from this project? This action CANNOT be undone!")) {
             currentProject.top_papers = []; 
             try {
-                invalidateThemeClusterResult(currentProject?.id, 'repository changed');
+                invalidateClusterResults(currentProject?.id, 'repository changed');
                 await syncPapersToBackend();
                 visiblePaperCount = 10;
                 updateWorkspaceUI();
@@ -9016,7 +10405,7 @@ About 500 words of literature review draft in markdown.`;
         try {
             currentProject.top_papers = currentProject.top_papers.filter(paper => paper.import_batch_id !== latestBatch.batchId);
             applyLatestImportBatchFlags(currentProject);
-            invalidateThemeClusterResult(currentProject?.id, 'repository changed');
+            invalidateClusterResults(currentProject?.id, 'repository changed');
             await syncPapersToBackend();
             updateWorkspaceUI();
             log(`✅ Rolled back the latest local import batch. Removed ${latestBatch.count} paper(s).`);
@@ -9182,7 +10571,17 @@ About 500 words of literature review draft in markdown.`;
             zotero_item_key: rawPaper.zotero_item_key || '',
             zotero_has_pdf_attachment: !!rawPaper.zotero_has_pdf_attachment,
             zotero_has_fulltext: !!rawPaper.zotero_has_fulltext || isMeaningfulText(currentContent),
-            network_vec: rawPaper.network_vec || null
+            network_vec: rawPaper.network_vec || null,
+            citation_cluster_id: rawPaper.citation_cluster_id || '',
+            citation_cluster_theme_name: rawPaper.citation_cluster_theme_name || '',
+            citation_cluster_theme_summary: rawPaper.citation_cluster_theme_summary || '',
+            citation_cluster_llm_overview_status: rawPaper.citation_cluster_llm_overview_status || '',
+            citation_cluster_indegree: rawPaper.citation_cluster_indegree ?? null,
+            citation_cluster_core_rank: rawPaper.citation_cluster_core_rank ?? null,
+            citation_cluster_is_core: !!rawPaper.citation_cluster_is_core,
+            citation_cluster_size: rawPaper.citation_cluster_size ?? null,
+            citation_cluster_graph_signature: rawPaper.citation_cluster_graph_signature || '',
+            citation_cluster_version: rawPaper.citation_cluster_version || ''
         };
     }
 
@@ -9735,7 +11134,7 @@ About 500 words of literature review draft in markdown.`;
         });
 
         if (updatedCount > 0) {
-            invalidateThemeClusterResult(currentProject?.id, 'new imports');
+            invalidateClusterResults(currentProject?.id, 'new imports');
             if (deferSimilarity) {
                 updatedExistingPapers.forEach(paper => {
                     paper.similarity_pending = true;
@@ -9747,7 +11146,7 @@ About 500 words of literature review draft in markdown.`;
         }
 
         if (trulyNewPapers.length) {
-            invalidateThemeClusterResult(currentProject?.id, 'new imports');
+            invalidateClusterResults(currentProject?.id, 'new imports');
             if (deferSimilarity) {
                 trulyNewPapers.forEach(paper => {
                     paper.similarity_pending = true;
@@ -10805,7 +12204,13 @@ ${rawText}`;
     }
 
     async function renderCitationGraph(inputPapers, recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject)) {
-        const papers = inputPapers.slice(0, currentChartRenderLimit).map(paper => {
+        const displayPapers = inputPapers.slice(0, currentChartRenderLimit).map(paper => {
+            normalizePaperState(paper);
+            return paper;
+        });
+        const papers = (Array.isArray(currentProject?.top_papers) && currentProject.top_papers.length
+            ? currentProject.top_papers
+            : displayPapers).map(paper => {
             normalizePaperState(paper);
             return paper;
         });
@@ -10833,7 +12238,11 @@ ${rawText}`;
             if (currentProject?.top_papers?.length) {
                 const paperMap = new Map(updatedPapers.map(paper => [paper.filename, paper]));
                 currentProject.top_papers = currentProject.top_papers.map(paper => paperMap.get(paper.filename) || paper);
-                await syncPapersToBackend();
+                const clusterSync = await ensureCitationTopologyClusters(currentProject.top_papers, data.edges || []);
+                currentCitationClusterResult = buildCitationClusterModalResult(currentProject) || currentCitationClusterResult;
+                if (clusterSync.changed || updatedPapers.length) {
+                    await syncPapersToBackend();
+                }
             }
 
             const rawActivePapers = currentProject?.top_papers?.filter(paper => paperMapHasFilename(updatedPapers, paper.filename)) || updatedPapers;
@@ -10844,6 +12253,7 @@ ${rawText}`;
                 seenPaperKeys.add(graphKey);
                 return true;
             });
+            const displayKeySet = new Set(displayPapers.map(getStablePaperGraphKey).filter(Boolean));
             const paperByFilename = Object.fromEntries(activePapers.map(paper => [getStablePaperGraphKey(paper), paper]));
             const nodeDegrees = {};
             (data.edges || []).forEach(edge => {
@@ -10856,6 +12266,7 @@ ${rawText}`;
             const visiblePapers = activePapers.filter(paper => {
                 const graphKey = getStablePaperGraphKey(paper);
                 if (!graphKey) return false;
+                if (displayKeySet.size && !displayKeySet.has(graphKey)) return false;
                 if (currentCitationDisplayMode === 'all') return true;
                 const degree = nodeDegrees[graphKey] || 0;
                 const isCore = getPaperStatus(paper) === 'Core';
@@ -11050,6 +12461,13 @@ ${rawText}`;
     window.addEventListener('resize', () => { 
         if (myChart) myChart.resize(); 
         if (window.themeClusterChart) window.themeClusterChart.resize();
+        const panel = document.getElementById('marked-node-panel');
+        if (panel && !panel.classList.contains('hidden')) {
+            applyMarkedNodePanelPosition({
+                x: parseFloat(panel.style.left || '18'),
+                y: parseFloat(panel.style.top || '18')
+            });
+        }
     });
 </script>
 </body>

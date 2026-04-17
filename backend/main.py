@@ -895,6 +895,15 @@ class PaperItem(BaseModel):
     similarity_pending: bool = False
     # --- 新增：允许接收并保存前端传来的 384 维 Embedding 向量 ---
     network_vec: Optional[List[float]] = None
+    citation_cluster_id: str = ""
+    citation_cluster_theme_name: str = ""
+    citation_cluster_theme_summary: str = ""
+    citation_cluster_indegree: Optional[int] = None
+    citation_cluster_core_rank: Optional[int] = None
+    citation_cluster_is_core: bool = False
+    citation_cluster_size: Optional[int] = None
+    citation_cluster_graph_signature: str = ""
+    citation_cluster_version: str = ""
 
 class MergeRequest(BaseModel):
     new_papers: List[PaperItem]
