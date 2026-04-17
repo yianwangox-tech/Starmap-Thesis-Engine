@@ -1002,6 +1002,7 @@ class LlmProxyRequest(BaseModel):
 class LiteratureWatchJournalSource(BaseModel):
     id: str = ""
     display_name: str = ""
+    target_watch_weight: str = "standard"
 
 class LiteratureWatchSourceSearchRequest(BaseModel):
     query: str
@@ -1658,28 +1659,68 @@ def _venue_discipline_bonus(candidate: dict, discipline_scopes) -> float:
 def _normalize_watch_venue_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", _collapse_whitespace(str(value or "")).lower()).strip()
 
-def _watched_journal_bonus(candidate: dict, watched_journals: List[str]) -> float:
-    if not watched_journals:
+def _normalize_target_watch_weight(raw_value) -> str:
+    value = _collapse_whitespace(str(raw_value or "")).lower()
+    if value in {"off", "none", "no_lift", "no-lift", "0"}:
+        return "off"
+    if value in {"priority", "high", "strong", "2"}:
+        return "priority"
+    return "standard"
+
+def _target_watch_bonus_for_weight(weight_tier: str) -> float:
+    normalized = _normalize_target_watch_weight(weight_tier)
+    if normalized == "off":
         return 0.0
+    if normalized == "priority":
+        return 0.20
+    return 0.12
+
+def _target_watch_weight_label(weight_tier: str) -> str:
+    normalized = _normalize_target_watch_weight(weight_tier)
+    if normalized == "off":
+        return "No lift"
+    if normalized == "priority":
+        return "Priority lift"
+    return "Standard lift"
+
+def _watched_journal_bonus_detail(candidate: dict, watched_journals: List[dict]) -> dict:
+    if not watched_journals:
+        return {"bonus": 0.0, "matched_journal": "", "weight_tier": "off"}
     venue_candidates = {
         _normalize_watch_venue_key(candidate.get("publication_venue")),
         _normalize_watch_venue_key(candidate.get("source_journal"))
     }
     venue_candidates = {item for item in venue_candidates if item}
     if not venue_candidates:
-        return 0.0
-    normalized_watched = {
-        _normalize_watch_venue_key(item)
-        for item in watched_journals
-        if _normalize_watch_venue_key(item)
-    }
+        return {"bonus": 0.0, "matched_journal": "", "weight_tier": "off"}
+    normalized_watched = []
+    for item in watched_journals:
+        display_name = _trim_text(_collapse_whitespace((item or {}).get("display_name", "")), 220)
+        normalized_name = _normalize_watch_venue_key(display_name)
+        if not normalized_name:
+            continue
+        weight_tier = _normalize_target_watch_weight((item or {}).get("target_watch_weight"))
+        normalized_watched.append({
+            "display_name": display_name,
+            "normalized_name": normalized_name,
+            "weight_tier": weight_tier,
+            "bonus": _target_watch_bonus_for_weight(weight_tier)
+        })
     for venue in venue_candidates:
         for watched in normalized_watched:
-            if venue == watched or venue in watched or watched in venue:
-                return 0.12
-    return 0.0
+            normalized_name = watched.get("normalized_name", "")
+            if venue == normalized_name or venue in normalized_name or normalized_name in venue:
+                return {
+                    "bonus": watched.get("bonus", 0.0),
+                    "matched_journal": watched.get("display_name", ""),
+                    "weight_tier": watched.get("weight_tier", "standard")
+                }
+    return {"bonus": 0.0, "matched_journal": "", "weight_tier": "off"}
 
-def _candidate_quality_score(candidate: dict, discipline_scopes, watched_journals: Optional[List[str]] = None) -> float:
+def _watched_journal_bonus(candidate: dict, watched_journals: List[dict]) -> float:
+    return float(_watched_journal_bonus_detail(candidate, watched_journals).get("bonus") or 0.0)
+
+def _candidate_quality_score(candidate: dict, discipline_scopes, watched_journals: Optional[List[dict]] = None) -> float:
     citation_count = candidate.get("citation_count") or 0
     fwci_value = candidate.get("fwci")
     citation_score = min((math.log1p(max(citation_count, 0)) / math.log1p(500)), 1.0) if citation_count else 0.0
@@ -2230,11 +2271,16 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
     lookup_payload = _make_watch_lookup_payload()
     lookback_window, range_label, start_date, window_days = _normalize_watch_range(request_payload.lookback_window)
     recommendation_limit = max(3, min(int(request_payload.limit or 12), 30))
-    watched_journal_names = [
-        _trim_text(_collapse_whitespace(getattr(source, "display_name", "")), 220)
-        for source in (request_payload.journal_sources or [])
-        if _trim_text(_collapse_whitespace(getattr(source, "display_name", "")), 220)
-    ]
+    watched_journal_sources = []
+    for source in (request_payload.journal_sources or []):
+        display_name = _trim_text(_collapse_whitespace(getattr(source, "display_name", "")), 220)
+        if not display_name:
+            continue
+        watched_journal_sources.append({
+            "id": _trim_text(getattr(source, "id", ""), 300),
+            "display_name": display_name,
+            "target_watch_weight": _normalize_target_watch_weight(getattr(source, "target_watch_weight", "standard"))
+        })
     existing_signatures = {
         signature
         for paper in context.get("top_papers", [])
@@ -2402,9 +2448,10 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
         quality_score = _candidate_quality_score(
             candidate,
             discipline_scopes,
-            watched_journal_names if watch_mode == "target" else []
+            watched_journal_sources if watch_mode == "target" else []
         )
         freshness_score = _candidate_freshness_score(candidate, window_days)
+        watched_journal_detail = _watched_journal_bonus_detail(candidate, watched_journal_sources if watch_mode == "target" else [])
         lexical_threshold = 0.12 if watch_mode == "scholar" else (0.14 if watch_mode == "journal" else 0.18)
         if relevance_score < lexical_threshold:
             continue
@@ -2412,8 +2459,12 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
         candidate["quality_score"] = round(quality_score, 3)
         candidate["freshness_score"] = round(freshness_score, 3)
         candidate["watched_journal_bonus_applied"] = (
-            watch_mode == "target" and _watched_journal_bonus(candidate, watched_journal_names) > 0
+            watch_mode == "target" and float(watched_journal_detail.get("bonus") or 0) > 0
         )
+        candidate["watched_journal_bonus"] = round(float(watched_journal_detail.get("bonus") or 0), 3)
+        candidate["matched_watched_journal"] = watched_journal_detail.get("matched_journal", "")
+        candidate["watched_journal_weight_tier"] = watched_journal_detail.get("weight_tier", "")
+        candidate["watched_journal_weight_label"] = _target_watch_weight_label(watched_journal_detail.get("weight_tier", ""))
         candidate["matched_queries"] = matched_queries or candidate.get("matched_queries", [])[:3]
         preliminary_candidates.append(candidate)
 
@@ -2456,13 +2507,13 @@ def _build_project_literature_watch(project_data: dict, request_payload: Literat
             if watch_mode == "scholar" and candidate.get("source_scholar")
             else (
                 (
-                    f"Strongest query match: {candidate['matched_queries'][0]}. Published in one of your watched journals."
+                    f"Strongest query match: {candidate['matched_queries'][0]}. Published in {candidate.get('matched_watched_journal') or 'one of your watched journals'}."
                     if candidate.get("matched_queries") and candidate.get("watched_journal_bonus_applied")
                     else (
                         f"Strongest query match: {candidate['matched_queries'][0]}"
                         if candidate.get("matched_queries")
                         else (
-                            "Matched the target thesis, Core-paper signal, and one of your watched journals."
+                            f"Matched the target thesis, Core-paper signal, and {candidate.get('matched_watched_journal') or 'one of your watched journals'}."
                             if candidate.get("watched_journal_bonus_applied")
                             else "Matched the target thesis and Core-paper signal."
                         )
