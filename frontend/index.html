@@ -266,11 +266,21 @@
             position: relative;
             display: flex;
             flex-direction: column;
-            justify-content: flex-start;
+            justify-content: center;
             height: 100%;
             box-sizing: border-box;
             box-shadow: 0 18px 32px rgba(15, 23, 42, 0.05);
             min-height: 348px;
+        }
+
+        .upload-zone-body {
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            min-height: 0;
         }
 
         .file-input {
@@ -674,6 +684,358 @@
             font-weight: 800;
         }
 
+        .workspace-section-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            background: rgba(255,255,255,0.96);
+            color: #475569;
+            font-size: 12px;
+            font-weight: 800;
+            cursor: pointer;
+            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+            transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+        }
+
+        .workspace-section-toggle:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 22px rgba(15, 23, 42, 0.06);
+            border-color: rgba(99, 102, 241, 0.28);
+            color: #3730a3;
+        }
+
+        .workspace-section-toggle[data-collapsed="true"] {
+            color: #4338ca;
+            border-color: rgba(99, 102, 241, 0.22);
+            background: rgba(238,242,255,0.92);
+        }
+
+        .workspace-section-body {
+            display: block;
+        }
+
+        .workspace-section-body.collapsed {
+            display: none;
+        }
+
+        .evidence-board-shell {
+            padding: 20px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.99), rgba(247,249,255,0.97));
+            border-radius: 24px;
+            box-shadow: 0 18px 40px rgba(15,23,42,0.06);
+        }
+
+        .evidence-board-grid {
+            display: grid;
+            grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+            gap: 18px;
+            align-items: start;
+        }
+
+        .evidence-sidebar,
+        .evidence-main {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            min-width: 0;
+        }
+
+        .evidence-claim-item {
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            background: rgba(255,255,255,0.92);
+            border-radius: 18px;
+            padding: 14px;
+            cursor: pointer;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+        }
+
+        .evidence-claim-item:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 14px 28px rgba(79, 70, 229, 0.08);
+            border-color: rgba(99, 102, 241, 0.28);
+        }
+
+        .evidence-claim-item.active {
+            border-color: rgba(79, 70, 229, 0.38);
+            box-shadow: 0 16px 30px rgba(79, 70, 229, 0.12);
+            background: linear-gradient(180deg, rgba(238,242,255,0.96), rgba(255,255,255,0.98));
+        }
+
+        .evidence-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 9px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 800;
+            border: 1px solid transparent;
+            white-space: nowrap;
+        }
+
+        .evidence-columns {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            min-width: 0;
+        }
+
+        .evidence-primary-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(250px, 1fr));
+            gap: 14px;
+            align-items: start;
+            min-width: 0;
+        }
+
+        .evidence-column {
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 20px;
+            background: rgba(255,255,255,0.92);
+            overflow: hidden;
+            min-width: 0;
+        }
+
+        .evidence-primary-column {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .evidence-primary-column .evidence-column-body {
+            min-height: 0;
+            max-height: 540px;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            padding-right: 10px;
+            scrollbar-width: thin;
+        }
+
+        .evidence-primary-column .evidence-column-body::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .evidence-primary-column .evidence-column-body::-webkit-scrollbar-thumb {
+            background: rgba(148, 163, 184, 0.3);
+            border-radius: 999px;
+        }
+
+        .evidence-secondary-panel {
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 20px;
+            background: rgba(255,255,255,0.92);
+            overflow: hidden;
+        }
+
+        .evidence-secondary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 10px;
+            padding: 12px;
+        }
+
+        .evidence-secondary-empty {
+            padding: 0 12px 12px;
+        }
+
+        .evidence-column-body {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 12px;
+            min-height: 240px;
+        }
+
+        .evidence-card {
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-left: 4px solid var(--evidence-accent, #64748b);
+            background: rgba(255,255,255,0.96);
+            border-radius: 14px;
+            padding: 10px 11px;
+            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.035);
+        }
+
+        .evidence-card-title {
+            font-size: 13px;
+            line-height: 1.42;
+            font-weight: 800;
+            color: #1f2937;
+            margin-bottom: 4px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .evidence-card-meta {
+            font-size: 11px;
+            color: #64748b;
+            line-height: 1.45;
+            margin-bottom: 8px;
+            display: -webkit-box;
+            -webkit-line-clamp: 1;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .evidence-card-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .evidence-card-percent {
+            font-size: 11px;
+            font-weight: 900;
+            color: var(--evidence-accent, #475569);
+            flex: 0 0 auto;
+        }
+
+        .evidence-card-ignore {
+            border: none;
+            background: transparent;
+            color: #94a3b8;
+            font-size: 11px;
+            font-weight: 800;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .evidence-card-ignore:hover {
+            color: #dc2626;
+        }
+
+        .evidence-card-strength-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            font-size: 10px;
+            color: #64748b;
+            margin-bottom: 4px;
+        }
+
+        .evidence-card-actions {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .evidence-card-details {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid rgba(148, 163, 184, 0.14);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .evidence-column-footer {
+            padding: 0 12px 12px;
+        }
+
+        #evidence-reasoning-modal.drawer-mode .modal-content {
+            width: min(480px, 42vw);
+            max-width: 100%;
+        }
+
+        .evidence-reasoning-shell {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .evidence-reasoning-card {
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            border-radius: 18px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.97));
+            padding: 16px;
+        }
+
+        .evidence-reasoning-snippet {
+            font-size: 12px;
+            line-height: 1.7;
+            color: #475569;
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 10px 12px;
+            border: 1px solid rgba(148,163,184,0.14);
+        }
+
+        .evidence-progress-shell {
+            border: 1px solid rgba(79, 70, 229, 0.12);
+            border-radius: 18px;
+            padding: 14px 16px;
+            background: linear-gradient(180deg, rgba(238,242,255,0.9), rgba(255,255,255,0.96));
+        }
+
+        .evidence-progress-track {
+            width: 100%;
+            height: 9px;
+            border-radius: 999px;
+            background: rgba(148, 163, 184, 0.16);
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .evidence-progress-fill {
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, #4f46e5, #818cf8);
+        }
+
+        .evidence-strength-track {
+            width: 100%;
+            height: 7px;
+            border-radius: 999px;
+            background: rgba(148, 163, 184, 0.16);
+            overflow: hidden;
+        }
+
+        .evidence-strength-fill {
+            height: 100%;
+            border-radius: 999px;
+            background: linear-gradient(90deg, var(--evidence-accent, #64748b), color-mix(in srgb, var(--evidence-accent, #64748b) 62%, white));
+        }
+
+        .evidence-empty {
+            font-size: 12px;
+            line-height: 1.6;
+            color: #64748b;
+            padding: 12px;
+            border-radius: 14px;
+            background: rgba(248,250,252,0.92);
+            border: 1px dashed rgba(148, 163, 184, 0.35);
+        }
+
+        .evidence-board-status {
+            font-size: 12px;
+            line-height: 1.6;
+            border-radius: 16px;
+            padding: 12px 14px;
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            background: #f8fafc;
+            color: #475569;
+        }
+
+        .evidence-board-status.error {
+            color: #b91c1c;
+            background: #fef2f2;
+            border-color: rgba(239, 68, 68, 0.18);
+        }
+
+        .evidence-board-status.success {
+            color: #166534;
+            background: #f0fdf4;
+            border-color: rgba(34, 197, 94, 0.18);
+        }
+
         .workspace-search-row {
             margin-bottom: 14px;
             display: flex;
@@ -1025,6 +1387,18 @@
             .modal-overlay.drawer-mode .modal-content {
                 width: min(100vw, 420px);
             }
+
+            .evidence-board-grid {
+                grid-template-columns: minmax(0, 1fr);
+            }
+
+            .evidence-primary-grid {
+                grid-template-columns: minmax(0, 1fr);
+            }
+
+            #evidence-reasoning-modal.drawer-mode .modal-content {
+                width: min(100vw, 480px);
+            }
         }
     </style>
 </head>
@@ -1139,10 +1513,12 @@
         
         <div class="workspace-top-bar">
             <div class="upload-zone">
-                <div style="font-size: 24px;">📄</div>
-                <div style="font-weight: 700; font-size: 14px; margin-bottom: 5px;">Drop PDFs Here</div>
-                <button id="analyzeBtn" class="btn btn-primary" style="width: 80%; margin: 0 auto; font-size: 12px; padding: 6px; position: relative; z-index: 10;" disabled>↩ Rollback Latest Import</button>
-                <button id="cancelImportBtn" class="btn btn-outline hidden" style="width: 80%; margin: 8px auto 0 auto; font-size: 12px; padding: 6px; position: relative; z-index: 10;">■ Stop Current Import</button>
+                <div class="upload-zone-body">
+                    <div style="font-size: 24px;">📄</div>
+                    <div style="font-weight: 700; font-size: 14px; margin-bottom: 5px;">Drop PDFs Here</div>
+                    <button id="analyzeBtn" class="btn btn-primary" style="width: 80%; margin: 0 auto; font-size: 12px; padding: 6px; position: relative; z-index: 10;" disabled>↩ Rollback Latest Import</button>
+                    <button id="cancelImportBtn" class="btn btn-outline hidden" style="width: 80%; margin: 8px auto 0 auto; font-size: 12px; padding: 6px; position: relative; z-index: 10;">■ Stop Current Import</button>
+                </div>
                 <input type="file" id="pdfUpload" class="file-input" accept=".pdf" multiple>
                 
                 <div id="progress-container" class="progress-container hidden">
@@ -1187,22 +1563,7 @@
             </div>
         </div>
 
-        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:18px 0 12px;">
-            <button class="btn btn-outline" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px;" onclick="openPaperStatusOverview()">
-                📋 Paper Status Overview
-            </button>
-            <button class="btn btn-outline" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px;" onclick="autoClusterThemes()">
-                🧩 Auto Cluster Themes
-            </button>
-            <button class="btn btn-outline" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px;" onclick="openZoteroSyncModal()">
-                🔄 Sync Zotero
-            </button>
-            <button class="btn btn-outline" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px;" onclick="openRepositoryView()">
-                📊 View Repository
-            </button>
-        </div>
-
-        <div id="starmap-visualization-anchor" class="workspace-title-row">
+        <div id="starmap-visualization-anchor" class="workspace-title-row" style="margin-top:18px; align-items:flex-end;">
             <div class="workspace-section-title">
                 <div>
                     <div class="workspace-pill">Workspace Atlas</div>
@@ -1210,7 +1571,29 @@
                     <div class="workspace-section-copy">Move between orbital, network, and citation views while keeping your paper review flow, sync tools, and writing actions within the same workspace.</div>
                 </div>
             </div>
-            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:24px; flex-wrap:wrap; width:100%; margin-top:34px;">
+            <button id="workspace-section-toggle-starmap" class="workspace-section-toggle" type="button" onclick="toggleWorkspaceSection('starmap')" aria-expanded="true" data-collapsed="false">
+                <span id="workspace-section-toggle-icon-starmap">▾</span>
+                <span id="workspace-section-toggle-label-starmap">Collapse</span>
+            </button>
+        </div>
+
+        <div id="workspace-section-body-starmap" class="workspace-section-body">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 12px;">
+                <button class="btn btn-outline" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px;" onclick="openPaperStatusOverview()">
+                    📋 Paper Status Overview
+                </button>
+                <button class="btn btn-outline" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px;" onclick="autoClusterThemes()">
+                    🧩 Auto Cluster Themes
+                </button>
+                <button class="btn btn-outline" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px;" onclick="openZoteroSyncModal()">
+                    🔄 Sync Zotero
+                </button>
+                <button class="btn btn-outline" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px;" onclick="openRepositoryView()">
+                    📊 View Repository
+                </button>
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:24px; flex-wrap:wrap; width:100%; margin-bottom:12px;">
                 <div style="display:flex; flex-direction:column; gap:6px; min-width:min(320px, 100%); flex:1 1 520px;">
                     <div style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.06em;">Visualization Mode</div>
                     <div class="toggle-group" style="margin-bottom:0; min-width:0;">
@@ -1229,48 +1612,109 @@
                     </div>
                 </div>
             </div>
-        </div>
-        
-        <div id="chart-wrapper">
-            <div id="marked-node-panel" class="hidden" style="position:absolute; top:18px; left:18px; z-index:20; max-width:min(440px, calc(100% - 180px));"></div>
-            <div id="chart-gesture-hint" class="hidden" style="position:absolute; top:18px; left:18px; z-index:19; max-width:min(380px, calc(100% - 220px)); font-size:11px; line-height:1.5; color:#64748b; background:rgba(255,255,255,0.9); padding:7px 10px; border-radius:12px; border:1px solid rgba(148,163,184,0.22); backdrop-filter:blur(3px);"></div>
-            <div id="chart-loading" class="hidden">
-                <div style="font-size: 30px; animation: spin 2s linear infinite;">🧠</div>
-                <div id="loading-text" style="margin-top:15px; font-weight:800; color:var(--primary);">Computing pairwise embeddings...</div>
-                <div class="chart-loading-progress">
-                    <div class="chart-loading-meta">
-                        <span id="chart-loading-detail">Preparing...</span>
-                        <span id="chart-loading-percent">0%</span>
+
+            <div id="chart-wrapper">
+                <div id="marked-node-panel" class="hidden" style="position:absolute; top:18px; left:18px; z-index:20; max-width:min(440px, calc(100% - 180px));"></div>
+                <div id="chart-gesture-hint" class="hidden" style="position:absolute; top:18px; left:18px; z-index:19; max-width:min(380px, calc(100% - 220px)); font-size:11px; line-height:1.5; color:#64748b; background:rgba(255,255,255,0.9); padding:7px 10px; border-radius:12px; border:1px solid rgba(148,163,184,0.22); backdrop-filter:blur(3px);"></div>
+                <div id="chart-loading" class="hidden">
+                    <div style="font-size: 30px; animation: spin 2s linear infinite;">🧠</div>
+                    <div id="loading-text" style="margin-top:15px; font-weight:800; color:var(--primary);">Computing pairwise embeddings...</div>
+                    <div class="chart-loading-progress">
+                        <div class="chart-loading-meta">
+                            <span id="chart-loading-detail">Preparing...</span>
+                            <span id="chart-loading-percent">0%</span>
+                        </div>
+                        <div class="progress-track"><div id="chart-loading-bar" class="progress-fill" style="width: 0%;"></div></div>
                     </div>
-                    <div class="progress-track"><div id="chart-loading-bar" class="progress-fill" style="width: 0%;"></div></div>
+                </div>
+
+                <div id="citation-controls" class="chart-floating-controls hidden">
+                    <button id="btn-citation-focused" class="mini-toggle active" onclick="setCitationDisplayMode('focused')">Focused</button>
+                    <button id="btn-citation-all" class="mini-toggle" onclick="setCitationDisplayMode('all')">Show All</button>
+                </div>
+
+                <div style="position: absolute; top: 18px; right: 18px; z-index: 20;">
+                    <button id="btn-refresh-chart" class="btn btn-outline hidden" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px; color: var(--primary); border-color: var(--primary); background: rgba(255,255,255,0.92); backdrop-filter: blur(3px);" onclick="forceRefreshChart()">
+                        🔄 Refresh Chart
+                    </button>
+                </div>
+                
+                <div id="network-hint" class="hidden" style="position: absolute; bottom: 20px; left: 20px; z-index: 20; background: rgba(255,255,255,0.85); padding: 6px 12px; border-radius: 6px; font-size: 11px; color: #64748b; font-weight: 600; border: 1px solid var(--border-color); backdrop-filter: blur(2px);">
+                    ⚡ Network mode displays Top 200 papers only for performance
+                </div>
+
+                <div style="position: absolute; bottom: 20px; right: 20px; z-index: 20; display: flex; flex-direction: column; gap: 10px;">
+                    <button id="btn-chart-zoom-out" class="btn btn-primary" style="padding: 10px 14px; border-radius: 999px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); line-height: 1; display: flex; align-items: center; justify-content: center;" onclick="handleChartZoomButtonClick(event, 0.9)" title="Zoom Out (-)">
+                        <span style="color:white; font-weight: bold; font-size: 18px; font-family: monospace;">-</span>
+                    </button>
+                    <button id="btn-chart-zoom-in" class="btn btn-primary" style="padding: 10px 14px; border-radius: 999px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); line-height: 1; display: flex; align-items: center; justify-content: center;" onclick="handleChartZoomButtonClick(event, 1.1)" title="Zoom In (+)">
+                        <span style="color:white; font-weight: bold; font-size: 18px; font-family: monospace;">+</span>
+                    </button>
+                </div>
+
+                <div id="chart-container"></div>
+            </div>
+        </div>
+
+        <div class="workspace-title-row" style="margin-top:22px; align-items:flex-end;">
+            <div class="workspace-section-title">
+                <div>
+                    <div class="workspace-pill">Argument Studio</div>
+                    <h3>Evidence Board</h3>
+                    <div class="workspace-section-copy">Write a claim, pull supporting and limiting papers from your repository, and turn the project into a living argument map instead of a flat paper list.</div>
                 </div>
             </div>
+            <button id="workspace-section-toggle-evidence" class="workspace-section-toggle" type="button" onclick="toggleWorkspaceSection('evidence')" aria-expanded="true" data-collapsed="false">
+                <span id="workspace-section-toggle-icon-evidence">▾</span>
+                <span id="workspace-section-toggle-label-evidence">Collapse</span>
+            </button>
+        </div>
 
-            <div id="citation-controls" class="chart-floating-controls hidden">
-                <button id="btn-citation-focused" class="mini-toggle active" onclick="setCitationDisplayMode('focused')">Focused</button>
-                <button id="btn-citation-all" class="mini-toggle" onclick="setCitationDisplayMode('all')">Show All</button>
+        <div id="workspace-section-body-evidence" class="workspace-section-body">
+            <div id="evidence-board-section" class="panel evidence-board-shell">
+                <div class="evidence-board-grid">
+                    <div class="evidence-sidebar">
+                        <div class="secondary-panel" style="margin-top:0; padding:18px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px;">
+                                <div>
+                                    <div style="font-size:13px; font-weight:900; color:#24307b;">New Claim</div>
+                                    <div style="font-size:12px; color:var(--text-muted); line-height:1.6;">Add a thesis claim, chapter proposition, or research question before running evidence analysis.</div>
+                                </div>
+                            </div>
+                            <div style="display:flex; flex-direction:column; gap:10px;">
+                                <textarea id="evidence-claim-text" placeholder="Example: Capital inflow surges increase sovereign default risk through external debt fragility." oninput="syncEvidenceClaimDraft()" style="min-height:120px; resize:vertical; padding:12px 14px; border-radius:16px; border:1px solid rgba(148,163,184,0.22); background:#fff; font-size:13px; line-height:1.6; box-sizing:border-box;"></textarea>
+                                <div style="display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:10px;">
+                                    <select id="evidence-claim-type" onchange="syncEvidenceClaimDraft()" class="workspace-filter-select" style="width:100%;">
+                                        <option value="thesis_claim">Thesis Claim</option>
+                                        <option value="chapter_claim">Chapter Claim</option>
+                                        <option value="research_question">Research Question</option>
+                                    </select>
+                                    <input id="evidence-claim-section" type="text" placeholder="Section label (optional)" oninput="syncEvidenceClaimDraft()" style="padding:10px 12px; border-radius:14px; border:1px solid rgba(148,163,184,0.22); background:#fff; font-size:13px; box-sizing:border-box;">
+                                </div>
+                                <div style="display:flex; justify-content:flex-end; gap:10px;">
+                                    <button class="btn btn-outline" style="padding:9px 12px; font-size:12px;" onclick="clearEvidenceClaimDraft()">Clear</button>
+                                    <button id="evidence-create-claim-btn" class="btn btn-primary" style="padding:9px 14px; font-size:12px;" onclick="createEvidenceClaim()">Create Claim</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="secondary-panel" style="margin-top:0; padding:18px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px;">
+                                <div>
+                                    <div style="font-size:13px; font-weight:900; color:#24307b;">Claims</div>
+                                    <div style="font-size:12px; color:var(--text-muted); line-height:1.6;">Pick a claim to inspect its evidence board.</div>
+                                </div>
+                                <button class="btn btn-outline" style="padding:7px 12px; font-size:12px;" onclick="refreshEvidenceClaims()">Refresh</button>
+                            </div>
+                            <div id="evidence-claim-list" style="display:flex; flex-direction:column; gap:10px;"></div>
+                        </div>
+                    </div>
+                    <div class="evidence-main">
+                        <div id="evidence-board-summary" class="secondary-panel" style="margin-top:0; padding:18px;"></div>
+                        <div id="evidence-board-status" class="evidence-board-status hidden"></div>
+                        <div id="evidence-board-columns" class="evidence-columns"></div>
+                    </div>
+                </div>
             </div>
-
-            <div style="position: absolute; top: 18px; right: 18px; z-index: 20;">
-                <button id="btn-refresh-chart" class="btn btn-outline hidden" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px; color: var(--primary); border-color: var(--primary); background: rgba(255,255,255,0.92); backdrop-filter: blur(3px);" onclick="forceRefreshChart()">
-                    🔄 Refresh Chart
-                </button>
-            </div>
-            
-            <div id="network-hint" class="hidden" style="position: absolute; bottom: 20px; left: 20px; z-index: 20; background: rgba(255,255,255,0.85); padding: 6px 12px; border-radius: 6px; font-size: 11px; color: #64748b; font-weight: 600; border: 1px solid var(--border-color); backdrop-filter: blur(2px);">
-                ⚡ Network mode displays Top 200 papers only for performance
-            </div>
-
-            <div style="position: absolute; bottom: 20px; right: 20px; z-index: 20; display: flex; flex-direction: column; gap: 10px;">
-                <button id="btn-chart-zoom-out" class="btn btn-primary" style="padding: 10px 14px; border-radius: 999px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); line-height: 1; display: flex; align-items: center; justify-content: center;" onclick="handleChartZoomButtonClick(event, 0.9)" title="Zoom Out (-)">
-                    <span style="color:white; font-weight: bold; font-size: 18px; font-family: monospace;">-</span>
-                </button>
-                <button id="btn-chart-zoom-in" class="btn btn-primary" style="padding: 10px 14px; border-radius: 999px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); line-height: 1; display: flex; align-items: center; justify-content: center;" onclick="handleChartZoomButtonClick(event, 1.1)" title="Zoom In (+)">
-                    <span style="color:white; font-weight: bold; font-size: 18px; font-family: monospace;">+</span>
-                </button>
-            </div>
-
-            <div id="chart-container"></div>
         </div>
 
         <div class="workspace-title-row" style="margin-top:22px; align-items:flex-end;">
@@ -1281,8 +1725,13 @@
                     <div class="workspace-section-copy">Turn your thesis, abstract, and Core papers into a recurring discovery surface for recent literature. Review recommendations first, then decide what enters StarMap.</div>
                 </div>
             </div>
+            <button id="workspace-section-toggle-watch" class="workspace-section-toggle" type="button" onclick="toggleWorkspaceSection('watch')" aria-expanded="true" data-collapsed="false">
+                <span id="workspace-section-toggle-icon-watch">▾</span>
+                <span id="workspace-section-toggle-label-watch">Collapse</span>
+            </button>
         </div>
 
+        <div id="workspace-section-body-watch" class="workspace-section-body">
         <div id="literature-watch-section" class="panel" style="padding:20px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(247,249,255,0.97)); border-radius:24px; box-shadow:0 18px 40px rgba(15,23,42,0.06);">
             <div style="display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr) auto; gap:14px; align-items:end; margin-bottom:14px;">
                 <div style="display:flex; flex-direction:column; gap:6px; min-width:0;">
@@ -1384,6 +1833,7 @@
             <div style="display:flex; justify-content:flex-end; gap:10px;">
                 <button id="literature-watch-add-btn" class="btn btn-primary" onclick="addSelectedLiteratureWatchPapers()">Add Selected to StarMap</button>
             </div>
+        </div>
         </div>
     </div>
 
@@ -1670,6 +2120,13 @@
     </div>
 </div>
 
+<div id="evidence-reasoning-modal" class="modal-overlay hidden" onclick="handleEvidenceReasoningOverlayClick(event)">
+    <div class="modal-content">
+        <button class="modal-close-x" onclick="closeEvidenceReasoning()" aria-label="Close evidence reasoning">✕</button>
+        <div id="evidence-reasoning-body"></div>
+    </div>
+</div>
+
 <div id="change-password-modal" class="modal-overlay hidden">
     <div class="modal-content modal-content-small">
         <h3 style="margin-top:0; color: var(--primary);">Update Account Settings</h3>
@@ -1896,6 +2353,57 @@
     };
     let literatureWatchCache = {};
     let literatureWatchQueuedOptions = null;
+    const DEFAULT_WORKSPACE_SECTION_COLLAPSE_STATE = {
+        starmap: false,
+        evidence: false,
+        watch: false
+    };
+    const WORKSPACE_SECTION_STORAGE_KEY = 'starmap:workspace-section-collapse';
+    let workspaceSectionCollapseState = (() => {
+        try {
+            const raw = window.localStorage.getItem(WORKSPACE_SECTION_STORAGE_KEY);
+            if (!raw) return { ...DEFAULT_WORKSPACE_SECTION_COLLAPSE_STATE };
+            const parsed = JSON.parse(raw);
+            return {
+                starmap: !!parsed?.starmap,
+                evidence: !!parsed?.evidence,
+                watch: !!parsed?.watch
+            };
+        } catch {
+            return { ...DEFAULT_WORKSPACE_SECTION_COLLAPSE_STATE };
+        }
+    })();
+    let evidenceBoardState = {
+        projectId: null,
+        claims: [],
+        selectedClaimId: null,
+        board: null,
+        summary: null,
+        meta: null,
+        loadingClaims: false,
+        loadingBoard: false,
+        analyzing: false,
+        status: '',
+        statusTone: 'muted',
+        error: '',
+        draftText: '',
+        draftType: 'thesis_claim',
+        draftSection: '',
+        reasoningEvidenceId: null,
+        expandedColumns: {
+            support: false,
+            challenge: false,
+            setup: false,
+            pending: false
+        },
+        progressPercent: 0,
+        progressDetail: '',
+        progressStepsRemaining: '',
+        progressTimer: null,
+        analysisRange: 'medium',
+        claimRequestId: 0,
+        boardRequestId: 0
+    };
     let myChart = null;
     let currentImportInProgress = false;
     let currentImportCancellationRequested = false;
@@ -4769,6 +5277,995 @@ Rules:
         `;
     }
 
+    const EVIDENCE_STANCE_META = {
+        support: { label: 'Support', accent: '#047857', soft: '#ecfdf5', copy: 'Direct evidence or mechanism support' },
+        challenge: { label: 'Challenge', accent: '#b91c1c', soft: '#fef2f2', copy: 'Boundary conditions, null effects, or contradictions' },
+        setup: { label: 'Setup', accent: '#1d4ed8', soft: '#eff6ff', copy: 'Design, data, identification, or measurement help' },
+        pending: { label: 'Pending', accent: '#475569', soft: '#f8fafc', copy: 'Relevant enough to keep, but still unclear' }
+    };
+
+    const EVIDENCE_ANALYSIS_RANGE_OPTIONS = {
+        small: { label: 'Small', maxCandidates: 36, helper: 'Focused pass with the lowest cost' },
+        medium: { label: 'Medium', maxCandidates: 54, helper: 'Balanced coverage and cost' },
+        large: { label: 'Large', maxCandidates: 96, helper: 'Broadest sweep, longest wait, highest cost' }
+    };
+
+    const CLAIM_TYPE_LABELS = {
+        thesis_claim: 'Thesis Claim',
+        chapter_claim: 'Chapter Claim',
+        research_question: 'Research Question'
+    };
+
+    function getClaimTypeLabel(claimType) {
+        return CLAIM_TYPE_LABELS[String(claimType || '').trim()] || 'Claim';
+    }
+
+    function getEvidenceStanceMeta(stance) {
+        return EVIDENCE_STANCE_META[String(stance || '').trim()] || EVIDENCE_STANCE_META.pending;
+    }
+
+    function formatEvidencePercent(value) {
+        const numeric = Number(value || 0);
+        return `${Math.max(0, Math.min(100, Math.round(numeric * 100)))}%`;
+    }
+
+    function formatEvidenceTimestamp(unixSeconds) {
+        const value = Number(unixSeconds || 0);
+        if (!value) return 'Not analyzed yet';
+        const date = new Date(value * 1000);
+        if (Number.isNaN(date.getTime())) return 'Not analyzed yet';
+        return date.toLocaleString([], {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    }
+
+    function normalizeEvidenceSnippets(snippets) {
+        if (Array.isArray(snippets)) return snippets;
+        if (!snippets) return [];
+        try {
+            const parsed = JSON.parse(snippets);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function getEvidenceBoardColumns() {
+        return ['support', 'challenge', 'setup', 'pending'];
+    }
+
+    function getEvidenceAnalysisRangeKey(rangeKey) {
+        const key = String(rangeKey || '').trim().toLowerCase();
+        return EVIDENCE_ANALYSIS_RANGE_OPTIONS[key] ? key : 'medium';
+    }
+
+    function getEvidenceAnalysisRangeOption(rangeKey) {
+        return EVIDENCE_ANALYSIS_RANGE_OPTIONS[getEvidenceAnalysisRangeKey(rangeKey)];
+    }
+
+    function clearEvidenceProgressTimer() {
+        if (evidenceBoardState.progressTimer) {
+            clearTimeout(evidenceBoardState.progressTimer);
+            evidenceBoardState.progressTimer = null;
+        }
+    }
+
+    function getInitialEvidenceColumnExpansion() {
+        return {
+            support: false,
+            challenge: false,
+            setup: false,
+            pending: false
+        };
+    }
+
+    function getEvidenceAnalysisProgressPlan() {
+        return [
+            { percent: 9, detail: 'Reading the claim and project context', remaining: '4 steps left' },
+            { percent: 24, detail: 'Recalling candidate papers from your repository', remaining: '3 steps left' },
+            { percent: 43, detail: 'Screening support, challenge, setup, and pending signals', remaining: '2 steps left' },
+            { percent: 68, detail: 'Calling the LLM on the strongest candidate batches', remaining: '1 step left' },
+            { percent: 84, detail: 'Grounding snippets and preparing evidence cards', remaining: 'Final step' }
+        ];
+    }
+
+    function startEvidenceAnalysisProgress() {
+        clearEvidenceProgressTimer();
+        const plan = getEvidenceAnalysisProgressPlan();
+        let index = 0;
+        const advance = () => {
+            const currentStep = plan[Math.min(index, plan.length - 1)];
+            evidenceBoardState.progressPercent = currentStep.percent;
+            evidenceBoardState.progressDetail = currentStep.detail;
+            evidenceBoardState.progressStepsRemaining = currentStep.remaining;
+            renderEvidenceBoardSection();
+            index += 1;
+            if (index < plan.length) {
+                evidenceBoardState.progressTimer = setTimeout(advance, index === 1 ? 800 : 1200);
+            } else {
+                evidenceBoardState.progressTimer = setTimeout(() => {
+                    evidenceBoardState.progressPercent = Math.max(evidenceBoardState.progressPercent || 0, 91);
+                    evidenceBoardState.progressDetail = 'Waiting for the final evidence batch to return';
+                    evidenceBoardState.progressStepsRemaining = 'Wrapping up';
+                    evidenceBoardState.progressTimer = null;
+                    renderEvidenceBoardSection();
+                }, 1500);
+            }
+        };
+        advance();
+    }
+
+    function stopEvidenceAnalysisProgress() {
+        clearEvidenceProgressTimer();
+        evidenceBoardState.progressPercent = 100;
+        evidenceBoardState.progressDetail = '';
+        evidenceBoardState.progressStepsRemaining = '';
+    }
+
+    function resetEvidenceBoardState(projectId = currentProject?.id) {
+        clearEvidenceProgressTimer();
+        evidenceBoardState = {
+            projectId: projectId || null,
+            claims: [],
+            selectedClaimId: null,
+            board: null,
+            summary: null,
+            meta: null,
+            loadingClaims: false,
+            loadingBoard: false,
+            analyzing: false,
+            status: '',
+            statusTone: 'muted',
+            error: '',
+            draftText: '',
+            draftType: 'thesis_claim',
+            draftSection: '',
+            reasoningEvidenceId: null,
+            expandedColumns: getInitialEvidenceColumnExpansion(),
+            progressPercent: 0,
+            progressDetail: '',
+            progressStepsRemaining: '',
+            progressTimer: null,
+            analysisRange: 'medium',
+            claimRequestId: 0,
+            boardRequestId: 0
+        };
+    }
+
+    function setEvidenceBoardStatus(message = '', tone = 'muted') {
+        evidenceBoardState.status = String(message || '').trim();
+        evidenceBoardState.statusTone = tone || 'muted';
+        evidenceBoardState.error = tone === 'error' ? evidenceBoardState.status : '';
+    }
+
+    function persistWorkspaceSectionCollapseState() {
+        try {
+            window.localStorage.setItem(WORKSPACE_SECTION_STORAGE_KEY, JSON.stringify(workspaceSectionCollapseState));
+        } catch {}
+    }
+
+    function getWorkspaceSectionDomConfig(sectionKey) {
+        const key = String(sectionKey || '').trim().toLowerCase();
+        const config = {
+            starmap: {
+                bodyId: 'workspace-section-body-starmap',
+                buttonId: 'workspace-section-toggle-starmap',
+                iconId: 'workspace-section-toggle-icon-starmap',
+                labelId: 'workspace-section-toggle-label-starmap'
+            },
+            evidence: {
+                bodyId: 'workspace-section-body-evidence',
+                buttonId: 'workspace-section-toggle-evidence',
+                iconId: 'workspace-section-toggle-icon-evidence',
+                labelId: 'workspace-section-toggle-label-evidence'
+            },
+            watch: {
+                bodyId: 'workspace-section-body-watch',
+                buttonId: 'workspace-section-toggle-watch',
+                iconId: 'workspace-section-toggle-icon-watch',
+                labelId: 'workspace-section-toggle-label-watch'
+            }
+        };
+        return config[key] || null;
+    }
+
+    function applyWorkspaceSectionCollapseState() {
+        Object.keys(DEFAULT_WORKSPACE_SECTION_COLLAPSE_STATE).forEach(sectionKey => {
+            const config = getWorkspaceSectionDomConfig(sectionKey);
+            if (!config) return;
+            const collapsed = !!workspaceSectionCollapseState[sectionKey];
+            const bodyEl = document.getElementById(config.bodyId);
+            const buttonEl = document.getElementById(config.buttonId);
+            const iconEl = document.getElementById(config.iconId);
+            const labelEl = document.getElementById(config.labelId);
+            if (bodyEl) bodyEl.classList.toggle('collapsed', collapsed);
+            if (buttonEl) {
+                buttonEl.dataset.collapsed = collapsed ? 'true' : 'false';
+                buttonEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            }
+            if (iconEl) iconEl.innerText = collapsed ? '▸' : '▾';
+            if (labelEl) labelEl.innerText = collapsed ? 'Expand' : 'Collapse';
+        });
+    }
+
+    function getSelectedEvidenceClaim() {
+        return (evidenceBoardState.claims || []).find(claim => Number(claim.id) === Number(evidenceBoardState.selectedClaimId)) || null;
+    }
+
+    function getSelectedReasoningEvidence() {
+        return findEvidenceItemInBoard(evidenceBoardState.reasoningEvidenceId);
+    }
+
+    function shouldUseEvidenceReasoningDrawer() {
+        return window.innerWidth > 900;
+    }
+
+    function findEvidenceItemInBoard(evidenceId) {
+        if (!evidenceBoardState.board) return null;
+        const numericId = Number(evidenceId);
+        for (const stance of getEvidenceBoardColumns()) {
+            const match = (evidenceBoardState.board[stance] || []).find(item => Number(item.id) === numericId);
+            if (match) return match;
+        }
+        return null;
+    }
+
+    function resolveEvidencePaper(evidenceItem = {}) {
+        if (!currentProject?.top_papers?.length) return null;
+        const paperKey = String(evidenceItem.paper_key || '').trim();
+        const normalizedPaperTitle = String(evidenceItem.paper_title || '').trim().toLowerCase();
+        const normalizedCitationKey = String(evidenceItem.citation_key || '').trim().toLowerCase();
+        return currentProject.top_papers.find(paper => {
+            const stableKey = getStablePaperGraphKey(paper);
+            const paperTitle = String(paper.title || '').trim().toLowerCase();
+            const paperCitationKey = String(paper.citation_key || '').trim().toLowerCase();
+            const paperDoi = cleanDoiLocal(paper.doi || '');
+            return (
+                (paperKey && stableKey === paperKey) ||
+                (paperKey && paper.zotero_item_key && String(paper.zotero_item_key).trim() === paperKey) ||
+                (paperKey && paper.openalex_id && String(paper.openalex_id).trim() === paperKey) ||
+                (paperKey && paperDoi && paperDoi === cleanDoiLocal(paperKey)) ||
+                (normalizedPaperTitle && paperTitle === normalizedPaperTitle) ||
+                (normalizedCitationKey && paperCitationKey && paperCitationKey === normalizedCitationKey)
+            );
+        }) || null;
+    }
+
+    function buildEvidenceSummaryChips(summary = {}) {
+        return getEvidenceBoardColumns().map(stance => {
+            const meta = getEvidenceStanceMeta(stance);
+            const count = Number(summary?.[stance] || 0);
+            return `<span class="evidence-chip" style="background:${meta.soft}; color:${meta.accent}; border-color:${meta.soft};">${meta.label} ${count}</span>`;
+        }).join('');
+    }
+
+    function renderEvidenceClaimList() {
+        const container = document.getElementById('evidence-claim-list');
+        if (!container) return;
+        if (evidenceBoardState.loadingClaims && !(evidenceBoardState.claims || []).length) {
+            container.innerHTML = '<div class="evidence-empty">Loading claims from this project…</div>';
+            return;
+        }
+        if (!(evidenceBoardState.claims || []).length) {
+            container.innerHTML = '<div class="evidence-empty">No claims yet. Add one above to start building a thesis-centered evidence board.</div>';
+            return;
+        }
+        container.innerHTML = evidenceBoardState.claims.map(claim => {
+            const active = Number(claim.id) === Number(evidenceBoardState.selectedClaimId);
+            const summaryChips = buildEvidenceSummaryChips(claim.evidence_summary || {});
+            const latestRun = claim.latest_run;
+            return `
+                <div class="evidence-claim-item${active ? ' active' : ''}" onclick="selectEvidenceClaim(${Number(claim.id)})">
+                    <div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start; margin-bottom:8px;">
+                        <div class="evidence-chip" style="background:#eef2ff; color:#4338ca; border-color:#e0e7ff;">${escapeHtml(getClaimTypeLabel(claim.claim_type))}</div>
+                        ${claim.section_label ? `<div style="font-size:11px; color:#64748b; font-weight:700;">${escapeHtml(claim.section_label)}</div>` : ''}
+                    </div>
+                    <div style="font-size:14px; line-height:1.6; font-weight:800; color:#1f2937; margin-bottom:10px;">${escapeHtml(claim.claim_text || '')}</div>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">${summaryChips}</div>
+                    <div style="font-size:11px; color:#64748b;">${latestRun?.status === 'completed' ? `Last analyzed ${escapeHtml(formatEvidenceTimestamp(latestRun.updated_at || latestRun.created_at))}` : 'Not analyzed yet'}</div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function renderEvidenceBoardSummary() {
+        const container = document.getElementById('evidence-board-summary');
+        if (!container) return;
+        const selectedClaim = getSelectedEvidenceClaim();
+        if (!selectedClaim) {
+            container.innerHTML = `
+                <div style="display:flex; justify-content:space-between; gap:14px; align-items:flex-start; flex-wrap:wrap;">
+                    <div>
+                        <div style="font-size:13px; font-weight:900; color:#24307b; margin-bottom:6px;">Evidence Overview</div>
+                        <div style="font-size:12px; color:var(--text-muted); line-height:1.7;">Choose a saved claim to inspect its support, limitations, setup papers, and unresolved items. Running analysis only calls the LLM when you explicitly click Analyze.</div>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+        const summary = evidenceBoardState.summary || selectedClaim.evidence_summary || {};
+        const lastRun = evidenceBoardState.meta?.last_run || selectedClaim.latest_run || null;
+        const progressPercent = Math.max(4, Math.min(96, Math.round(evidenceBoardState.progressPercent || 8)));
+        const analyzeLabel = evidenceBoardState.analyzing
+            ? 'Analyzing…'
+            : (lastRun?.status === 'completed' ? 'Reanalyze Claim' : 'Analyze Claim');
+        const selectedRangeKey = getEvidenceAnalysisRangeKey(evidenceBoardState.analysisRange);
+        const selectedRange = getEvidenceAnalysisRangeOption(selectedRangeKey);
+        container.innerHTML = `
+            <div style="display:flex; justify-content:space-between; gap:16px; align-items:flex-start; flex-wrap:wrap;">
+                <div style="flex:1; min-width:240px;">
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+                        <span class="evidence-chip" style="background:#eef2ff; color:#4338ca; border-color:#e0e7ff;">${escapeHtml(getClaimTypeLabel(selectedClaim.claim_type))}</span>
+                        ${selectedClaim.section_label ? `<span class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">${escapeHtml(selectedClaim.section_label)}</span>` : ''}
+                    </div>
+                    <div style="font-size:20px; line-height:1.45; font-weight:900; color:#1e293b; margin-bottom:10px;">${escapeHtml(selectedClaim.claim_text || '')}</div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">${buildEvidenceSummaryChips(summary)}</div>
+                    <div style="font-size:12px; color:#64748b; line-height:1.7;">
+                        ${lastRun?.status === 'completed'
+                            ? `Last analysis finished ${escapeHtml(formatEvidenceTimestamp(lastRun.updated_at || lastRun.created_at))}.`
+                            : 'This claim has not been analyzed yet.'}
+                    </div>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:10px; min-width:220px;">
+                    <div style="display:flex; flex-direction:column; gap:6px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+                            <label for="evidence-analysis-range" style="font-size:11px; font-weight:800; color:#64748b; text-transform:uppercase; letter-spacing:0.05em;">Analysis Range</label>
+                            <div style="font-size:11px; color:#94a3b8;">${selectedRange.maxCandidates} papers</div>
+                        </div>
+                        <select id="evidence-analysis-range" class="workspace-filter-select" style="width:100%; font-size:12px;" onchange="setEvidenceAnalysisRange(this.value)" ${evidenceBoardState.analyzing ? 'disabled' : ''}>
+                            ${Object.entries(EVIDENCE_ANALYSIS_RANGE_OPTIONS).map(([key, option]) => `
+                                <option value="${key}" ${key === selectedRangeKey ? 'selected' : ''}>${escapeHtml(option.label)} · ${option.maxCandidates} papers</option>
+                            `).join('')}
+                        </select>
+                        <div style="font-size:11px; color:#64748b; line-height:1.55;">${escapeHtml(selectedRange.helper)}</div>
+                    </div>
+                    <button id="evidence-analyze-btn" class="btn btn-primary" style="padding:10px 14px; font-size:12px;" onclick="analyzeEvidenceClaim(${Number(selectedClaim.id)})" ${evidenceBoardState.analyzing ? 'disabled' : ''}>${analyzeLabel}</button>
+                    <button class="btn btn-outline" style="padding:10px 14px; font-size:12px;" onclick="refreshEvidenceBoard()" ${evidenceBoardState.loadingBoard ? 'disabled' : ''}>Refresh Board</button>
+                    <button class="btn btn-outline" style="padding:10px 14px; font-size:12px; color:#b91c1c; border-color:rgba(239,68,68,0.28);" onclick="archiveEvidenceClaim(${Number(selectedClaim.id)})">Archive Claim</button>
+                </div>
+            </div>
+            ${evidenceBoardState.analyzing ? `
+                <div class="evidence-progress-shell" style="margin-top:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:4px;">
+                        <div style="font-size:13px; font-weight:800; color:#312e81;">${escapeHtml(evidenceBoardState.progressDetail || 'Analyzing candidate papers for this claim')}</div>
+                        <div style="font-size:12px; font-weight:900; color:#4f46e5;">${progressPercent}%</div>
+                    </div>
+                    <div style="font-size:12px; color:#64748b; line-height:1.7;">${escapeHtml(evidenceBoardState.progressStepsRemaining || 'This is an estimated front-end progress indicator while the backend runs claim analysis.')} ${escapeHtml(`Current range: ${selectedRange.label} (${selectedRange.maxCandidates} papers).`)}</div>
+                    <div class="evidence-progress-track"><div class="evidence-progress-fill" style="width:${progressPercent}%;"></div></div>
+                </div>
+            ` : ''}
+        `;
+    }
+
+    function renderEvidenceBoardStatus() {
+        const container = document.getElementById('evidence-board-status');
+        if (!container) return;
+        const hasMessage = !!(evidenceBoardState.error || evidenceBoardState.status);
+        if (!hasMessage) {
+            container.className = 'evidence-board-status hidden';
+            container.innerHTML = '';
+            return;
+        }
+        const tone = evidenceBoardState.error ? 'error' : (evidenceBoardState.statusTone === 'success' ? 'success' : '');
+        container.className = `evidence-board-status${tone ? ` ${tone}` : ''}`;
+        container.innerHTML = escapeHtml(evidenceBoardState.error || evidenceBoardState.status);
+    }
+
+    function renderEvidenceBoardColumns() {
+        const container = document.getElementById('evidence-board-columns');
+        if (!container) return;
+        const selectedClaim = getSelectedEvidenceClaim();
+        if (!selectedClaim) {
+            container.innerHTML = `
+                <div class="evidence-column" style="grid-column:1 / -1;">
+                    <div class="evidence-column-body">
+                        <div class="evidence-empty">Create a claim or select one from the left sidebar to start exploring evidence across your project papers.</div>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+        if (evidenceBoardState.loadingBoard && !evidenceBoardState.board) {
+            container.innerHTML = `
+                <div class="evidence-column" style="grid-column:1 / -1;">
+                    <div class="evidence-column-body">
+                        <div class="evidence-empty">Loading evidence board…</div>
+                    </div>
+                </div>
+            `;
+            return;
+        }
+        const board = evidenceBoardState.board || {};
+        const renderColumn = (stance, options = {}) => {
+            const meta = getEvidenceStanceMeta(stance);
+            const items = board[stance] || [];
+            const columnExpanded = !!evidenceBoardState.expandedColumns?.[stance];
+            const visibleItems = columnExpanded ? items : items.slice(0, 5);
+            const hiddenCount = Math.max(items.length - visibleItems.length, 0);
+            const columnClass = options.columnClass || 'evidence-column';
+            const bodyClass = options.bodyClass ? `evidence-column-body ${options.bodyClass}` : 'evidence-column-body';
+            const emptyClass = options.emptyClass || '';
+            const footerPadding = options.compactFooter ? 'padding:0 12px 12px;' : '';
+            return `
+                <div class="${columnClass}">
+                    <div style="padding:14px 14px 12px; background:${meta.soft}; border-bottom:1px solid rgba(148,163,184,0.12);">
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+                            <div>
+                                <div style="font-size:13px; font-weight:900; color:${meta.accent};">${meta.label}</div>
+                                <div style="font-size:11px; color:${meta.accent}; opacity:0.78; line-height:1.55;">${escapeHtml(meta.copy)}</div>
+                            </div>
+                            <div class="evidence-chip" style="background:white; color:${meta.accent}; border-color:rgba(255,255,255,0.65);">${items.length}</div>
+                        </div>
+                    </div>
+                    <div class="${bodyClass}">
+                        ${items.length ? visibleItems.map(item => renderEvidenceCard(item, meta)).join('') : `<div class="evidence-empty ${emptyClass}">No papers in ${escapeHtml(meta.label.toLowerCase())} yet.</div>`}
+                    </div>
+                    ${items.length > 5 ? `
+                        <div class="evidence-column-footer" style="${footerPadding}">
+                            <button class="btn btn-outline" style="width:100%; padding:8px 12px; font-size:12px;" onclick="toggleEvidenceColumn('${stance}')">
+                                ${columnExpanded ? 'Show Top 5 Only' : `Show ${hiddenCount} More`}
+                            </button>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        };
+        const primaryColumns = ['support', 'challenge', 'setup'];
+        container.innerHTML = `
+            <div class="evidence-primary-grid">
+                ${primaryColumns.map(stance => renderColumn(stance, { columnClass: 'evidence-column evidence-primary-column' })).join('')}
+            </div>
+            <div class="evidence-secondary-panel">
+                <div style="padding:14px 14px 12px; background:${EVIDENCE_STANCE_META.pending.soft}; border-bottom:1px solid rgba(148,163,184,0.12);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+                        <div>
+                            <div style="font-size:13px; font-weight:900; color:${EVIDENCE_STANCE_META.pending.accent};">Pending Pool</div>
+                            <div style="font-size:11px; color:${EVIDENCE_STANCE_META.pending.accent}; opacity:0.78; line-height:1.55;">Relevant enough to revisit later, but not strong enough to act on yet.</div>
+                        </div>
+                        <div class="evidence-chip" style="background:white; color:${EVIDENCE_STANCE_META.pending.accent}; border-color:rgba(255,255,255,0.65);">${(board.pending || []).length}</div>
+                    </div>
+                </div>
+                ${(board.pending || []).length ? `
+                    <div class="evidence-secondary-grid">
+                        ${(() => {
+                            const stance = 'pending';
+                            const meta = getEvidenceStanceMeta(stance);
+                            const items = board[stance] || [];
+                            const columnExpanded = !!evidenceBoardState.expandedColumns?.[stance];
+                            const visibleItems = columnExpanded ? items : items.slice(0, 5);
+                            return visibleItems.map(item => renderEvidenceCard(item, meta)).join('');
+                        })()}
+                    </div>
+                ` : `
+                    <div class="evidence-secondary-empty">
+                        <div class="evidence-empty">No papers are waiting in the pending pool right now.</div>
+                    </div>
+                `}
+                ${(board.pending || []).length > 5 ? `
+                    <div class="evidence-column-footer">
+                        <button class="btn btn-outline" style="width:100%; padding:8px 12px; font-size:12px;" onclick="toggleEvidenceColumn('pending')">
+                            ${evidenceBoardState.expandedColumns?.pending ? 'Show Top 5 Only' : `Show ${(board.pending || []).length - 5} More`}
+                        </button>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    }
+
+    function renderEvidenceCard(item, meta = getEvidenceStanceMeta(item?.stance)) {
+        const strength = Math.max(0, Math.min(100, Math.round(Number(item?.strength_score || 0) * 100)));
+        const paper = resolveEvidencePaper(item);
+        const evidenceId = Number(item?.id || 0);
+        const isSelected = Number(evidenceBoardState.reasoningEvidenceId || 0) === evidenceId;
+        return `
+            <div class="evidence-card" style="--evidence-accent:${meta.accent};">
+                <div class="evidence-card-top">
+                    <div></div>
+                    <div style="display:flex; align-items:center; gap:8px; flex:0 0 auto;">
+                        <div class="evidence-card-percent">${formatEvidencePercent(item?.strength_score)}</div>
+                        <button class="evidence-card-ignore" onclick="ignoreEvidenceItem(${evidenceId})" title="Ignore this tag">Ignore</button>
+                    </div>
+                </div>
+                <div class="evidence-card-title">${escapeHtml(item?.paper_title || 'Untitled paper')}</div>
+                <div class="evidence-card-meta">
+                    ${(item?.paper_authors ? escapeHtml(item.paper_authors) : 'Unknown authors')}
+                    ${item?.paper_year ? ` · ${escapeHtml(item.paper_year)}` : ''}
+                </div>
+                <div>
+                    <div class="evidence-card-strength-row">
+                        <span>Evidence strength</span>
+                        <span>${strength}/100</span>
+                    </div>
+                    <div class="evidence-strength-track"><div class="evidence-strength-fill" style="width:${strength}%;"></div></div>
+                </div>
+                <div class="evidence-card-actions">
+                    <button class="btn btn-outline" style="padding:6px 9px; font-size:11px; ${isSelected ? `color:${meta.accent}; border-color:${meta.accent};` : ''}" onclick="openEvidenceReasoning(${evidenceId})">${isSelected ? 'Viewing' : 'Reasoning'}</button>
+                    <button class="btn btn-outline" style="padding:6px 9px; font-size:11px;" onclick="openEvidencePaper(${evidenceId})" ${paper ? '' : 'disabled'}>${paper ? 'Open Paper' : 'Missing'}</button>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderEvidenceBoardSection() {
+        const claimTextEl = document.getElementById('evidence-claim-text');
+        const claimTypeEl = document.getElementById('evidence-claim-type');
+        const claimSectionEl = document.getElementById('evidence-claim-section');
+        const createBtn = document.getElementById('evidence-create-claim-btn');
+        if (claimTextEl) claimTextEl.value = evidenceBoardState.draftText || '';
+        if (claimTypeEl) claimTypeEl.value = evidenceBoardState.draftType || 'thesis_claim';
+        if (claimSectionEl) claimSectionEl.value = evidenceBoardState.draftSection || '';
+        if (createBtn) createBtn.disabled = evidenceBoardState.loadingClaims || evidenceBoardState.analyzing;
+        renderEvidenceClaimList();
+        renderEvidenceBoardSummary();
+        renderEvidenceBoardStatus();
+        renderEvidenceBoardColumns();
+        renderEvidenceReasoningModal();
+    }
+
+    function renderEvidenceReasoningModal() {
+        const modal = document.getElementById('evidence-reasoning-modal');
+        const body = document.getElementById('evidence-reasoning-body');
+        if (!modal || !body) return;
+        const item = getSelectedReasoningEvidence();
+        if (!item) {
+            modal.classList.add('hidden');
+            modal.classList.remove('drawer-mode');
+            body.innerHTML = '';
+            return;
+        }
+
+        modal.classList.toggle('drawer-mode', shouldUseEvidenceReasoningDrawer());
+        const meta = getEvidenceStanceMeta(item?.stance);
+        const snippets = normalizeEvidenceSnippets(item?.evidence_snippets).slice(0, 3);
+        const paper = resolveEvidencePaper(item);
+        const strength = Math.max(0, Math.min(100, Math.round(Number(item?.strength_score || 0) * 100)));
+        body.innerHTML = `
+            <div class="evidence-reasoning-shell">
+                <div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+                        <span class="evidence-chip" style="background:${meta.soft}; color:${meta.accent}; border-color:${meta.soft};">${escapeHtml(meta.label)}</span>
+                        ${item?.citation_key ? `<span class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">${escapeHtml(item.citation_key)}</span>` : ''}
+                        ${item?.pinned ? `<span class="evidence-chip" style="background:#fff7ed; color:#c2410c; border-color:#ffedd5;">Pinned</span>` : ''}
+                        ${item?.source_pass ? `<span class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">${escapeHtml(String(item.source_pass).toUpperCase())}</span>` : ''}
+                    </div>
+                    <div style="font-size:23px; line-height:1.35; font-weight:900; color:#1f2937; margin-bottom:10px;">${escapeHtml(item?.paper_title || 'Untitled paper')}</div>
+                    <div style="font-size:12px; color:#64748b; line-height:1.7;">
+                        ${(item?.paper_authors ? escapeHtml(item.paper_authors) : 'Unknown authors')}
+                        ${item?.paper_year ? ` · ${escapeHtml(item.paper_year)}` : ''}
+                    </div>
+                </div>
+                <div class="evidence-reasoning-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:6px;">
+                        <div style="font-size:12px; font-weight:800; color:#64748b;">Evidence strength</div>
+                        <div style="font-size:12px; font-weight:900; color:${meta.accent};">${strength}/100</div>
+                    </div>
+                    <div class="evidence-strength-track"><div class="evidence-strength-fill" style="width:${strength}%;"></div></div>
+                    <div style="display:flex; justify-content:space-between; gap:10px; margin-top:10px; font-size:11px; color:#64748b;">
+                        <span>Relevance ${formatEvidencePercent(item?.relevance_score)}</span>
+                        <span>Confidence ${formatEvidencePercent(item?.confidence_score)}</span>
+                    </div>
+                </div>
+                <div class="evidence-reasoning-card">
+                    <div style="font-size:12px; font-weight:900; color:#0f172a; margin-bottom:8px;">Why Matched</div>
+                    <div style="font-size:13px; line-height:1.75; color:#334155;">${escapeHtml(item?.why_matched || 'No explanation available yet.')}</div>
+                </div>
+                ${item?.caveat ? `
+                    <div class="evidence-reasoning-card" style="background:linear-gradient(180deg, rgba(255,251,235,0.98), rgba(255,255,255,0.96)); border-color:#fde68a;">
+                        <div style="font-size:12px; font-weight:900; color:#92400e; margin-bottom:8px;">Caveat</div>
+                        <div style="font-size:13px; line-height:1.75; color:#92400e;">${escapeHtml(item.caveat)}</div>
+                    </div>
+                ` : ''}
+                ${snippets.length ? `
+                    <div class="evidence-reasoning-card">
+                        <div style="font-size:12px; font-weight:900; color:#0f172a; margin-bottom:8px;">Grounded Snippets</div>
+                        <div style="display:flex; flex-direction:column; gap:8px;">
+                            ${snippets.map(snippet => `
+                                <div class="evidence-reasoning-snippet">
+                                    “${escapeHtml(snippet?.text || '')}”
+                                    ${snippet?.source_field ? `<div style="font-size:10px; color:#94a3b8; margin-top:4px; text-transform:uppercase; letter-spacing:0.05em;">${escapeHtml(snippet.source_field)}</div>` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+                <div class="evidence-reasoning-card">
+                    <div style="font-size:12px; font-weight:900; color:#0f172a; margin-bottom:10px;">Actions</div>
+                    <div style="display:grid; grid-template-columns:minmax(0, 1fr) auto auto auto; gap:8px; align-items:center;">
+                        <select class="workspace-filter-select" style="width:100%; font-size:12px;" onchange="changeEvidenceStance(${Number(item.id)}, this.value)">
+                            ${getEvidenceBoardColumns().map(stance => `<option value="${stance}" ${stance === String(item?.stance || 'pending') ? 'selected' : ''}>${escapeHtml(getEvidenceStanceMeta(stance).label)}</option>`).join('')}
+                        </select>
+                        <button class="btn btn-outline" style="padding:8px 10px; font-size:11px;" onclick="toggleEvidencePin(${Number(item.id)}, ${item?.pinned ? 'false' : 'true'})">${item?.pinned ? 'Unpin' : 'Pin'}</button>
+                        <button class="btn btn-outline" style="padding:8px 10px; font-size:11px;" onclick="openEvidencePaper(${Number(item.id)})" ${paper ? '' : 'disabled'}>${paper ? 'Open Paper' : 'Missing'}</button>
+                        <button class="btn btn-outline" style="padding:8px 10px; font-size:11px; color:#b91c1c; border-color:rgba(239,68,68,0.24);" onclick="ignoreEvidenceItem(${Number(item.id)})">Ignore</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        modal.classList.remove('hidden');
+    }
+
+    async function loadEvidenceBoard(claimId, options = {}) {
+        if (!currentProject?.id || !claimId) {
+            evidenceBoardState.board = null;
+            evidenceBoardState.summary = null;
+            evidenceBoardState.meta = null;
+            evidenceBoardState.reasoningEvidenceId = null;
+            renderEvidenceBoardSection();
+            return null;
+        }
+        const requestId = ++evidenceBoardState.boardRequestId;
+        evidenceBoardState.loadingBoard = true;
+        if (!options.silent) setEvidenceBoardStatus('Loading evidence board…', 'muted');
+        renderEvidenceBoardSection();
+        try {
+            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/claims/${claimId}/board`);
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Could not load the evidence board.');
+            }
+            if (requestId !== evidenceBoardState.boardRequestId || Number(currentProject?.id) !== Number(evidenceBoardState.projectId)) return null;
+            evidenceBoardState.board = data.board || null;
+            evidenceBoardState.summary = data.summary || null;
+            evidenceBoardState.meta = data.meta || null;
+            if (evidenceBoardState.reasoningEvidenceId) {
+                const reasoningStillExists = Object.values(evidenceBoardState.board || {}).some(items => (items || []).some(item => Number(item.id) === Number(evidenceBoardState.reasoningEvidenceId)));
+                if (!reasoningStillExists) evidenceBoardState.reasoningEvidenceId = null;
+            }
+            evidenceBoardState.error = '';
+            if (!options.silent) setEvidenceBoardStatus('Evidence board ready.', 'success');
+            const claimIndex = evidenceBoardState.claims.findIndex(claim => Number(claim.id) === Number(claimId));
+            if (claimIndex >= 0) {
+                evidenceBoardState.claims[claimIndex] = {
+                    ...evidenceBoardState.claims[claimIndex],
+                    evidence_summary: data.summary || evidenceBoardState.claims[claimIndex].evidence_summary,
+                    latest_run: data.meta?.last_run || evidenceBoardState.claims[claimIndex].latest_run
+                };
+            }
+            return data;
+        } catch (error) {
+            evidenceBoardState.board = null;
+            evidenceBoardState.summary = null;
+            evidenceBoardState.meta = null;
+            evidenceBoardState.error = error.message || 'Could not load the evidence board.';
+            return null;
+        } finally {
+            if (requestId === evidenceBoardState.boardRequestId) {
+                evidenceBoardState.loadingBoard = false;
+                renderEvidenceBoardSection();
+            }
+        }
+    }
+
+    async function loadEvidenceClaims(options = {}) {
+        if (!currentProject?.id) return [];
+        const projectId = Number(options.projectId || currentProject.id);
+        const requestId = ++evidenceBoardState.claimRequestId;
+        evidenceBoardState.projectId = projectId;
+        evidenceBoardState.loadingClaims = true;
+        if (!options.silent) setEvidenceBoardStatus('Loading claims…', 'muted');
+        renderEvidenceBoardSection();
+        try {
+            const res = await fetch(`${API_BASE}/projects/${projectId}/claims`);
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Could not load claims.');
+            }
+            if (requestId !== evidenceBoardState.claimRequestId || Number(currentProject?.id) !== projectId) return [];
+            evidenceBoardState.claims = Array.isArray(data.claims) ? data.claims : [];
+            const requestedSelection = options.selectClaimId != null
+                ? Number(options.selectClaimId)
+                : Number(evidenceBoardState.selectedClaimId || 0);
+            const hasRequestedSelection = evidenceBoardState.claims.some(claim => Number(claim.id) === requestedSelection);
+            if (!hasRequestedSelection) {
+                evidenceBoardState.reasoningEvidenceId = null;
+                evidenceBoardState.expandedColumns = getInitialEvidenceColumnExpansion();
+            }
+            evidenceBoardState.selectedClaimId = hasRequestedSelection
+                ? requestedSelection
+                : Number(evidenceBoardState.claims[0]?.id || 0) || null;
+            evidenceBoardState.error = '';
+            if (!evidenceBoardState.claims.length) {
+                evidenceBoardState.board = null;
+                evidenceBoardState.summary = null;
+                evidenceBoardState.meta = null;
+                if (!options.silent) setEvidenceBoardStatus('No claims yet. Add one to begin building the board.', 'muted');
+                return evidenceBoardState.claims;
+            }
+            if (evidenceBoardState.selectedClaimId) {
+                await loadEvidenceBoard(evidenceBoardState.selectedClaimId, { silent: true });
+            }
+            if (!options.silent) setEvidenceBoardStatus('Claims loaded.', 'success');
+            return evidenceBoardState.claims;
+        } catch (error) {
+            evidenceBoardState.claims = [];
+            evidenceBoardState.selectedClaimId = null;
+            evidenceBoardState.board = null;
+            evidenceBoardState.summary = null;
+            evidenceBoardState.meta = null;
+            evidenceBoardState.error = error.message || 'Could not load claims.';
+            return [];
+        } finally {
+            if (requestId === evidenceBoardState.claimRequestId) {
+                evidenceBoardState.loadingClaims = false;
+                renderEvidenceBoardSection();
+            }
+        }
+    }
+
+    async function hydrateEvidenceBoardForProject(projectId = currentProject?.id, options = {}) {
+        if (!projectId || !currentProject || Number(currentProject.id) !== Number(projectId)) return;
+        if (Number(evidenceBoardState.projectId) !== Number(projectId)) {
+            resetEvidenceBoardState(projectId);
+            renderEvidenceBoardSection();
+        }
+        await loadEvidenceClaims({ projectId, selectClaimId: options.selectClaimId, silent: !!options.silent });
+    }
+
+    async function patchEvidenceItem(evidenceId, payload = {}) {
+        if (!currentProject?.id || !evidenceBoardState.selectedClaimId || !evidenceId) return;
+        const res = await fetch(`${API_BASE}/projects/${currentProject.id}/claims/${evidenceBoardState.selectedClaimId}/evidence/${evidenceId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.detail || 'Could not update this evidence item.');
+        }
+        await loadEvidenceBoard(evidenceBoardState.selectedClaimId, { silent: true });
+        await loadEvidenceClaims({ projectId: currentProject.id, selectClaimId: evidenceBoardState.selectedClaimId, silent: true });
+        return data.evidence;
+    }
+
+    window.syncEvidenceClaimDraft = () => {
+        const claimTextEl = document.getElementById('evidence-claim-text');
+        const claimTypeEl = document.getElementById('evidence-claim-type');
+        const claimSectionEl = document.getElementById('evidence-claim-section');
+        evidenceBoardState.draftText = claimTextEl?.value || '';
+        evidenceBoardState.draftType = claimTypeEl?.value || 'thesis_claim';
+        evidenceBoardState.draftSection = claimSectionEl?.value || '';
+    };
+
+    window.clearEvidenceClaimDraft = () => {
+        evidenceBoardState.draftText = '';
+        evidenceBoardState.draftType = 'thesis_claim';
+        evidenceBoardState.draftSection = '';
+        renderEvidenceBoardSection();
+    };
+
+    window.refreshEvidenceClaims = async () => {
+        await loadEvidenceClaims({ projectId: currentProject?.id, selectClaimId: evidenceBoardState.selectedClaimId, silent: false });
+    };
+
+    window.selectEvidenceClaim = async (claimId) => {
+        const numericId = Number(claimId || 0);
+        if (!numericId || numericId === Number(evidenceBoardState.selectedClaimId)) return;
+        evidenceBoardState.selectedClaimId = numericId;
+        evidenceBoardState.board = null;
+        evidenceBoardState.summary = null;
+        evidenceBoardState.meta = null;
+        evidenceBoardState.reasoningEvidenceId = null;
+        evidenceBoardState.expandedColumns = getInitialEvidenceColumnExpansion();
+        renderEvidenceBoardSection();
+        await loadEvidenceBoard(numericId, { silent: true });
+    };
+
+    window.createEvidenceClaim = async () => {
+        syncEvidenceClaimDraft();
+        const claimText = String(evidenceBoardState.draftText || '').trim();
+        const claimType = String(evidenceBoardState.draftType || 'thesis_claim').trim();
+        const sectionLabel = String(evidenceBoardState.draftSection || '').trim();
+        if (!currentProject?.id) return;
+        if (!claimText) {
+            setEvidenceBoardStatus('Claim text cannot be empty.', 'error');
+            renderEvidenceBoardSection();
+            return;
+        }
+        try {
+            evidenceBoardState.loadingClaims = true;
+            setEvidenceBoardStatus('Creating claim…', 'muted');
+            renderEvidenceBoardSection();
+            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/claims`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ claim_text: claimText, claim_type: claimType, section_label: sectionLabel })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Could not create the claim.');
+            }
+            evidenceBoardState.draftText = '';
+            evidenceBoardState.draftType = 'thesis_claim';
+            evidenceBoardState.draftSection = '';
+            await loadEvidenceClaims({ projectId: currentProject.id, selectClaimId: data.claim?.id, silent: true });
+            setEvidenceBoardStatus('Claim created. Run Analyze Claim when you are ready.', 'success');
+        } catch (error) {
+            evidenceBoardState.error = error.message || 'Could not create the claim.';
+        } finally {
+            evidenceBoardState.loadingClaims = false;
+            renderEvidenceBoardSection();
+        }
+    };
+
+    window.setEvidenceAnalysisRange = (rangeKey) => {
+        evidenceBoardState.analysisRange = getEvidenceAnalysisRangeKey(rangeKey);
+        renderEvidenceBoardSection();
+    };
+
+    window.analyzeEvidenceClaim = async (claimId = evidenceBoardState.selectedClaimId) => {
+        const numericId = Number(claimId || 0);
+        if (!currentProject?.id || !numericId || evidenceBoardState.analyzing) return;
+        const rangeKey = getEvidenceAnalysisRangeKey(evidenceBoardState.analysisRange);
+        const range = getEvidenceAnalysisRangeOption(evidenceBoardState.analysisRange);
+        if (rangeKey === 'large') {
+            const confirmed = window.confirm(
+                'Large analysis scans up to 96 papers. This usually takes noticeably longer and may lead to higher API costs. Continue?'
+            );
+            if (!confirmed) return;
+        }
+        try {
+            evidenceBoardState.analyzing = true;
+            evidenceBoardState.reasoningEvidenceId = null;
+            evidenceBoardState.expandedColumns = getInitialEvidenceColumnExpansion();
+            startEvidenceAnalysisProgress();
+            setEvidenceBoardStatus(`Analyzing candidate papers for this claim with the ${range.label.toLowerCase()} range…`, 'muted');
+            renderEvidenceBoardSection();
+            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/claims/${numericId}/analyze`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    max_candidates: range.maxCandidates,
+                    reanalyze_overrides: false,
+                    include_statuses: ['Core', 'Pending', 'Underweight', 'Unread'],
+                    prefer_fulltext: true
+                })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Claim analysis failed.');
+            }
+            await loadEvidenceClaims({ projectId: currentProject.id, selectClaimId: numericId, silent: true });
+            const deletedRows = Object.values(data.cache_maintenance?.deleted_by_table || {}).reduce((sum, count) => sum + Number(count || 0), 0);
+            const cacheMessage = deletedRows ? ` Cache cleanup removed ${deletedRows} old entries.` : '';
+            setEvidenceBoardStatus(`Analysis finished: ${Number(data.run?.analyzed_count || 0)} evidence items refreshed from ${Number(data.run?.candidate_count || 0)} candidates using the ${range.label.toLowerCase()} range.${cacheMessage}`, 'success');
+        } catch (error) {
+            evidenceBoardState.error = error.message || 'Claim analysis failed.';
+        } finally {
+            stopEvidenceAnalysisProgress();
+            evidenceBoardState.analyzing = false;
+            renderEvidenceBoardSection();
+        }
+    };
+
+    window.refreshEvidenceBoard = async () => {
+        if (!evidenceBoardState.selectedClaimId) {
+            await loadEvidenceClaims({ projectId: currentProject?.id, silent: false });
+            return;
+        }
+        await loadEvidenceBoard(evidenceBoardState.selectedClaimId, { silent: false });
+    };
+
+    window.changeEvidenceStance = async (evidenceId, stance) => {
+        try {
+            await patchEvidenceItem(evidenceId, { stance, user_override: true });
+            setEvidenceBoardStatus('Evidence card updated.', 'success');
+        } catch (error) {
+            evidenceBoardState.error = error.message || 'Could not update this evidence card.';
+        } finally {
+            renderEvidenceBoardSection();
+        }
+    };
+
+    window.toggleEvidencePin = async (evidenceId, nextPinned) => {
+        try {
+            await patchEvidenceItem(evidenceId, { pinned: String(nextPinned) === 'true' });
+            setEvidenceBoardStatus(String(nextPinned) === 'true' ? 'Evidence card pinned.' : 'Evidence card unpinned.', 'success');
+        } catch (error) {
+            evidenceBoardState.error = error.message || 'Could not update this evidence card.';
+        } finally {
+            renderEvidenceBoardSection();
+        }
+    };
+
+    window.hideEvidenceItem = async (evidenceId) => {
+        if (!confirm('Hide this evidence card from the board? You can recover it later by reanalyzing the claim.')) return;
+        try {
+            await patchEvidenceItem(evidenceId, { hidden: true });
+            setEvidenceBoardStatus('Evidence card hidden from the board.', 'success');
+        } catch (error) {
+            evidenceBoardState.error = error.message || 'Could not hide this evidence card.';
+        } finally {
+            renderEvidenceBoardSection();
+        }
+    };
+
+    window.openEvidencePaper = (evidenceId) => {
+        const item = findEvidenceItemInBoard(evidenceId);
+        const paper = resolveEvidencePaper(item);
+        if (!paper) {
+            setEvidenceBoardStatus('This evidence item could not be matched back to a project paper.', 'error');
+            renderEvidenceBoardSection();
+            return;
+        }
+        openPaperModal(paper);
+    };
+
+    window.toggleEvidenceColumn = stance => {
+        const key = String(stance || '').trim();
+        if (!getEvidenceBoardColumns().includes(key)) return;
+        evidenceBoardState.expandedColumns = {
+            ...(evidenceBoardState.expandedColumns || getInitialEvidenceColumnExpansion()),
+            [key]: !evidenceBoardState.expandedColumns?.[key]
+        };
+        renderEvidenceBoardSection();
+    };
+
+    window.ignoreEvidenceItem = async evidenceId => {
+        if (!confirm('Ignore this evidence tag and remove the paper from this claim board?')) return;
+        try {
+            await patchEvidenceItem(evidenceId, { hidden: true });
+            setEvidenceBoardStatus('Evidence card ignored and removed from this board.', 'success');
+        } catch (error) {
+            evidenceBoardState.error = error.message || 'Could not ignore this evidence card.';
+        } finally {
+            renderEvidenceBoardSection();
+        }
+    };
+
+    window.openEvidenceReasoning = (evidenceId) => {
+        const numericId = Number(evidenceId || 0);
+        if (!numericId) return;
+        evidenceBoardState.reasoningEvidenceId = numericId;
+        renderEvidenceBoardSection();
+    };
+
+    window.closeEvidenceReasoning = () => {
+        evidenceBoardState.reasoningEvidenceId = null;
+        renderEvidenceBoardSection();
+    };
+
+    window.handleEvidenceReasoningOverlayClick = (event) => {
+        if (shouldUseEvidenceReasoningDrawer()) return;
+        if (event?.target?.id === 'evidence-reasoning-modal') {
+            closeEvidenceReasoning();
+        }
+    };
+
+    window.addEventListener('resize', () => {
+        if (evidenceBoardState.reasoningEvidenceId) {
+            renderEvidenceReasoningModal();
+        }
+    });
+
+    window.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && evidenceBoardState.reasoningEvidenceId) {
+            closeEvidenceReasoning();
+        }
+    });
+
+    window.archiveEvidenceClaim = async (claimId = evidenceBoardState.selectedClaimId) => {
+        const numericId = Number(claimId || 0);
+        if (!currentProject?.id || !numericId) return;
+        if (!confirm('Archive this claim and remove it from the active Evidence Board list?')) return;
+        try {
+            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/claims/${numericId}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Could not archive this claim.');
+            }
+            await loadEvidenceClaims({ projectId: currentProject.id, silent: true });
+            setEvidenceBoardStatus('Claim archived.', 'success');
+        } catch (error) {
+            evidenceBoardState.error = error.message || 'Could not archive this claim.';
+        } finally {
+            renderEvidenceBoardSection();
+        }
+    };
+
     function renderLiteratureWatchModal() {
         setLiteratureWatchRangeButtons();
         const runBtn = document.getElementById('literature-watch-run-btn');
@@ -6813,6 +8310,20 @@ Return ONLY a JSON object matching this exact schema:
         el.type = el.type === "password" ? "text" : "password"; 
     };
 
+    window.toggleWorkspaceSection = (sectionKey) => {
+        const normalizedKey = String(sectionKey || '').trim().toLowerCase();
+        if (!(normalizedKey in DEFAULT_WORKSPACE_SECTION_COLLAPSE_STATE)) return;
+        workspaceSectionCollapseState = {
+            ...workspaceSectionCollapseState,
+            [normalizedKey]: !workspaceSectionCollapseState[normalizedKey]
+        };
+        persistWorkspaceSectionCollapseState();
+        applyWorkspaceSectionCollapseState();
+        if (normalizedKey === 'starmap' && !workspaceSectionCollapseState[normalizedKey] && myChart) {
+            requestAnimationFrame(() => myChart?.resize?.());
+        }
+    };
+
     window.switchView = (v) => { 
         hideAppBootstrap();
         Object.values(views).forEach(el => el.classList.add('hidden')); 
@@ -6831,6 +8342,7 @@ Return ONLY a JSON object matching this exact schema:
         }
         if (v === 'workspace') {
             refreshIntegrationStatus();
+            applyWorkspaceSectionCollapseState();
         }
     };
 
@@ -10428,6 +11940,7 @@ About 500 words of literature review draft in markdown.`;
         currentProject = normalizeProjectFields(await res.json());
         const migrated = normalizeProjectPaperStates(currentProject);
         if (migrated) await syncPapersToBackend();
+        resetEvidenceBoardState(currentProject.id);
         literatureWatchState = {
             projectId: currentProject.id,
             mode: 'target',
@@ -10460,6 +11973,8 @@ About 500 words of literature review draft in markdown.`;
         document.getElementById('ws-proj-name').innerText = currentProject.project_name;
         switchView('workspace');
         runProjectPreload(currentProject, projectSettings);
+        renderEvidenceBoardSection();
+        void hydrateEvidenceBoardForProject(currentProject.id, { silent: false });
         
         if (!myChart) {
             myChart = echarts.init(document.getElementById('chart-container'));
@@ -10794,6 +12309,7 @@ About 500 words of literature review draft in markdown.`;
         literatureWatchState.journalSuggestions = [];
         literatureWatchState.journalSearchLoading = false;
         renderMarkedNodesPanel();
+        renderEvidenceBoardSection();
         renderLiteratureWatchModal();
         renderWorkspacePaperView();
 
@@ -13156,6 +14672,8 @@ ${rawText}`;
             button.addEventListener(type, clearHold);
         });
     }
+
+    applyWorkspaceSectionCollapseState();
 
     bindChartZoomHoldButton('btn-chart-zoom-out', 0.9);
     bindChartZoomHoldButton('btn-chart-zoom-in', 1.1);

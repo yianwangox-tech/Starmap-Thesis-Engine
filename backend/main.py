@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
@@ -39,6 +41,7 @@ ENV_FILE = PROJECT_ROOT / ".env"
 GEMINI_MODEL = "gemini-2.5-flash"
 CITATION_GRAPH_JOBS: Dict[str, dict] = {}
 PROJECT_TASK_LOCKS: Dict[str, asyncio.Lock] = {}
+CLAIM_CACHE_MAINTENANCE = {"last_checked_at": 0}
 ZOTERO_CACHE_TTL_SECONDS = 60 * 5
 ZOTERO_FULL_SYNC_INTERVAL_SECONDS = 60 * 60
 ZOTERO_ITEM_PAGE_SIZE = 100
@@ -59,6 +62,32 @@ MAX_LOOKUP_TITLE_LENGTH = 500
 MAX_LOOKUP_AUTHORS_LENGTH = 800
 MAX_LOOKUP_YEAR_LENGTH = 20
 MAX_LOOKUP_EMAIL_LENGTH = 200
+MAX_CLAIM_TEXT_LENGTH = 4000
+MAX_CLAIM_SECTION_LABEL_LENGTH = 160
+MAX_CLAIM_TYPE_LENGTH = 40
+MAX_CLAIM_STATUS_LENGTH = 40
+MAX_CLAIM_ANALYSIS_VERSION_LENGTH = 40
+MAX_EVIDENCE_WHY_MATCHED_LENGTH = 1200
+MAX_EVIDENCE_CAVEAT_LENGTH = 800
+MAX_EVIDENCE_SNIPPET_TEXT_LENGTH = 360
+MAX_EVIDENCE_SNIPPETS_PER_ITEM = 3
+MAX_CLAIM_CANDIDATES = 96
+CLAIM_ANALYSIS_BATCH_SIZE = 8
+CLAIM_TYPE_VALUES = {"thesis_claim", "chapter_claim", "research_question"}
+CLAIM_STATUS_VALUES = {"active", "archived"}
+CLAIM_STANCE_VALUES = {"support", "challenge", "setup", "pending"}
+CACHE_SOFT_LIMIT_BYTES = 128 * 1024 * 1024
+CACHE_TARGET_LIMIT_BYTES = 96 * 1024 * 1024
+CACHE_HARD_LIMIT_BYTES = 192 * 1024 * 1024
+CACHE_ROW_LIMIT = 80_000
+CACHE_TARGET_ROW_LIMIT = 60_000
+CACHE_CLEANUP_BATCH_SIZE = 500
+CACHE_CLEANUP_MIN_INTERVAL_SECONDS = 45
+CACHE_PRIORITY_ORDER = [
+    ("claim_snippet_cache", "snippet_json"),
+    ("claim_candidate_cache", "candidate_json"),
+    ("claim_llm_batch_cache", "response_json"),
+]
 CITATION_KEY_STOPWORDS = {
     "a", "an", "the", "on", "in", "of", "for", "to", "and", "or", "by", "with",
     "at", "from", "into", "over", "under", "about", "between", "after", "before"
@@ -186,6 +215,21 @@ LITERATURE_WATCH_DISCIPLINE_ALIASES: Dict[str, str] = {
     "general_social_science": "y_miscellaneous",
 }
 DEFAULT_LITERATURE_WATCH_DISCIPLINE = "e_macroeconomics_monetary"
+CLAIM_CHALLENGE_MARKERS = {
+    "however", "but", "limited", "limit", "limits", "conditional", "only", "except",
+    "fails", "fail", "not", "contrary", "mixed", "heterogeneous", "weak", "weaker",
+    "insignificant", "inconsistent", "depends", "depending"
+}
+CLAIM_SUPPORT_MARKERS = {
+    "increase", "increases", "decrease", "decreases", "raise", "raises", "reduce",
+    "reduces", "improve", "improves", "worsen", "worsens", "associated", "predicts",
+    "drives", "causes", "effect", "evidence", "supports", "find", "finds", "shows"
+}
+CLAIM_SETUP_MARKERS = {
+    "method", "methods", "identification", "specification", "estimation", "dataset",
+    "measure", "measurement", "instrument", "regression", "model", "framework",
+    "strategy", "empirical", "approach", "sampling", "design"
+}
 
 def _scrub_paper_payload(paper: dict) -> dict:
     if not isinstance(paper, dict):
@@ -265,6 +309,118 @@ def _ensure_projects_schema(cursor):
         )
     cursor.execute("DROP TABLE projects_legacy")
 
+def _ensure_claims_schema(cursor):
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS project_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            claim_text TEXT NOT NULL,
+            claim_type TEXT NOT NULL DEFAULT 'thesis_claim',
+            section_label TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            analysis_version TEXT NOT NULL DEFAULT 'v1',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS claim_evidence_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            claim_id INTEGER NOT NULL,
+            project_id INTEGER NOT NULL,
+            paper_key TEXT NOT NULL,
+            paper_title TEXT NOT NULL DEFAULT '',
+            paper_year TEXT NOT NULL DEFAULT '',
+            paper_authors TEXT NOT NULL DEFAULT '',
+            citation_key TEXT NOT NULL DEFAULT '',
+            stance TEXT NOT NULL DEFAULT 'pending',
+            strength_score REAL NOT NULL DEFAULT 0,
+            relevance_score REAL NOT NULL DEFAULT 0,
+            confidence_score REAL NOT NULL DEFAULT 0,
+            quality_score REAL NOT NULL DEFAULT 0,
+            why_matched TEXT NOT NULL DEFAULT '',
+            caveat TEXT NOT NULL DEFAULT '',
+            evidence_snippets_json TEXT NOT NULL DEFAULT '[]',
+            source_pass TEXT NOT NULL DEFAULT 'auto',
+            user_override INTEGER NOT NULL DEFAULT 0,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            hidden INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id),
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            UNIQUE (claim_id, paper_key)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS claim_analysis_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            claim_id INTEGER NOT NULL,
+            project_id INTEGER NOT NULL,
+            candidate_count INTEGER NOT NULL DEFAULT 0,
+            analyzed_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'queued',
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            error_text TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id),
+            FOREIGN KEY (project_id) REFERENCES projects (id)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS claim_candidate_cache (
+            cache_key TEXT PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            claim_id INTEGER NOT NULL,
+            analysis_version TEXT NOT NULL DEFAULT 'v1',
+            payload_hash TEXT NOT NULL,
+            candidate_json TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            last_hit_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS claim_llm_batch_cache (
+            cache_key TEXT PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            claim_id INTEGER NOT NULL,
+            analysis_version TEXT NOT NULL DEFAULT 'v1',
+            model_name TEXT NOT NULL DEFAULT '',
+            payload_hash TEXT NOT NULL,
+            response_json TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            last_hit_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS claim_snippet_cache (
+            cache_key TEXT PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            claim_id INTEGER NOT NULL,
+            analysis_version TEXT NOT NULL DEFAULT 'v1',
+            paper_key TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            snippet_json TEXT NOT NULL DEFAULT 'null',
+            created_at INTEGER NOT NULL,
+            last_hit_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id)
+        )'''
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_project_claims_project_id ON project_claims (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_evidence_claim_id ON claim_evidence_items (claim_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_evidence_project_id ON claim_evidence_items (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_analysis_runs_claim_id ON claim_analysis_runs (claim_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_candidate_cache_claim_id ON claim_candidate_cache (claim_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_llm_batch_cache_claim_id ON claim_llm_batch_cache (claim_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_snippet_cache_claim_id ON claim_snippet_cache (claim_id)")
+
 def init_db():
     conn = sqlite3.connect(str(DB_FILE))
     cursor = conn.cursor()
@@ -301,6 +457,9 @@ def init_db():
         refreshed_at INTEGER NOT NULL DEFAULT 0
     )''')
     _ensure_projects_schema(cursor)
+    _ensure_claims_schema(cursor)
+    cursor.execute("UPDATE claim_evidence_items SET stance = 'setup' WHERE LOWER(COALESCE(stance, '')) IN ('method', 'methods', 'methodology')")
+    cursor.execute("UPDATE claim_evidence_items SET stance = 'pending' WHERE LOWER(COALESCE(stance, '')) IN ('background', 'context', 'foundation')")
     cursor.execute("SELECT id, top_papers FROM projects")
     for project_id, top_papers in cursor.fetchall():
         scrubbed = _scrub_top_papers_json(top_papers)
@@ -809,6 +968,1032 @@ def _validate_paper_list(papers: List["PaperItem"]):
         if not paper.filename or not paper.title:
             raise HTTPException(status_code=422, detail="Every paper must include a filename and title.")
 
+def _normalize_claim_type(raw_value: str) -> str:
+    value = _trim_text(str(raw_value or "").lower(), MAX_CLAIM_TYPE_LENGTH)
+    return value if value in CLAIM_TYPE_VALUES else "thesis_claim"
+
+def _normalize_claim_status(raw_value: str) -> str:
+    value = _trim_text(str(raw_value or "").lower(), MAX_CLAIM_STATUS_LENGTH)
+    return value if value in CLAIM_STATUS_VALUES else "active"
+
+def _normalize_claim_stance(raw_value: str) -> str:
+    value = _trim_text(str(raw_value or "").lower(), 40)
+    aliases = {
+        "supports": "support",
+        "supported": "support",
+        "contradict": "challenge",
+        "contradicts": "challenge",
+        "contradiction": "challenge",
+        "oppose": "challenge",
+        "opposes": "challenge",
+        "limit": "challenge",
+        "limits": "challenge",
+        "method": "setup",
+        "methods": "setup",
+        "methodology": "setup",
+        "setups": "setup",
+        "design": "setup",
+        "approach": "setup",
+        "context": "pending",
+        "foundation": "pending",
+        "background": "pending",
+        "uncertain": "pending",
+        "unclear": "pending",
+    }
+    normalized = aliases.get(value, value)
+    return normalized if normalized in CLAIM_STANCE_VALUES else "pending"
+
+def _validate_claim_create_payload(payload: ClaimCreateRequest) -> ClaimCreateRequest:
+    payload.claim_text = _trim_text(payload.claim_text, MAX_CLAIM_TEXT_LENGTH)
+    payload.claim_type = _normalize_claim_type(payload.claim_type)
+    payload.section_label = _trim_text(payload.section_label, MAX_CLAIM_SECTION_LABEL_LENGTH)
+    if not payload.claim_text:
+        raise HTTPException(status_code=422, detail="Claim text is required.")
+    return payload
+
+def _validate_claim_analyze_payload(payload: ClaimAnalyzeRequest) -> ClaimAnalyzeRequest:
+    payload.max_candidates = max(8, min(int(payload.max_candidates or 36), MAX_CLAIM_CANDIDATES))
+    cleaned_statuses = []
+    for raw_status in payload.include_statuses or []:
+        value = _trim_text(raw_status, 40)
+        if value and value not in cleaned_statuses:
+            cleaned_statuses.append(value)
+    payload.include_statuses = cleaned_statuses or ["Core", "Pending", "Underweight", "Unread"]
+    payload.prefer_fulltext = bool(payload.prefer_fulltext)
+    payload.reanalyze_overrides = bool(payload.reanalyze_overrides)
+    return payload
+
+def _load_project_top_papers(project_data: dict) -> List[dict]:
+    raw_value = project_data.get("top_papers")
+    if not raw_value:
+        return []
+    if isinstance(raw_value, list):
+        papers = raw_value
+    else:
+        papers = json.loads(_scrub_top_papers_json(raw_value))
+    return [_scrub_paper_payload(paper) for paper in papers if isinstance(paper, dict)]
+
+def _make_claim_paper_key(paper: dict) -> str:
+    openalex_id = _trim_text((paper or {}).get("openalex_id"), 300)
+    if openalex_id:
+        return f"openalex:{openalex_id.lower()}"
+    zotero_key = _trim_text((paper or {}).get("zotero_item_key"), 120)
+    if zotero_key:
+        return f"zotero:{zotero_key.lower()}"
+    doi = _clean_doi((paper or {}).get("doi"))
+    if doi:
+        return f"doi:{doi.lower()}"
+    title = _collapse_whitespace(str((paper or {}).get("title") or "")).lower()
+    year = _extract_citation_year((paper or {}).get("year", ""))
+    authors = _collapse_whitespace(str((paper or {}).get("authors") or "")).lower()
+    digest = hashlib.sha1(f"{title}|{year}|{authors}".encode("utf-8")).hexdigest()[:20]
+    return f"paper:{digest}"
+
+def _claim_tokens(value: str) -> List[str]:
+    return [
+        token for token in re.findall(r"[A-Za-z0-9]+", str(value or "").lower())
+        if len(token) >= 3 and token not in LITERATURE_WATCH_STOPWORDS
+    ]
+
+def _claim_phrases(value: str, min_size: int = 2, max_size: int = 3) -> List[str]:
+    tokens = _claim_tokens(value)
+    phrases = []
+    for size in range(min_size, max_size + 1):
+        for index in range(0, max(len(tokens) - size + 1, 0)):
+            phrase = " ".join(tokens[index:index + size]).strip()
+            if phrase:
+                phrases.append(phrase)
+    deduped = []
+    for phrase in phrases:
+        if phrase not in deduped:
+            deduped.append(phrase)
+    return deduped
+
+def _token_overlap_score(text: str, tokens: List[str]) -> float:
+    if not tokens:
+        return 0.0
+    text_tokens = set(_claim_tokens(text))
+    if not text_tokens:
+        return 0.0
+    overlap = sum(1 for token in tokens if token in text_tokens)
+    return min(overlap / max(len(set(tokens)), 1), 1.0)
+
+def _phrase_overlap_score(text: str, phrases: List[str]) -> float:
+    lowered = str(text or "").lower()
+    if not lowered.strip() or not phrases:
+        return 0.0
+    hits = sum(1 for phrase in phrases if phrase in lowered)
+    return min(hits / max(len(phrases), 1), 1.0)
+
+def _marker_score(text: str, markers: set) -> float:
+    lowered = str(text or "").lower()
+    if not lowered.strip():
+        return 0.0
+    hits = sum(1 for marker in markers if marker in lowered)
+    return min(hits / 3.0, 1.0)
+
+def _length_quality_score(text: str, ideal_min: int = 70, ideal_max: int = 280) -> float:
+    length = len(_compact_whitespace(text))
+    if length <= 0:
+        return 0.0
+    if ideal_min <= length <= ideal_max:
+        return 1.0
+    if length < ideal_min:
+        return max(length / max(ideal_min, 1), 0.25)
+    overflow = min((length - ideal_max) / max(ideal_max, 1), 1.0)
+    return max(1.0 - overflow, 0.35)
+
+def _text_signal_bundle(text: str, claim_tokens: List[str], claim_phrases: List[str]) -> dict:
+    return {
+        "token_overlap": _token_overlap_score(text, claim_tokens),
+        "phrase_overlap": _phrase_overlap_score(text, claim_phrases),
+        "support_marker": _marker_score(text, CLAIM_SUPPORT_MARKERS),
+        "challenge_marker": _marker_score(text, CLAIM_CHALLENGE_MARKERS),
+        "setup_marker": _marker_score(text, CLAIM_SETUP_MARKERS),
+    }
+
+def _stance_alignment_bonus(signal_bundle: dict, preferred_stance: str) -> float:
+    stance = _normalize_claim_stance(preferred_stance)
+    if stance == "challenge":
+        return float(signal_bundle.get("challenge_marker") or 0)
+    if stance == "setup":
+        return float(signal_bundle.get("setup_marker") or 0)
+    return float(signal_bundle.get("support_marker") or 0)
+
+def _project_similarity_score(paper: dict) -> float:
+    try:
+        return max(0.0, min(float((paper or {}).get("similarity") or 0.0), 1.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+def _paper_status_weight(status: str) -> float:
+    normalized = str(status or "").strip().lower()
+    if normalized == "core":
+        return 1.0
+    if normalized == "pending":
+        return 0.72
+    if normalized == "underweight":
+        return 0.62
+    if normalized == "unread":
+        return 0.48
+    return 0.52
+
+def _paper_recency_score(paper: dict) -> float:
+    year = _extract_citation_year((paper or {}).get("year", ""))
+    if year == "Unknown":
+        return 0.35
+    try:
+        delta = max(date.today().year - int(year), 0)
+    except ValueError:
+        return 0.35
+    if delta <= 2:
+        return 1.0
+    if delta <= 5:
+        return 0.82
+    if delta <= 10:
+        return 0.62
+    if delta <= 20:
+        return 0.46
+    return 0.32
+
+def _paper_quality_score(paper: dict) -> float:
+    citation_count = _safe_int((paper or {}).get("citation_count"), 0)
+    citation_score = min((math.log1p(max(citation_count, 0)) / math.log1p(500)), 1.0) if citation_count else 0.0
+    completeness_parts = [
+        bool(_trim_text((paper or {}).get("title"), MAX_PAPER_TITLE_LENGTH)),
+        bool(_trim_text((paper or {}).get("authors"), MAX_PAPER_AUTHORS_LENGTH) and str((paper or {}).get("authors") or "").strip().lower() != "unknown"),
+        _extract_citation_year((paper or {}).get("year", "")) != "Unknown",
+        bool(_trim_text((paper or {}).get("abstract"), MAX_PAPER_ABSTRACT_LENGTH) and str((paper or {}).get("abstract") or "").strip().lower() != "unknown"),
+        bool(_trim_text((paper or {}).get("publication_venue"), 300)),
+    ]
+    completeness_score = sum(1 for item in completeness_parts if item) / len(completeness_parts)
+    core_bonus = 0.12 if str((paper or {}).get("status") or "").strip().lower() == "core" else 0.0
+    fulltext_bonus = 0.08 if _trim_text((paper or {}).get("current_content"), MAX_PAPER_CURRENT_CONTENT_LENGTH) else 0.0
+    return min((citation_score * 0.45) + (completeness_score * 0.35) + core_bonus + fulltext_bonus, 1.0)
+
+def _claim_cluster_key(paper: dict) -> str:
+    for key in ("citation_cluster_id", "citation_cluster_theme_name", "publication_venue"):
+        value = _collapse_whitespace(str((paper or {}).get(key) or "")).lower()
+        if value:
+            return value
+    return "uncategorized"
+
+def _build_claim_candidate_metrics(paper: dict, claim_text: str, claim_tokens: List[str], claim_phrases: List[str], prefer_fulltext: bool) -> dict:
+    title = str((paper or {}).get("title") or "")
+    abstract = str((paper or {}).get("abstract") or "")
+    notes = str((paper or {}).get("notes") or "")
+    body = str((paper or {}).get("current_content") or "")
+    title_signal = _text_signal_bundle(title, claim_tokens, claim_phrases)
+    abstract_signal = _text_signal_bundle(abstract, claim_tokens, claim_phrases)
+    notes_signal = _text_signal_bundle(notes, claim_tokens, claim_phrases)
+    body_signal = _text_signal_bundle(body, claim_tokens, claim_phrases) if body else _text_signal_bundle("", claim_tokens, claim_phrases)
+    title_score = (title_signal["token_overlap"] * 0.65) + (title_signal["phrase_overlap"] * 0.35)
+    abstract_score = (abstract_signal["token_overlap"] * 0.58) + (abstract_signal["phrase_overlap"] * 0.42)
+    notes_score = (notes_signal["token_overlap"] * 0.5) + (notes_signal["phrase_overlap"] * 0.5)
+    body_score = ((body_signal["token_overlap"] * 0.55) + (body_signal["phrase_overlap"] * 0.45)) if body else 0.0
+    exact_phrase_bonus = 0.08 if claim_text and claim_text.lower() in f"{title}\n{abstract}\n{notes}\n{body}".lower() else 0.0
+    claim_relevance = min(
+        (title_score * 0.29) +
+        (abstract_score * 0.31) +
+        (notes_score * 0.20) +
+        (body_score * 0.20) +
+        exact_phrase_bonus,
+        1.0
+    )
+    challenge_score = min(
+        (max(title_signal["challenge_marker"], abstract_signal["challenge_marker"], notes_signal["challenge_marker"], body_signal["challenge_marker"]) * 0.55) +
+        (max(abstract_signal["phrase_overlap"], body_signal["phrase_overlap"], notes_signal["phrase_overlap"]) * 0.30) +
+        (max(notes_signal["token_overlap"], body_signal["token_overlap"]) * 0.15),
+        1.0
+    )
+    setup_score = min(
+        (max(title_signal["setup_marker"], abstract_signal["setup_marker"], notes_signal["setup_marker"], body_signal["setup_marker"]) * 0.58) +
+        (max(title_signal["phrase_overlap"], abstract_signal["phrase_overlap"], notes_signal["phrase_overlap"]) * 0.22) +
+        (max(notes_signal["token_overlap"], body_signal["token_overlap"]) * 0.20),
+        1.0
+    )
+    support_score = min(
+        (max(title_signal["support_marker"], abstract_signal["support_marker"], body_signal["support_marker"]) * 0.34) +
+        (claim_relevance * 0.46) +
+        (max(abstract_signal["phrase_overlap"], body_signal["phrase_overlap"]) * 0.20),
+        1.0
+    )
+    fulltext_bonus = 1.0 if (prefer_fulltext and body) or bool((paper or {}).get("zotero_has_fulltext")) else 0.0
+    project_similarity = _project_similarity_score(paper)
+    quality_score = _paper_quality_score(paper)
+    recency_score = _paper_recency_score(paper)
+    notes_relevance = notes_score
+    candidate_score = min(
+        (claim_relevance * 0.32) +
+        (project_similarity * 0.14) +
+        (_paper_status_weight((paper or {}).get("status")) * 0.11) +
+        (notes_relevance * 0.12) +
+        (quality_score * 0.13) +
+        (fulltext_bonus * 0.08) +
+        (recency_score * 0.05) +
+        (support_score * 0.05),
+        1.0
+    )
+    return {
+        "paper_key": _make_claim_paper_key(paper),
+        "claim_relevance": round(claim_relevance, 4),
+        "project_similarity": round(project_similarity, 4),
+        "status_weight": round(_paper_status_weight((paper or {}).get("status")), 4),
+        "notes_relevance": round(notes_relevance, 4),
+        "quality_score": round(quality_score, 4),
+        "fulltext_bonus": round(fulltext_bonus, 4),
+        "recency_score": round(recency_score, 4),
+        "support_hint": round(support_score, 4),
+        "challenge_hint": round(challenge_score, 4),
+        "setup_hint": round(setup_score, 4),
+        "candidate_score": round(candidate_score, 4),
+        "cluster_key": _claim_cluster_key(paper),
+    }
+
+def _diversify_claim_candidates(candidates: List[dict], max_candidates: int) -> List[dict]:
+    selected: List[dict] = []
+    cluster_counts: Dict[str, int] = {}
+    max_per_cluster = max(2, min(5, math.ceil(max_candidates / 4)))
+    leftovers: List[dict] = []
+    for candidate in candidates:
+        cluster_key = candidate.get("cluster_key", "uncategorized")
+        count = cluster_counts.get(cluster_key, 0)
+        if count < max_per_cluster:
+            selected.append(candidate)
+            cluster_counts[cluster_key] = count + 1
+        else:
+            leftovers.append(candidate)
+        if len(selected) >= max_candidates:
+            return selected[:max_candidates]
+    for candidate in leftovers:
+        selected.append(candidate)
+        if len(selected) >= max_candidates:
+            break
+    return selected[:max_candidates]
+
+def _build_claim_candidate_pool(project_data: dict, claim_row: dict, include_statuses: List[str], max_candidates: int, prefer_fulltext: bool) -> List[dict]:
+    cache_input = _build_claim_candidate_cache_input(project_data, claim_row, include_statuses, max_candidates, prefer_fulltext)
+    payload_hash = _hash_cache_payload(cache_input)
+    cache_key = f"claim-candidates:{payload_hash}"
+    cached_payload = _read_claim_cache_payload("claim_candidate_cache", cache_key, "candidate_json")
+    if cached_payload:
+        try:
+            cached_candidates = json.loads(cached_payload)
+        except Exception:
+            cached_candidates = None
+        if isinstance(cached_candidates, list):
+            return [item for item in cached_candidates if isinstance(item, dict)]
+
+    claim_text = claim_row.get("claim_text", "")
+    papers = _load_project_top_papers(project_data)
+    allowed_statuses = {str(status or "").strip().lower() for status in include_statuses if str(status or "").strip()}
+    claim_tokens = _claim_tokens(claim_text)
+    claim_phrases = _claim_phrases(claim_text)
+    enriched = []
+    for paper in papers:
+        if allowed_statuses and str((paper or {}).get("status") or "").strip().lower() not in allowed_statuses:
+            continue
+        metrics = _build_claim_candidate_metrics(paper, claim_text, claim_tokens, claim_phrases, prefer_fulltext)
+        enriched.append({**paper, **metrics})
+    if not enriched:
+        return []
+
+    claim_ranked = sorted(enriched, key=lambda item: (float(item.get("claim_relevance") or 0), float(item.get("candidate_score") or 0)), reverse=True)
+    score_ranked = sorted(enriched, key=lambda item: (float(item.get("candidate_score") or 0), float(item.get("quality_score") or 0)), reverse=True)
+    similarity_ranked = sorted(enriched, key=lambda item: (float(item.get("project_similarity") or 0), float(item.get("candidate_score") or 0)), reverse=True)
+    support_ranked = sorted(enriched, key=lambda item: (float(item.get("support_hint") or 0), float(item.get("claim_relevance") or 0), float(item.get("candidate_score") or 0)), reverse=True)
+    challenge_ranked = sorted(enriched, key=lambda item: (float(item.get("challenge_hint") or 0), float(item.get("claim_relevance") or 0)), reverse=True)
+    setup_ranked = sorted(enriched, key=lambda item: (float(item.get("setup_hint") or 0), float(item.get("claim_relevance") or 0), float(item.get("quality_score") or 0)), reverse=True)
+    quality_ranked = sorted(enriched, key=lambda item: (float(item.get("quality_score") or 0), float(item.get("citation_count") or 0)), reverse=True)
+    core_ranked = sorted(
+        [item for item in enriched if str(item.get("status") or "").strip().lower() == "core"],
+        key=lambda item: (float(item.get("candidate_score") or 0), float(item.get("claim_relevance") or 0)),
+        reverse=True
+    )
+    cluster_leaders = {}
+    for item in score_ranked:
+        cluster_key = item.get("cluster_key", "uncategorized")
+        if cluster_key not in cluster_leaders:
+            cluster_leaders[cluster_key] = item
+
+    selected_by_key: Dict[str, dict] = {}
+    def seed(candidates: List[dict], limit: int):
+        for item in candidates[:limit]:
+            selected_by_key.setdefault(item.get("paper_key"), item)
+
+    seed(claim_ranked, max(10, math.ceil(max_candidates * 0.45)))
+    seed(support_ranked, max(8, math.ceil(max_candidates * 0.35)))
+    seed(challenge_ranked, max(6, math.ceil(max_candidates * 0.22)))
+    seed(setup_ranked, max(6, math.ceil(max_candidates * 0.22)))
+    seed(score_ranked, max(8, math.ceil(max_candidates * 0.35)))
+    seed(similarity_ranked, max(5, math.ceil(max_candidates * 0.22)))
+    seed(quality_ranked, max(4, math.ceil(max_candidates * 0.18)))
+    seed(core_ranked, max(4, math.ceil(max_candidates * 0.18)))
+    seed(list(cluster_leaders.values()), max(4, math.ceil(max_candidates * 0.25)))
+
+    merged = list(selected_by_key.values())
+    merged.sort(
+        key=lambda item: (
+            float(item.get("candidate_score") or 0),
+            float(item.get("claim_relevance") or 0),
+            float(item.get("support_hint") or 0),
+            float(item.get("quality_score") or 0),
+            float(item.get("project_similarity") or 0)
+        ),
+        reverse=True
+    )
+    selected_candidates = _diversify_claim_candidates(merged, max_candidates)
+    _write_claim_candidate_cache(
+        cache_key,
+        int(project_data.get("id") or 0),
+        int((claim_row or {}).get("id") or 0),
+        _claim_analysis_version(claim_row),
+        payload_hash,
+        _stable_json_dumps(selected_candidates)
+    )
+    return selected_candidates
+
+def _compact_whitespace(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+def _ground_claim_snippet(project_id: int, claim_row: dict, raw_snippet: str, paper: dict, claim_tokens: List[str], claim_phrases: List[str], preferred_stance: str = "support") -> Optional[dict]:
+    snippet = _trim_text(_compact_whitespace(raw_snippet), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+    if not snippet:
+        return None
+    cache_input = _build_claim_snippet_cache_input(project_id, claim_row, paper, snippet, preferred_stance)
+    payload_hash = _hash_cache_payload(cache_input)
+    cache_key = f"claim-snippet:{payload_hash}"
+    cached_payload = _read_claim_cache_payload("claim_snippet_cache", cache_key, "snippet_json")
+    if cached_payload is not None:
+        try:
+            cached_snippet = json.loads(cached_payload)
+        except Exception:
+            cached_snippet = None
+        if cached_snippet is None or isinstance(cached_snippet, dict):
+            return cached_snippet
+
+    best = None
+    for source_field in ("abstract", "current_content", "notes"):
+        raw_text = str((paper or {}).get(source_field) or "")
+        if not raw_text.strip():
+            continue
+        segments = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+        for segment in segments:
+            compact = _compact_whitespace(segment)
+            if len(compact) < 20:
+                continue
+            overlap = SequenceMatcher(None, snippet.lower(), compact.lower()).ratio()
+            if overlap < 0.42 and snippet.lower() not in compact.lower() and compact.lower() not in snippet.lower():
+                continue
+            signal_bundle = _text_signal_bundle(compact, claim_tokens, claim_phrases)
+            score = (
+                overlap * 0.55 +
+                signal_bundle["token_overlap"] * 0.18 +
+                signal_bundle["phrase_overlap"] * 0.17 +
+                _stance_alignment_bonus(signal_bundle, preferred_stance) * 0.10
+            )
+            start = raw_text.find(segment)
+            candidate = {
+                "score": score,
+                "text": compact[:MAX_EVIDENCE_SNIPPET_TEXT_LENGTH],
+                "source_field": source_field,
+                "char_start": max(start, 0),
+                "char_end": max(start, 0) + len(segment),
+            }
+            if best is None or candidate["score"] > best["score"]:
+                best = candidate
+    if not best:
+        _write_claim_snippet_cache(
+            cache_key,
+            int(project_id or 0),
+            int((claim_row or {}).get("id") or 0),
+            _claim_analysis_version(claim_row),
+            _trim_text(paper.get("paper_key"), 160),
+            payload_hash,
+            "null"
+        )
+        return None
+    best.pop("score", None)
+    _write_claim_snippet_cache(
+        cache_key,
+        int(project_id or 0),
+        int((claim_row or {}).get("id") or 0),
+        _claim_analysis_version(claim_row),
+        _trim_text(paper.get("paper_key"), 160),
+        payload_hash,
+        _stable_json_dumps(best)
+    )
+    return best
+
+def _extract_claim_evidence_snippets(paper: dict, claim_tokens: List[str], claim_phrases: List[str], limit: int = 2, preferred_stance: str = "support") -> List[dict]:
+    snippets = []
+    seen_texts = set()
+    for source_field in ("abstract", "current_content", "notes"):
+        raw_text = str((paper or {}).get(source_field) or "")
+        if not raw_text.strip():
+            continue
+        segments = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+        scored = []
+        for segment in segments:
+            compact = _compact_whitespace(segment)
+            if len(compact) < 30:
+                continue
+            signal_bundle = _text_signal_bundle(compact, claim_tokens, claim_phrases)
+            overlap = signal_bundle["token_overlap"]
+            phrase_overlap = signal_bundle["phrase_overlap"]
+            if overlap <= 0 and phrase_overlap <= 0:
+                continue
+            start = raw_text.find(segment)
+            source_weight = 1.0 if source_field == "abstract" else (0.94 if source_field == "notes" else 0.9)
+            score = (
+                overlap * 0.34 +
+                phrase_overlap * 0.28 +
+                _stance_alignment_bonus(signal_bundle, preferred_stance) * 0.18 +
+                _length_quality_score(compact) * 0.08 +
+                source_weight * 0.12
+            )
+            scored.append((score, compact, source_field, max(start, 0), max(start, 0) + len(segment)))
+        scored.sort(key=lambda item: (item[0], len(item[1]) <= 240, len(item[1])), reverse=True)
+        for _, text, field, start, end in scored:
+            dedupe_key = text.lower()
+            if dedupe_key in seen_texts:
+                continue
+            seen_texts.add(dedupe_key)
+            snippets.append({
+                "text": text[:MAX_EVIDENCE_SNIPPET_TEXT_LENGTH],
+                "source_field": field,
+                "char_start": start,
+                "char_end": end,
+            })
+            if len(snippets) >= limit:
+                return snippets[:limit]
+    return snippets[:limit]
+
+def _build_claim_classification_prompt(project_data: dict, claim_row: dict, candidates: List[dict]) -> str:
+    payload = _build_claim_classification_payload(candidates)
+    return (
+        "You are classifying project papers against a specific research claim.\n\n"
+        "Assign exactly one stance for each paper:\n"
+        "- support = directly supports the claim or a core mechanism\n"
+        "- challenge = weakens, narrows, conditions, or contradicts the claim\n"
+        "- setup = mainly contributes identification, data, measurement, empirical strategy, or research design\n"
+        "- pending = plausibly relevant, but evidence is too weak or unclear\n\n"
+        "Rules:\n"
+        "- Prefer the supplied abstract, notes, and current_content.\n"
+        "- challenge includes partial contradiction, boundary conditions, null effects, and domain-specific limitations.\n"
+        "- setup should win when the paper is mainly useful for identification, data, measurement, or design rather than substantive support.\n"
+        "- Do not invent evidence not present in the supplied text.\n"
+        "- why_matched must be one sentence.\n"
+        "- caveat should be short and empty when not needed.\n"
+        "- snippet_candidates should be short verbatim fragments copied from the supplied text when possible.\n"
+        "- Return JSON only in the form {\"results\":[...]}\n\n"
+        f"Project target title: {_trim_text(project_data.get('target_title'), 300)}\n"
+        f"Project target abstract: {_trim_text(_compact_whitespace(project_data.get('target_abstract')), 1800)}\n"
+        f"Project current content: {_trim_text(_compact_whitespace(project_data.get('target_current_content')), 1800)}\n"
+        f"Claim text: {_trim_text(claim_row.get('claim_text'), MAX_CLAIM_TEXT_LENGTH)}\n"
+        f"Claim type: {_trim_text(claim_row.get('claim_type'), MAX_CLAIM_TYPE_LENGTH)}\n"
+        f"Section label: {_trim_text(claim_row.get('section_label'), MAX_CLAIM_SECTION_LABEL_LENGTH)}\n\n"
+        "Return one object per input paper with keys:\n"
+        "paper_key, stance, directness, confidence, why_matched, caveat, snippet_candidates\n\n"
+        f"Papers:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+def _heuristic_claim_classification(paper: dict, claim_tokens: List[str], claim_phrases: Optional[List[str]] = None) -> dict:
+    claim_phrases = claim_phrases or []
+    claim_relevance = float(paper.get("claim_relevance") or 0)
+    support_hint = float(paper.get("support_hint") or 0)
+    challenge_hint = float(paper.get("challenge_hint") or 0)
+    setup_hint = float(paper.get("setup_hint") or 0)
+    support_signal = (support_hint * 0.52) + (claim_relevance * 0.48)
+    challenge_signal = (challenge_hint * 0.64) + (claim_relevance * 0.36)
+    setup_signal = (setup_hint * 0.7) + (claim_relevance * 0.3)
+    if challenge_signal >= 0.32 and challenge_signal >= support_signal + 0.05 and challenge_signal >= setup_signal:
+        stance = "challenge"
+    elif setup_signal >= 0.34 and setup_signal >= support_signal + 0.03:
+        stance = "setup"
+    elif support_signal >= 0.36:
+        stance = "support"
+    else:
+        stance = "pending"
+    snippets = _extract_claim_evidence_snippets(paper, claim_tokens, claim_phrases, limit=2, preferred_stance=stance)
+    why_matched = (
+        "The paper appears to provide direct evidence that aligns with the claim or one of its core mechanisms."
+        if stance == "support"
+        else (
+            "The paper appears to qualify, limit, or condition the claim rather than cleanly support it."
+            if stance == "challenge"
+            else (
+                "The paper looks most useful for setup, measurement, identification, or research design support."
+                if stance == "setup"
+                else "The paper may matter for the claim, but the current evidence is not decisive."
+            )
+        )
+    )
+    return {
+        "paper_key": paper.get("paper_key"),
+        "stance": stance,
+        "directness": round(max(
+            support_signal if stance == "support" else (
+                challenge_signal if stance == "challenge" else (
+                    setup_signal if stance == "setup" else claim_relevance
+                )
+            ),
+            0.12 if stance == "setup" else 0.08
+        ), 3),
+        "confidence": round(min(max(
+            support_signal if stance == "support" else (
+                challenge_signal if stance == "challenge" else (
+                    setup_signal if stance == "setup" else claim_relevance
+                )
+            ),
+            0.22
+        ), 0.86), 3),
+        "why_matched": why_matched,
+        "caveat": "",
+        "snippet_candidates": [item.get("text", "") for item in snippets],
+    }
+
+def _normalize_claim_snippets(project_id: int, claim_row: dict, raw_snippets, paper: dict, claim_tokens: List[str], claim_phrases: Optional[List[str]] = None, preferred_stance: str = "support") -> List[dict]:
+    claim_phrases = claim_phrases or []
+    normalized = []
+    for raw_snippet in raw_snippets or []:
+        grounded = _ground_claim_snippet(project_id, claim_row, raw_snippet, paper, claim_tokens, claim_phrases, preferred_stance=preferred_stance)
+        if grounded:
+            normalized.append(grounded)
+            if len(normalized) >= MAX_EVIDENCE_SNIPPETS_PER_ITEM:
+                break
+            continue
+        text = _trim_text(_compact_whitespace(raw_snippet), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+        if text:
+            normalized.append({
+                "text": text,
+                "source_field": "model_excerpt",
+                "char_start": 0,
+                "char_end": len(text),
+            })
+        if len(normalized) >= MAX_EVIDENCE_SNIPPETS_PER_ITEM:
+            break
+    if normalized:
+        return normalized
+    return _extract_claim_evidence_snippets(
+        paper,
+        claim_tokens,
+        claim_phrases,
+        limit=MAX_EVIDENCE_SNIPPETS_PER_ITEM,
+        preferred_stance=preferred_stance
+    )
+
+def _analyze_claim_candidates(project_data: dict, claim_row: dict, candidates: List[dict]) -> Tuple[List[dict], bool]:
+    if not candidates:
+        return [], False
+    project_id = int(project_data.get("id") or 0)
+    claim_id = int((claim_row or {}).get("id") or 0)
+    analysis_version = _claim_analysis_version(claim_row)
+    claim_tokens = _claim_tokens(claim_row.get("claim_text", ""))
+    claim_phrases = _claim_phrases(claim_row.get("claim_text", ""))
+    llm_used = False
+    final_items = []
+    for index in range(0, len(candidates), CLAIM_ANALYSIS_BATCH_SIZE):
+        batch = candidates[index:index + CLAIM_ANALYSIS_BATCH_SIZE]
+        batch_results = []
+        try:
+            batch_payload = _build_claim_classification_payload(batch)
+            cache_input = _build_claim_llm_batch_cache_input(project_data, claim_row, batch_payload)
+            payload_hash = _hash_cache_payload(cache_input)
+            cache_key = f"claim-llm-batch:{payload_hash}"
+            cached_payload = _read_claim_cache_payload("claim_llm_batch_cache", cache_key, "response_json")
+            if cached_payload:
+                parsed = json.loads(cached_payload)
+            else:
+                prompt = _build_claim_classification_prompt(project_data, claim_row, batch)
+                parsed = _parse_llm_json_payload(_call_llm_from_env(prompt, temperature=0.05, json_mode=True))
+                _write_claim_llm_batch_cache(
+                    cache_key,
+                    project_id,
+                    claim_id,
+                    analysis_version,
+                    _llm_cache_model_name(),
+                    payload_hash,
+                    _stable_json_dumps(parsed)
+                )
+            batch_results = parsed.get("results") if isinstance(parsed, dict) else parsed
+            if not isinstance(batch_results, list):
+                raise ValueError("Model returned an unexpected claim-analysis payload.")
+            llm_used = True
+        except Exception:
+            batch_results = [_heuristic_claim_classification(paper, claim_tokens, claim_phrases) for paper in batch]
+
+        result_map = {}
+        for item in batch_results:
+            if not isinstance(item, dict):
+                continue
+            paper_key = _trim_text(item.get("paper_key"), 120)
+            if paper_key:
+                result_map[paper_key] = item
+
+        for paper in batch:
+            fallback = _heuristic_claim_classification(paper, claim_tokens, claim_phrases)
+            raw = result_map.get(paper.get("paper_key"), fallback)
+            stance = _normalize_claim_stance(raw.get("stance"))
+            try:
+                directness = max(0.0, min(float(raw.get("directness") or fallback.get("directness") or 0), 1.0))
+            except (TypeError, ValueError):
+                directness = float(fallback.get("directness") or 0)
+            try:
+                confidence = max(0.0, min(float(raw.get("confidence") or fallback.get("confidence") or 0), 1.0))
+            except (TypeError, ValueError):
+                confidence = float(fallback.get("confidence") or 0)
+            relevance_score = float(paper.get("claim_relevance") or 0)
+            quality_score = float(paper.get("quality_score") or 0)
+            strength_score = min(
+                (directness * 0.45) +
+                (relevance_score * 0.20) +
+                (quality_score * 0.20) +
+                (confidence * 0.15),
+                1.0
+            )
+            final_items.append({
+                "paper_key": paper.get("paper_key"),
+                "paper_title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+                "paper_year": _trim_text(paper.get("year"), 40),
+                "paper_authors": _trim_text(paper.get("authors"), MAX_PAPER_AUTHORS_LENGTH),
+                "citation_key": _trim_text(paper.get("citation_key"), 120),
+                "stance": stance,
+                "strength_score": round(strength_score, 4),
+                "relevance_score": round(relevance_score, 4),
+                "confidence_score": round(confidence, 4),
+                "quality_score": round(quality_score, 4),
+                "why_matched": _trim_text(raw.get("why_matched") or fallback.get("why_matched"), MAX_EVIDENCE_WHY_MATCHED_LENGTH),
+                "caveat": _trim_text(raw.get("caveat") or "", MAX_EVIDENCE_CAVEAT_LENGTH),
+                "evidence_snippets": _normalize_claim_snippets(project_id, claim_row, raw.get("snippet_candidates"), paper, claim_tokens, claim_phrases, preferred_stance=stance),
+            })
+    return final_items, llm_used
+
+def _default_claim_summary() -> dict:
+    return {stance: 0 for stance in sorted(CLAIM_STANCE_VALUES)}
+
+def _serialize_claim_evidence_row(row: dict) -> dict:
+    item = dict(row)
+    try:
+        item["evidence_snippets"] = json.loads(item.get("evidence_snippets_json") or "[]")
+    except Exception:
+        item["evidence_snippets"] = []
+    item.pop("evidence_snippets_json", None)
+    item["user_override"] = bool(item.get("user_override"))
+    item["pinned"] = bool(item.get("pinned"))
+    item["hidden"] = bool(item.get("hidden"))
+    return item
+
+def _create_claim_analysis_run(claim_id: int, project_id: int) -> int:
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO claim_analysis_runs (claim_id, project_id, candidate_count, analyzed_count, status, summary_json, error_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (claim_id, project_id, 0, 0, "running", "{}", "", now, now)
+    )
+    conn.commit()
+    run_id = int(cursor.lastrowid)
+    conn.close()
+    return run_id
+
+def _update_claim_analysis_run(run_id: int, **kwargs):
+    if not kwargs:
+        return
+    allowed = {"candidate_count", "analyzed_count", "status", "summary_json", "error_text", "updated_at"}
+    fields = []
+    params = []
+    for key, value in kwargs.items():
+        if key not in allowed:
+            continue
+        fields.append(f"{key} = ?")
+        params.append(value)
+    if not fields:
+        return
+    params.append(run_id)
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE claim_analysis_runs SET {', '.join(fields)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+def _stable_json_dumps(value) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+def _hash_cache_payload(value) -> str:
+    return hashlib.sha1(_stable_json_dumps(value).encode("utf-8")).hexdigest()
+
+def _claim_analysis_version(claim_row: dict) -> str:
+    return _trim_text((claim_row or {}).get("analysis_version"), MAX_CLAIM_ANALYSIS_VERSION_LENGTH) or "v1"
+
+def _llm_cache_model_name() -> str:
+    provider = (_env_value("STARMAP_LLM_PROVIDER", "groq") or "groq").lower()
+    if provider == "openai":
+        model = "gpt-4o-mini"
+    elif provider == "deepseek":
+        model = "deepseek-chat"
+    elif provider == "gemini":
+        model = GEMINI_MODEL
+    else:
+        model = "llama-3.1-8b-instant"
+    return f"{provider}:{model}"
+
+def _read_claim_cache_payload(table_name: str, cache_key: str, payload_column: str) -> Optional[str]:
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT {payload_column} AS payload FROM {table_name} WHERE cache_key = ?",
+        (cache_key,)
+    )
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(f"UPDATE {table_name} SET last_hit_at = ? WHERE cache_key = ?", (_now_ts(), cache_key))
+        conn.commit()
+    conn.close()
+    if not row:
+        return None
+    return row["payload"]
+
+def _write_claim_candidate_cache(cache_key: str, project_id: int, claim_id: int, analysis_version: str, payload_hash: str, candidate_json: str):
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''INSERT INTO claim_candidate_cache (cache_key, project_id, claim_id, analysis_version, payload_hash, candidate_json, created_at, last_hit_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(cache_key) DO UPDATE SET
+               analysis_version = excluded.analysis_version,
+               payload_hash = excluded.payload_hash,
+               candidate_json = excluded.candidate_json,
+               last_hit_at = excluded.last_hit_at''',
+        (cache_key, project_id, claim_id, analysis_version, payload_hash, candidate_json, now, now)
+    )
+    conn.commit()
+    conn.close()
+    _cleanup_claim_caches(force=False)
+
+def _write_claim_llm_batch_cache(cache_key: str, project_id: int, claim_id: int, analysis_version: str, model_name: str, payload_hash: str, response_json: str):
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''INSERT INTO claim_llm_batch_cache (cache_key, project_id, claim_id, analysis_version, model_name, payload_hash, response_json, created_at, last_hit_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(cache_key) DO UPDATE SET
+               analysis_version = excluded.analysis_version,
+               model_name = excluded.model_name,
+               payload_hash = excluded.payload_hash,
+               response_json = excluded.response_json,
+               last_hit_at = excluded.last_hit_at''',
+        (cache_key, project_id, claim_id, analysis_version, model_name, payload_hash, response_json, now, now)
+    )
+    conn.commit()
+    conn.close()
+    _cleanup_claim_caches(force=False)
+
+def _write_claim_snippet_cache(cache_key: str, project_id: int, claim_id: int, analysis_version: str, paper_key: str, payload_hash: str, snippet_json: str):
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''INSERT INTO claim_snippet_cache (cache_key, project_id, claim_id, analysis_version, paper_key, payload_hash, snippet_json, created_at, last_hit_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(cache_key) DO UPDATE SET
+               analysis_version = excluded.analysis_version,
+               paper_key = excluded.paper_key,
+               payload_hash = excluded.payload_hash,
+               snippet_json = excluded.snippet_json,
+               last_hit_at = excluded.last_hit_at''',
+        (cache_key, project_id, claim_id, analysis_version, paper_key, payload_hash, snippet_json, now, now)
+    )
+    conn.commit()
+    conn.close()
+    _cleanup_claim_caches(force=False)
+
+def _build_claim_candidate_cache_input(project_data: dict, claim_row: dict, include_statuses: List[str], max_candidates: int, prefer_fulltext: bool) -> dict:
+    papers = []
+    for paper in _load_project_top_papers(project_data):
+        papers.append({
+            "paper_key": _make_claim_paper_key(paper),
+            "title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+            "abstract": _trim_text(_compact_whitespace(paper.get("abstract")), 2400),
+            "notes": _trim_text(_compact_whitespace(paper.get("notes")), 1800),
+            "current_content": _trim_text(_compact_whitespace(paper.get("current_content")), 2800),
+            "status": _trim_text(paper.get("status"), 40),
+            "similarity": float(paper.get("similarity") or 0),
+            "citation_count": _safe_int(paper.get("citation_count"), 0),
+            "year": _trim_text(paper.get("year"), 20),
+            "authors": _trim_text(paper.get("authors"), MAX_PAPER_AUTHORS_LENGTH),
+            "publication_venue": _trim_text(paper.get("publication_venue"), 240),
+            "zotero_has_fulltext": bool(paper.get("zotero_has_fulltext")),
+            "citation_cluster_id": _trim_text(paper.get("citation_cluster_id"), 200),
+            "citation_cluster_theme_name": _trim_text(paper.get("citation_cluster_theme_name"), 240),
+            "citation_key": _trim_text(paper.get("citation_key"), 120),
+        })
+    papers.sort(key=lambda item: item["paper_key"])
+    return {
+        "analysis_version": _claim_analysis_version(claim_row),
+        "claim_id": int((claim_row or {}).get("id") or 0),
+        "claim_text": _trim_text((claim_row or {}).get("claim_text"), MAX_CLAIM_TEXT_LENGTH),
+        "claim_type": _trim_text((claim_row or {}).get("claim_type"), MAX_CLAIM_TYPE_LENGTH),
+        "section_label": _trim_text((claim_row or {}).get("section_label"), MAX_CLAIM_SECTION_LABEL_LENGTH),
+        "project_id": int(project_data.get("id") or 0),
+        "target_title": _trim_text(project_data.get("target_title"), MAX_TARGET_TITLE_LENGTH),
+        "target_abstract": _trim_text(_compact_whitespace(project_data.get("target_abstract")), 2400),
+        "target_current_content": _trim_text(_compact_whitespace(project_data.get("target_current_content")), 2800),
+        "include_statuses": sorted({str(status or "").strip().lower() for status in include_statuses if str(status or "").strip()}),
+        "max_candidates": int(max_candidates),
+        "prefer_fulltext": bool(prefer_fulltext),
+        "papers": papers,
+    }
+
+def _build_claim_classification_payload(candidates: List[dict]) -> List[dict]:
+    payload = []
+    for paper in candidates:
+        payload.append({
+            "paper_key": paper.get("paper_key"),
+            "title": _trim_text(paper.get("title"), 220),
+            "authors": _trim_text(paper.get("authors"), 260),
+            "year": _trim_text(paper.get("year"), 20),
+            "status": _trim_text(paper.get("status"), 30),
+            "citation_count": _safe_int(paper.get("citation_count"), 0),
+            "publication_venue": _trim_text(paper.get("publication_venue"), 180),
+            "abstract": _trim_text(_compact_whitespace(paper.get("abstract")), 1400),
+            "notes": _trim_text(_compact_whitespace(paper.get("notes")), 900),
+            "current_content": _trim_text(_compact_whitespace(paper.get("current_content")), 1800),
+        })
+    return payload
+
+def _build_claim_llm_batch_cache_input(project_data: dict, claim_row: dict, batch_payload: List[dict]) -> dict:
+    return {
+        "analysis_version": _claim_analysis_version(claim_row),
+        "model_name": _llm_cache_model_name(),
+        "project_id": int(project_data.get("id") or 0),
+        "claim_id": int((claim_row or {}).get("id") or 0),
+        "claim_text": _trim_text((claim_row or {}).get("claim_text"), MAX_CLAIM_TEXT_LENGTH),
+        "claim_type": _trim_text((claim_row or {}).get("claim_type"), MAX_CLAIM_TYPE_LENGTH),
+        "section_label": _trim_text((claim_row or {}).get("section_label"), MAX_CLAIM_SECTION_LABEL_LENGTH),
+        "target_title": _trim_text(project_data.get("target_title"), 300),
+        "target_abstract": _trim_text(_compact_whitespace(project_data.get("target_abstract")), 1800),
+        "target_current_content": _trim_text(_compact_whitespace(project_data.get("target_current_content")), 1800),
+        "papers": batch_payload,
+    }
+
+def _build_claim_snippet_cache_input(project_id: int, claim_row: dict, paper: dict, raw_snippet: str, preferred_stance: str) -> dict:
+    return {
+        "analysis_version": _claim_analysis_version(claim_row),
+        "project_id": int(project_id or 0),
+        "claim_id": int((claim_row or {}).get("id") or 0),
+        "claim_text": _trim_text((claim_row or {}).get("claim_text"), MAX_CLAIM_TEXT_LENGTH),
+        "paper_key": _trim_text(paper.get("paper_key"), 160),
+        "preferred_stance": _normalize_claim_stance(preferred_stance),
+        "raw_snippet": _trim_text(_compact_whitespace(raw_snippet), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH),
+        "abstract": _trim_text(_compact_whitespace(paper.get("abstract")), 2400),
+        "current_content": _trim_text(_compact_whitespace(paper.get("current_content")), 3200),
+        "notes": _trim_text(_compact_whitespace(paper.get("notes")), 1800),
+    }
+
+def _claim_cache_usage_stats() -> dict:
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    stats = {"total_rows": 0, "total_bytes": 0, "tables": {}}
+    for table_name, payload_column in CACHE_PRIORITY_ORDER:
+        cursor.execute(
+            f"""SELECT
+                    COUNT(*) AS row_count,
+                    COALESCE(SUM(LENGTH(cache_key)), 0)
+                    + COALESCE(SUM(LENGTH(payload_hash)), 0)
+                    + COALESCE(SUM(LENGTH(analysis_version)), 0)
+                    + COALESCE(SUM(LENGTH({payload_column})), 0) AS approx_bytes
+                FROM {table_name}"""
+        )
+        row = cursor.fetchone()
+        row_count = int((row["row_count"] or 0) if row else 0)
+        approx_bytes = int((row["approx_bytes"] or 0) if row else 0)
+        if table_name == "claim_llm_batch_cache":
+            cursor.execute(f"SELECT COALESCE(SUM(LENGTH(model_name)), 0) AS extra_bytes FROM {table_name}")
+            extra = cursor.fetchone()
+            approx_bytes += int((extra["extra_bytes"] or 0) if extra else 0)
+        elif table_name == "claim_snippet_cache":
+            cursor.execute(f"SELECT COALESCE(SUM(LENGTH(paper_key)), 0) AS extra_bytes FROM {table_name}")
+            extra = cursor.fetchone()
+            approx_bytes += int((extra["extra_bytes"] or 0) if extra else 0)
+        stats["tables"][table_name] = {"rows": row_count, "bytes": approx_bytes}
+        stats["total_rows"] += row_count
+        stats["total_bytes"] += approx_bytes
+    conn.close()
+    return stats
+
+def _delete_oldest_claim_cache_rows(table_name: str, delete_count: int) -> int:
+    if delete_count <= 0:
+        return 0
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""DELETE FROM {table_name}
+            WHERE cache_key IN (
+                SELECT cache_key
+                FROM {table_name}
+                ORDER BY last_hit_at ASC, created_at ASC, cache_key ASC
+                LIMIT ?
+            )""",
+        (int(delete_count),)
+    )
+    deleted = int(cursor.rowcount or 0)
+    conn.commit()
+    conn.close()
+    return deleted
+
+def _cleanup_claim_caches(force: bool = False) -> dict:
+    now = _now_ts()
+    if not force and (now - int(CLAIM_CACHE_MAINTENANCE.get("last_checked_at") or 0)) < CACHE_CLEANUP_MIN_INTERVAL_SECONDS:
+        return {"skipped": True}
+
+    CLAIM_CACHE_MAINTENANCE["last_checked_at"] = now
+    before = _claim_cache_usage_stats()
+    if (
+        before["total_bytes"] <= CACHE_SOFT_LIMIT_BYTES
+        and before["total_rows"] <= CACHE_ROW_LIMIT
+        and not force
+    ):
+        return {"skipped": True, "stats": before}
+
+    target_bytes = CACHE_TARGET_LIMIT_BYTES if before["total_bytes"] > CACHE_SOFT_LIMIT_BYTES else before["total_bytes"]
+    target_rows = CACHE_TARGET_ROW_LIMIT if before["total_rows"] > CACHE_ROW_LIMIT else before["total_rows"]
+    if before["total_bytes"] > CACHE_HARD_LIMIT_BYTES:
+        target_bytes = min(target_bytes, CACHE_TARGET_LIMIT_BYTES)
+    deleted_by_table = {}
+
+    for table_name, _payload_column in CACHE_PRIORITY_ORDER:
+        current = _claim_cache_usage_stats()
+        if current["total_bytes"] <= target_bytes and current["total_rows"] <= target_rows:
+            break
+        table_rows = int((current["tables"].get(table_name) or {}).get("rows") or 0)
+        if table_rows <= 0:
+            continue
+        overflow_rows = max(current["total_rows"] - target_rows, 0)
+        delete_count = min(
+            table_rows,
+            max(CACHE_CLEANUP_BATCH_SIZE, overflow_rows, math.ceil(table_rows * 0.2))
+        )
+        deleted = _delete_oldest_claim_cache_rows(table_name, delete_count)
+        if deleted > 0:
+            deleted_by_table[table_name] = deleted_by_table.get(table_name, 0) + deleted
+
+    after = _claim_cache_usage_stats()
+    return {
+        "skipped": False,
+        "before": before,
+        "after": after,
+        "deleted_by_table": deleted_by_table,
+    }
+
 async def _require_session(request: Request):
     token = request.headers.get("X-Session-Token", "").strip()
     if not token:
@@ -840,6 +2025,20 @@ def _get_owned_project(project_id: int, user_id: int):
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="Project not found.")
+    return dict(row)
+
+def _get_owned_claim(project_id: int, claim_id: int, user_id: int) -> dict:
+    _get_owned_project(project_id, user_id)
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM project_claims WHERE id = ? AND project_id = ?",
+        (claim_id, project_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Claim not found.")
     return dict(row)
 
 async def _acquire_project_task_lock(project_id: int, task_name: str):
@@ -1016,6 +2215,25 @@ class LiteratureWatchRequest(BaseModel):
     discipline_scopes: List[str] = Field(default_factory=list)
     scholar_names: List[str] = Field(default_factory=list)
     journal_sources: List[LiteratureWatchJournalSource] = Field(default_factory=list)
+
+class ClaimCreateRequest(BaseModel):
+    claim_text: str
+    claim_type: str = "thesis_claim"
+    section_label: str = ""
+
+class ClaimAnalyzeRequest(BaseModel):
+    max_candidates: int = 36
+    reanalyze_overrides: bool = False
+    include_statuses: List[str] = Field(default_factory=lambda: ["Core", "Pending", "Underweight", "Unread"])
+    prefer_fulltext: bool = True
+
+class ClaimEvidencePatchRequest(BaseModel):
+    stance: Optional[str] = None
+    pinned: Optional[bool] = None
+    hidden: Optional[bool] = None
+    user_override: Optional[bool] = None
+    why_matched: Optional[str] = None
+    caveat: Optional[str] = None
 
 def _clean_doi(raw_value: Optional[str]) -> str:
     if not raw_value:
@@ -3658,6 +4876,337 @@ async def update_project_papers(project_id: int, request: UpdatePapersRequest, c
     finally:
         conn.close()
         lock.release()
+
+@app.post("/api/projects/{project_id}/claims")
+async def create_project_claim(project_id: int, payload: ClaimCreateRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    payload = _validate_claim_create_payload(payload)
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO project_claims (project_id, claim_text, claim_type, section_label, status, analysis_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (project_id, payload.claim_text, payload.claim_type, payload.section_label, "active", "v1", now, now)
+        )
+        conn.commit()
+        claim_id = int(cursor.lastrowid)
+        _write_audit_log(
+            "project_claim_create",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={"claim_id": claim_id, "claim_type": payload.claim_type},
+            success=True
+        )
+        return {
+            "claim": {
+                "id": claim_id,
+                "project_id": project_id,
+                "claim_text": payload.claim_text,
+                "claim_type": payload.claim_type,
+                "section_label": payload.section_label,
+                "status": "active",
+                "analysis_version": "v1",
+                "created_at": now,
+                "updated_at": now,
+            }
+        }
+    finally:
+        conn.close()
+
+@app.get("/api/projects/{project_id}/claims")
+async def list_project_claims(project_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM project_claims WHERE project_id = ? AND status != 'archived' ORDER BY updated_at DESC, id DESC",
+        (project_id,)
+    )
+    claims = [dict(row) for row in cursor.fetchall()]
+    claim_ids = [int(claim["id"]) for claim in claims]
+    evidence_summary: Dict[int, dict] = {claim_id: _default_claim_summary() for claim_id in claim_ids}
+    latest_runs: Dict[int, dict] = {}
+    if claim_ids:
+        placeholders = ",".join("?" for _ in claim_ids)
+        cursor.execute(
+            f"SELECT claim_id, stance, COUNT(*) AS item_count FROM claim_evidence_items WHERE hidden = 0 AND claim_id IN ({placeholders}) GROUP BY claim_id, stance",
+            claim_ids
+        )
+        for row in cursor.fetchall():
+            evidence_summary.setdefault(int(row["claim_id"]), _default_claim_summary())[row["stance"]] = int(row["item_count"] or 0)
+        cursor.execute(
+            f"SELECT claim_id, MAX(id) AS latest_run_id FROM claim_analysis_runs WHERE claim_id IN ({placeholders}) GROUP BY claim_id",
+            claim_ids
+        )
+        latest_run_ids = [int(row["latest_run_id"]) for row in cursor.fetchall() if row["latest_run_id"]]
+        if latest_run_ids:
+            run_placeholders = ",".join("?" for _ in latest_run_ids)
+            cursor.execute(
+                f"SELECT * FROM claim_analysis_runs WHERE id IN ({run_placeholders})",
+                latest_run_ids
+            )
+            latest_runs = {int(row["claim_id"]): dict(row) for row in cursor.fetchall()}
+    conn.close()
+    return {
+        "claims": [
+            {
+                **claim,
+                "claim_type": _normalize_claim_type(claim.get("claim_type")),
+                "status": _normalize_claim_status(claim.get("status")),
+                "evidence_summary": evidence_summary.get(int(claim["id"]), _default_claim_summary()),
+                "latest_run": latest_runs.get(int(claim["id"]))
+            }
+            for claim in claims
+        ]
+    }
+
+@app.post("/api/projects/{project_id}/claims/{claim_id}/analyze")
+async def analyze_project_claim(project_id: int, claim_id: int, payload: ClaimAnalyzeRequest, current_user: dict = Depends(_require_session)):
+    project_data = _get_owned_project(project_id, current_user["user_id"])
+    claim = _get_owned_claim(project_id, claim_id, current_user["user_id"])
+    if _normalize_claim_status(claim.get("status")) == "archived":
+        raise HTTPException(status_code=409, detail="Archived claims cannot be analyzed.")
+    payload = _validate_claim_analyze_payload(payload)
+    lock = await _acquire_project_task_lock(project_id, f"claim_analysis_{claim_id}")
+    run_id = _create_claim_analysis_run(claim_id, project_id)
+    conn = None
+    try:
+        candidates = _build_claim_candidate_pool(
+            project_data,
+            claim,
+            payload.include_statuses,
+            payload.max_candidates,
+            payload.prefer_fulltext
+        )
+        analyzed_items, llm_used = _analyze_claim_candidates(project_data, claim, candidates)
+        now = _now_ts()
+        conn = _db_connect(row_factory=True)
+        cursor = conn.cursor()
+        if payload.reanalyze_overrides:
+            cursor.execute("DELETE FROM claim_evidence_items WHERE claim_id = ?", (claim_id,))
+            manual_keys = set()
+        else:
+            cursor.execute("DELETE FROM claim_evidence_items WHERE claim_id = ? AND user_override = 0", (claim_id,))
+            cursor.execute("SELECT paper_key FROM claim_evidence_items WHERE claim_id = ? AND user_override = 1", (claim_id,))
+            manual_keys = {str(row["paper_key"]) for row in cursor.fetchall()}
+
+        inserted_count = 0
+        for item in analyzed_items:
+            paper_key = str(item.get("paper_key") or "").strip()
+            if not paper_key or (paper_key in manual_keys and not payload.reanalyze_overrides):
+                continue
+            cursor.execute(
+                '''INSERT OR REPLACE INTO claim_evidence_items (
+                    claim_id, project_id, paper_key, paper_title, paper_year, paper_authors, citation_key,
+                    stance, strength_score, relevance_score, confidence_score, quality_score,
+                    why_matched, caveat, evidence_snippets_json, source_pass, user_override,
+                    pinned, hidden, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (
+                    claim_id,
+                    project_id,
+                    paper_key,
+                    item.get("paper_title", ""),
+                    item.get("paper_year", ""),
+                    item.get("paper_authors", ""),
+                    item.get("citation_key", ""),
+                    _normalize_claim_stance(item.get("stance")),
+                    float(item.get("strength_score") or 0),
+                    float(item.get("relevance_score") or 0),
+                    float(item.get("confidence_score") or 0),
+                    float(item.get("quality_score") or 0),
+                    _trim_text(item.get("why_matched"), MAX_EVIDENCE_WHY_MATCHED_LENGTH),
+                    _trim_text(item.get("caveat"), MAX_EVIDENCE_CAVEAT_LENGTH),
+                    json.dumps(item.get("evidence_snippets") or [], ensure_ascii=False),
+                    "llm" if llm_used else "heuristic",
+                    0,
+                    0,
+                    0,
+                    now,
+                    now,
+                )
+            )
+            inserted_count += 1
+
+        cursor.execute("UPDATE project_claims SET updated_at = ? WHERE id = ?", (now, claim_id))
+        conn.commit()
+        cursor.execute(
+            "SELECT stance, COUNT(*) AS item_count FROM claim_evidence_items WHERE claim_id = ? AND hidden = 0 GROUP BY stance",
+            (claim_id,)
+        )
+        summary = _default_claim_summary()
+        for row in cursor.fetchall():
+            summary[_normalize_claim_stance(row["stance"])] = int(row["item_count"] or 0)
+        conn.close()
+
+        _update_claim_analysis_run(
+            run_id,
+            candidate_count=len(candidates),
+            analyzed_count=inserted_count,
+            status="completed",
+            summary_json=json.dumps({"summary": summary, "llm_used": llm_used}, ensure_ascii=False),
+            error_text="",
+            updated_at=now,
+        )
+        _write_audit_log(
+            "project_claim_analyze",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={"claim_id": claim_id, "candidate_count": len(candidates), "inserted_count": inserted_count, "llm_used": llm_used},
+            success=True
+        )
+        cleanup_result = _cleanup_claim_caches(force=True)
+        return {
+            "run": {
+                "id": run_id,
+                "status": "completed",
+                "candidate_count": len(candidates),
+                "analyzed_count": inserted_count,
+            },
+            "summary": summary,
+            "cache_maintenance": cleanup_result
+        }
+    except HTTPException as exc:
+        _update_claim_analysis_run(
+            run_id,
+            status="failed",
+            error_text=_trim_text(str(exc.detail), 2000),
+            updated_at=_now_ts(),
+        )
+        raise
+    except Exception as exc:
+        _update_claim_analysis_run(
+            run_id,
+            status="failed",
+            error_text=_trim_text(str(exc), 2000),
+            updated_at=_now_ts(),
+        )
+        raise HTTPException(status_code=502, detail=f"Claim analysis failed: {exc}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        lock.release()
+
+@app.get("/api/projects/{project_id}/claims/{claim_id}/board")
+async def get_claim_evidence_board(project_id: int, claim_id: int, current_user: dict = Depends(_require_session)):
+    claim = _get_owned_claim(project_id, claim_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM claim_evidence_items WHERE claim_id = ? AND hidden = 0 ORDER BY pinned DESC, strength_score DESC, relevance_score DESC, id DESC",
+        (claim_id,)
+    )
+    rows = [_serialize_claim_evidence_row(dict(row)) for row in cursor.fetchall()]
+    cursor.execute(
+        "SELECT * FROM claim_analysis_runs WHERE claim_id = ? ORDER BY id DESC LIMIT 1",
+        (claim_id,)
+    )
+    latest_run_row = cursor.fetchone()
+    conn.close()
+    board = {stance: [] for stance in sorted(CLAIM_STANCE_VALUES)}
+    summary = _default_claim_summary()
+    for row in rows:
+        stance = _normalize_claim_stance(row.get("stance"))
+        board.setdefault(stance, []).append(row)
+        summary[stance] = summary.get(stance, 0) + 1
+    return {
+        "claim": {
+            **claim,
+            "claim_type": _normalize_claim_type(claim.get("claim_type")),
+            "status": _normalize_claim_status(claim.get("status")),
+        },
+        "board": board,
+        "summary": summary,
+        "meta": {
+            "last_run": dict(latest_run_row) if latest_run_row else None
+        }
+    }
+
+@app.patch("/api/projects/{project_id}/claims/{claim_id}/evidence/{evidence_id}")
+async def patch_claim_evidence_item(project_id: int, claim_id: int, evidence_id: int, payload: ClaimEvidencePatchRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_claim(project_id, claim_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM claim_evidence_items WHERE id = ? AND claim_id = ? AND project_id = ?",
+        (evidence_id, claim_id, project_id)
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Evidence item not found.")
+
+    fields = []
+    params = []
+    user_override_touched = False
+    if payload.stance is not None:
+        fields.append("stance = ?")
+        params.append(_normalize_claim_stance(payload.stance))
+        user_override_touched = True
+    if payload.pinned is not None:
+        fields.append("pinned = ?")
+        params.append(1 if payload.pinned else 0)
+    if payload.hidden is not None:
+        fields.append("hidden = ?")
+        params.append(1 if payload.hidden else 0)
+    if payload.why_matched is not None:
+        fields.append("why_matched = ?")
+        params.append(_trim_text(payload.why_matched, MAX_EVIDENCE_WHY_MATCHED_LENGTH))
+        user_override_touched = True
+    if payload.caveat is not None:
+        fields.append("caveat = ?")
+        params.append(_trim_text(payload.caveat, MAX_EVIDENCE_CAVEAT_LENGTH))
+        user_override_touched = True
+    if payload.user_override is not None:
+        fields.append("user_override = ?")
+        params.append(1 if payload.user_override else 0)
+    elif user_override_touched:
+        fields.append("user_override = ?")
+        params.append(1)
+    if not fields:
+        conn.close()
+        raise HTTPException(status_code=400, detail="No evidence changes were provided.")
+    fields.append("updated_at = ?")
+    params.append(_now_ts())
+    params.append(evidence_id)
+    cursor.execute(f"UPDATE claim_evidence_items SET {', '.join(fields)} WHERE id = ?", params)
+    conn.commit()
+    cursor.execute("SELECT * FROM claim_evidence_items WHERE id = ?", (evidence_id,))
+    updated = _serialize_claim_evidence_row(dict(cursor.fetchone()))
+    conn.close()
+    _write_audit_log(
+        "project_claim_patch_evidence",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"claim_id": claim_id, "evidence_id": evidence_id},
+        success=True
+    )
+    return {"evidence": updated}
+
+@app.delete("/api/projects/{project_id}/claims/{claim_id}")
+async def archive_project_claim(project_id: int, claim_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_claim(project_id, claim_id, current_user["user_id"])
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE project_claims SET status = ?, updated_at = ? WHERE id = ? AND project_id = ?",
+        ("archived", now, claim_id, project_id)
+    )
+    conn.commit()
+    conn.close()
+    _write_audit_log(
+        "project_claim_archive",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"claim_id": claim_id},
+        success=True
+    )
+    return {"message": "Claim archived"}
 
 @app.post("/api/papers/lookup")
 async def lookup_paper_metadata(payload: PaperLookupRequest, current_user: dict = Depends(_require_session)):
