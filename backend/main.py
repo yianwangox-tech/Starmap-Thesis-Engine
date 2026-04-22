@@ -11,6 +11,7 @@ import json
 import os
 import re
 import math
+import random
 import unicodedata
 import uuid
 import time
@@ -40,6 +41,7 @@ LEGACY_DB_FILE = Path(__file__).resolve().parent / "database.db"
 ENV_FILE = PROJECT_ROOT / ".env"
 GEMINI_MODEL = "gemini-2.5-flash"
 CITATION_GRAPH_JOBS: Dict[str, dict] = {}
+SEMANTIC_CLUSTER_JOBS: Dict[str, dict] = {}
 PROJECT_TASK_LOCKS: Dict[str, asyncio.Lock] = {}
 CLAIM_CACHE_MAINTENANCE = {"last_checked_at": 0}
 ZOTERO_CACHE_TTL_SECONDS = 60 * 5
@@ -71,6 +73,11 @@ MAX_EVIDENCE_WHY_MATCHED_LENGTH = 1200
 MAX_EVIDENCE_CAVEAT_LENGTH = 800
 MAX_EVIDENCE_SNIPPET_TEXT_LENGTH = 360
 MAX_EVIDENCE_SNIPPETS_PER_ITEM = 3
+MAX_CHALLENGE_EXPANSION_REFERENCES = 12
+MAX_CHALLENGE_EXPANSION_CITED_BY = 12
+MAX_CHALLENGE_EXPANSION_CANDIDATES = 18
+MAX_CHALLENGE_EXPANSION_RESULTS = 12
+MAX_CHALLENGE_EXPANSION_SEED_CONTENT_LENGTH = 1800
 MAX_CLAIM_CANDIDATES = 96
 CLAIM_ANALYSIS_BATCH_SIZE = 8
 CLAIM_TYPE_VALUES = {"thesis_claim", "chapter_claim", "research_question"}
@@ -215,6 +222,23 @@ LITERATURE_WATCH_DISCIPLINE_ALIASES: Dict[str, str] = {
     "general_social_science": "y_miscellaneous",
 }
 DEFAULT_LITERATURE_WATCH_DISCIPLINE = "e_macroeconomics_monetary"
+SEMANTIC_CLUSTER_ALGORITHM_VERSION = "backend-v1"
+SEMANTIC_CLUSTER_SEED_LIMIT = 60
+SEMANTIC_CLUSTER_TEXT_VECTOR_DIM = 384
+SEMANTIC_CLUSTER_MAX_DISPLAY_PAPERS = 10
+SEMANTIC_CLUSTER_MIN_SIZE = 4
+SEMANTIC_CLUSTER_COUNT_OPTIONS = (3, 4, 5)
+SEMANTIC_CLUSTER_BASE_ATTEMPTS = 1
+SEMANTIC_CLUSTER_QUALITY_RETRY_THRESHOLD = 0.055
+SEMANTIC_CLUSTER_CURRENT_CONTENT_LIMIT = 1000
+SEMANTIC_CLUSTER_STOPWORDS = {
+    "a", "an", "the", "and", "or", "for", "with", "from", "that", "this", "these", "those",
+    "into", "over", "under", "between", "among", "through", "using", "used", "their", "there",
+    "which", "while", "where", "when", "about", "after", "before", "study", "studies", "paper",
+    "papers", "evidence", "analysis", "analyses", "approach", "approaches", "effect", "effects",
+    "impact", "impacts", "role", "new", "recent", "latest", "across", "within", "such", "based",
+    "because", "than", "also", "been", "being", "into", "onto", "your", "ours", "theirs"
+}
 CLAIM_CHALLENGE_MARKERS = {
     "however", "but", "limited", "limit", "limits", "conditional", "only", "except",
     "fails", "fail", "not", "contrary", "mixed", "heterogeneous", "weak", "weaker",
@@ -1675,6 +1699,325 @@ def _analyze_claim_candidates(project_data: dict, claim_row: dict, candidates: L
             })
     return final_items, llm_used
 
+def _resolve_project_paper_for_evidence(project_data: dict, evidence_row: dict) -> Optional[dict]:
+    papers = _load_project_top_papers(project_data)
+    if not papers:
+        return None
+    target_key = _trim_text((evidence_row or {}).get("paper_key"), 300)
+    if target_key:
+        for paper in papers:
+            if _make_claim_paper_key(paper) == target_key:
+                return paper
+
+    target_signatures = set(_paper_identity_signatures(evidence_row or {}))
+    target_title = _normalize_title_signature((evidence_row or {}).get("paper_title"))
+    for paper in papers:
+        paper_signatures = set(_paper_identity_signatures(paper))
+        if target_signatures and paper_signatures.intersection(target_signatures):
+            return paper
+        if target_title and _normalize_title_signature(paper.get("title")) == target_title:
+            return paper
+    return None
+
+def _fetch_openalex_works_by_ids(openalex_ids: List[str], api_key: str = "", contact_email: str = "", limit: int = MAX_CHALLENGE_EXPANSION_REFERENCES) -> List[dict]:
+    works: List[dict] = []
+    seen: set[str] = set()
+    for openalex_id in openalex_ids or []:
+        normalized = _trim_text(openalex_id, 300)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        try:
+            work = _fetch_openalex_work_by_id(normalized, api_key, contact_email)
+        except HTTPException:
+            continue
+        parsed_work = _parse_openalex_work(work)
+        if parsed_work.get("openalex_id") and parsed_work.get("title"):
+            works.append(parsed_work)
+        if len(works) >= limit:
+            break
+    return works
+
+def _fetch_openalex_cited_by_works(openalex_id: str, api_key: str = "", contact_email: str = "", limit: int = MAX_CHALLENGE_EXPANSION_CITED_BY) -> List[dict]:
+    short_id = _extract_openalex_short_id(openalex_id)
+    if not short_id:
+        return []
+    url = _build_url(
+        "https://api.openalex.org/works",
+        {
+            "filter": f"cites:{short_id}",
+            "per_page": max(1, min(int(limit or MAX_CHALLENGE_EXPANSION_CITED_BY), 25)),
+            "cursor": "*",
+            "api_key": api_key.strip()
+        }
+    )
+    response = _http_get_json(url, contact_email)
+    works: List[dict] = []
+    for work in response.get("results", []) or []:
+        parsed_work = _parse_openalex_work(work)
+        if parsed_work.get("openalex_id") and parsed_work.get("title"):
+            works.append(parsed_work)
+        if len(works) >= limit:
+            break
+    return works
+
+def _challenge_seed_text(seed_paper: dict) -> str:
+    return "\n\n".join([
+        _trim_text(seed_paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+        _trim_text(_compact_whitespace(seed_paper.get("abstract")), MAX_PAPER_ABSTRACT_LENGTH),
+        _trim_text(_compact_whitespace(seed_paper.get("current_content")), MAX_CHALLENGE_EXPANSION_SEED_CONTENT_LENGTH),
+    ]).strip()
+
+def _challenge_expansion_seed_similarity(candidate: dict, seed_tokens: List[str], seed_phrases: List[str]) -> float:
+    signal = _text_signal_bundle(
+        "\n".join([
+            str(candidate.get("title") or ""),
+            str(candidate.get("abstract") or "")
+        ]),
+        seed_tokens,
+        seed_phrases
+    )
+    return min(
+        (signal["token_overlap"] * 0.56) +
+        (signal["phrase_overlap"] * 0.32) +
+        (signal["challenge_marker"] * 0.12),
+        1.0
+    )
+
+def _heuristic_challenge_expansion_match(candidate: dict, claim_row: dict, seed_tokens: List[str], seed_phrases: List[str]) -> dict:
+    claim_text = str((claim_row or {}).get("claim_text") or "")
+    claim_tokens = _claim_tokens(claim_text)
+    claim_phrases = _claim_phrases(claim_text)
+    metrics = _build_claim_candidate_metrics(
+        {
+            **candidate,
+            "status": candidate.get("status") or "Unread",
+            "similarity": candidate.get("similarity") or 0,
+        },
+        claim_text,
+        claim_tokens,
+        claim_phrases,
+        False
+    )
+    seed_similarity = _challenge_expansion_seed_similarity(candidate, seed_tokens, seed_phrases)
+    relation_type = str(candidate.get("relationship_type") or "one_hop").strip().lower()
+    relation_bonus = 0.05 if relation_type == "cited_by" else 0.03
+    score = min(
+        (float(metrics.get("challenge_hint") or 0) * 0.33) +
+        (float(metrics.get("claim_relevance") or 0) * 0.29) +
+        (seed_similarity * 0.28) +
+        (float(metrics.get("quality_score") or 0) * 0.10) +
+        relation_bonus,
+        1.0
+    )
+    include = bool(
+        score >= 0.26 and (
+            float(metrics.get("challenge_hint") or 0) >= 0.16
+            or seed_similarity >= 0.20
+            or float(metrics.get("claim_relevance") or 0) >= 0.24
+        )
+    )
+    why_matched = (
+        "This one-hop paper appears to discuss limitations, boundary conditions, or contradictory findings close to the seed challenge paper."
+        if include
+        else "This one-hop paper looks related to the seed, but its challenge signal is still too weak or too indirect."
+    )
+    return {
+        "include": include,
+        "challenge_strength": round(score, 4),
+        "claim_relevance": round(float(metrics.get("claim_relevance") or 0), 4),
+        "seed_similarity": round(seed_similarity, 4),
+        "why_matched": why_matched,
+        "caveat": ""
+    }
+
+def _build_challenge_expansion_prompt(project_data: dict, claim_row: dict, seed_item: dict, seed_paper: dict, candidates: List[dict]) -> str:
+    payload = []
+    for candidate in candidates:
+        payload.append({
+            "candidate_key": candidate.get("candidate_key"),
+            "relationship_type": candidate.get("relationship_type"),
+            "title": _trim_text(candidate.get("title"), 320),
+            "year": _trim_text(candidate.get("year"), 40),
+            "authors": _trim_text(candidate.get("authors"), 220),
+            "publication_venue": _trim_text(candidate.get("publication_venue"), 220),
+            "citation_count": _safe_int(candidate.get("citation_count")),
+            "abstract": _trim_text(_compact_whitespace(candidate.get("abstract")), 1800),
+        })
+    return (
+        "You are expanding challenge literature for a research claim.\n\n"
+        "The seed paper is already classified as a challenge paper for this claim.\n"
+        "Your task is to inspect one-hop neighbors of the seed paper and decide which neighbors are worth recommending as additional challenge literature.\n\n"
+        "Recommend a candidate only when it likely does at least one of the following:\n"
+        "- contradicts the claim\n"
+        "- narrows the claim with boundary conditions\n"
+        "- reports null effects that weaken a broad version of the claim\n"
+        "- challenges a mechanism used by the claim or by the seed paper\n\n"
+        "Do not recommend generic background, mostly supportive papers, or methods-only setup papers unless they clearly function as challenge literature.\n"
+        "Return JSON only in the form {\"results\":[{\"candidate_key\":\"...\",\"include\":true,\"challenge_strength\":0.0,\"why_matched\":\"...\",\"caveat\":\"...\"}]}\n\n"
+        f"Project target title: {_trim_text(project_data.get('target_title'), 300)}\n"
+        f"Project target abstract: {_trim_text(_compact_whitespace(project_data.get('target_abstract')), 1400)}\n"
+        f"Claim text: {_trim_text(claim_row.get('claim_text'), MAX_CLAIM_TEXT_LENGTH)}\n"
+        f"Seed evidence why matched: {_trim_text(seed_item.get('why_matched'), 600)}\n"
+        f"Seed evidence caveat: {_trim_text(seed_item.get('caveat'), 500)}\n"
+        f"Seed paper title: {_trim_text(seed_paper.get('title'), 320)}\n"
+        f"Seed paper abstract: {_trim_text(_compact_whitespace(seed_paper.get('abstract')), 1600)}\n"
+        f"Seed paper current content excerpt: {_trim_text(_compact_whitespace(seed_paper.get('current_content')), MAX_CHALLENGE_EXPANSION_SEED_CONTENT_LENGTH)}\n\n"
+        f"Candidates:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+def _expand_challenge_seed(project_data: dict, claim_row: dict, evidence_row: dict, payload: ChallengeExpansionRequest) -> dict:
+    if _normalize_claim_stance((evidence_row or {}).get("stance")) != "challenge":
+        raise HTTPException(status_code=409, detail="Challenge expansion only works from a paper in the challenge column.")
+
+    seed_paper = _resolve_project_paper_for_evidence(project_data, evidence_row)
+    if not seed_paper:
+        raise HTTPException(status_code=404, detail="Could not match this evidence item back to a project paper.")
+
+    try:
+        enriched_seed = _enrich_paper_for_citation_graph(
+            PaperItem(**seed_paper),
+            payload.openalex_api_key,
+            payload.contact_email
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not resolve the seed paper on OpenAlex: {exc}")
+
+    seed_openalex_id = _trim_text(enriched_seed.get("openalex_id"), 300)
+    if not seed_openalex_id:
+        raise HTTPException(status_code=404, detail="The seed challenge paper could not be resolved on OpenAlex.")
+
+    references = _fetch_openalex_works_by_ids(
+        enriched_seed.get("referenced_openalex_ids") or [],
+        payload.openalex_api_key,
+        payload.contact_email,
+        payload.max_references
+    )
+    cited_by = _fetch_openalex_cited_by_works(
+        seed_openalex_id,
+        payload.openalex_api_key,
+        payload.contact_email,
+        payload.max_cited_by
+    )
+
+    project_signature_set = set()
+    for paper in _load_project_top_papers(project_data):
+        project_signature_set.update(_paper_identity_signatures(paper))
+
+    candidates: List[dict] = []
+    seen_candidate_keys: set[str] = set()
+    skipped_existing = 0
+    for relationship_type, works in (("reference", references), ("cited_by", cited_by)):
+        for work in works:
+            candidate_key = _paper_identity_key(work)
+            if not candidate_key or candidate_key in seen_candidate_keys:
+                continue
+            seen_candidate_keys.add(candidate_key)
+            if any(signature in project_signature_set for signature in _paper_identity_signatures(work)):
+                skipped_existing += 1
+                continue
+            candidates.append({
+                **work,
+                "candidate_key": candidate_key,
+                "relationship_type": relationship_type,
+                "status": "Unread",
+                "similarity": 0,
+                "import_source": "citation_import"
+            })
+
+    if not candidates:
+        return {
+            "seed_paper": enriched_seed,
+            "recommendations": [],
+            "source_summary": {
+                "reference_count": len(references),
+                "cited_by_count": len(cited_by),
+                "candidate_count": 0,
+                "skipped_existing_count": skipped_existing,
+                "returned_count": 0,
+            }
+        }
+
+    seed_text = _challenge_seed_text(enriched_seed)
+    seed_tokens = _claim_tokens(seed_text)
+    seed_phrases = _claim_phrases(seed_text)
+    heuristics_by_key: Dict[str, dict] = {}
+    for candidate in candidates:
+        heuristics_by_key[candidate["candidate_key"]] = _heuristic_challenge_expansion_match(candidate, claim_row, seed_tokens, seed_phrases)
+
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda candidate: (
+            float((heuristics_by_key.get(candidate["candidate_key"]) or {}).get("challenge_strength") or 0),
+            _safe_int(candidate.get("citation_count")),
+            _trim_text(candidate.get("year"), 40)
+        ),
+        reverse=True
+    )[:MAX_CHALLENGE_EXPANSION_CANDIDATES]
+
+    llm_results_by_key: Dict[str, dict] = {}
+    try:
+        prompt = _build_challenge_expansion_prompt(project_data, claim_row, evidence_row, enriched_seed, ranked_candidates)
+        parsed = _parse_llm_json_payload(_call_llm_from_env(prompt, temperature=0.05, json_mode=True))
+        raw_results = parsed.get("results") if isinstance(parsed, dict) else []
+        if isinstance(raw_results, list):
+            for item in raw_results:
+                if not isinstance(item, dict):
+                    continue
+                candidate_key = _trim_text(item.get("candidate_key"), 240)
+                if candidate_key:
+                    llm_results_by_key[candidate_key] = item
+    except Exception:
+        llm_results_by_key = {}
+
+    recommendations = []
+    for candidate in ranked_candidates:
+        candidate_key = candidate["candidate_key"]
+        heuristic = heuristics_by_key.get(candidate_key, {})
+        llm_item = llm_results_by_key.get(candidate_key) or {}
+        try:
+            llm_strength = max(0.0, min(float(llm_item.get("challenge_strength") or 0), 1.0))
+        except (TypeError, ValueError):
+            llm_strength = 0.0
+        include = bool(llm_item.get("include")) if "include" in llm_item else bool(heuristic.get("include"))
+        final_score = (
+            (llm_strength * 0.56) + (float(heuristic.get("challenge_strength") or 0) * 0.44)
+            if llm_item else float(heuristic.get("challenge_strength") or 0)
+        )
+        if not include and final_score < 0.34:
+            continue
+        recommendations.append({
+            **candidate,
+            "relationship_label": "Referenced by seed" if candidate.get("relationship_type") == "reference" else "Cites seed",
+            "challenge_score": round(min(final_score, 1.0), 4),
+            "claim_relevance": heuristic.get("claim_relevance"),
+            "seed_similarity": heuristic.get("seed_similarity"),
+            "why_matched": _trim_text(llm_item.get("why_matched") or heuristic.get("why_matched"), MAX_EVIDENCE_WHY_MATCHED_LENGTH),
+            "caveat": _trim_text(llm_item.get("caveat") or heuristic.get("caveat") or "", MAX_EVIDENCE_CAVEAT_LENGTH),
+        })
+
+    recommendations.sort(
+        key=lambda item: (
+            float(item.get("challenge_score") or 0),
+            float(item.get("seed_similarity") or 0),
+            _safe_int(item.get("citation_count"))
+        ),
+        reverse=True
+    )
+    recommendations = recommendations[:payload.max_results]
+
+    return {
+        "seed_paper": enriched_seed,
+        "recommendations": recommendations,
+        "source_summary": {
+            "reference_count": len(references),
+            "cited_by_count": len(cited_by),
+            "candidate_count": len(candidates),
+            "skipped_existing_count": skipped_existing,
+            "returned_count": len(recommendations),
+        }
+    }
+
 def _default_claim_summary() -> dict:
     return {stance: 0 for stance in sorted(CLAIM_STANCE_VALUES)}
 
@@ -2151,6 +2494,19 @@ class CitationGraphJobCreated(BaseModel):
     job_id: str
     status: str
 
+class SemanticClusterRequest(BaseModel):
+    project_id: int = 0
+    target_title: str = ""
+    target_abstract: str = ""
+    target_current_content: str = ""
+    papers: List[PaperItem]
+    seed_limit: int = SEMANTIC_CLUSTER_SEED_LIMIT
+    assignment_limit: int = MAX_TOP_PAPERS
+
+class SemanticClusterJobCreated(BaseModel):
+    job_id: str
+    status: str
+
 class ZoteroSyncRequest(BaseModel):
     zotero_user_id: str
     zotero_api_key: str = ""
@@ -2235,6 +2591,14 @@ class ClaimEvidencePatchRequest(BaseModel):
     why_matched: Optional[str] = None
     caveat: Optional[str] = None
 
+class ChallengeExpansionRequest(BaseModel):
+    evidence_id: int
+    max_references: int = MAX_CHALLENGE_EXPANSION_REFERENCES
+    max_cited_by: int = MAX_CHALLENGE_EXPANSION_CITED_BY
+    max_results: int = MAX_CHALLENGE_EXPANSION_RESULTS
+    openalex_api_key: str = ""
+    contact_email: str = ""
+
 def _clean_doi(raw_value: Optional[str]) -> str:
     if not raw_value:
         return ""
@@ -2247,6 +2611,13 @@ def _apply_runtime_defaults_to_lookup(payload):
     payload.openalex_api_key = _trim_text(payload.openalex_api_key or _env_value("STARMAP_OPENALEX_API_KEY"), 300)
     payload.contact_email = _trim_text(payload.contact_email or _env_value("STARMAP_CONTACT_EMAIL"), MAX_LOOKUP_EMAIL_LENGTH)
     return payload
+
+def _validate_challenge_expansion_payload(payload: ChallengeExpansionRequest) -> ChallengeExpansionRequest:
+    payload.evidence_id = max(1, int(payload.evidence_id or 0))
+    payload.max_references = max(4, min(int(payload.max_references or MAX_CHALLENGE_EXPANSION_REFERENCES), 20))
+    payload.max_cited_by = max(4, min(int(payload.max_cited_by or MAX_CHALLENGE_EXPANSION_CITED_BY), 20))
+    payload.max_results = max(4, min(int(payload.max_results or MAX_CHALLENGE_EXPANSION_RESULTS), 20))
+    return _apply_runtime_defaults_to_lookup(payload)
 
 def _tokenize_literature_watch_text(value: str) -> List[str]:
     return [
@@ -2437,6 +2808,489 @@ def _build_watch_fallback_strategy(context: dict) -> dict:
         "queries": queries[:6],
         "discipline": discipline.get("label", "")
     }
+
+def _semantic_cluster_hash(text: str) -> int:
+    return int(hashlib.md5(str(text or "").encode("utf-8")).hexdigest(), 16)
+
+def _semantic_cluster_tokenize(text: str) -> List[str]:
+    normalized = unicodedata.normalize("NFKD", str(text or "").lower())
+    tokens = re.findall(r"[a-z0-9]+", normalized)
+    return [token for token in tokens if len(token) >= 3 and token not in SEMANTIC_CLUSTER_STOPWORDS]
+
+def _semantic_cluster_add_weighted_terms(container: Dict[str, float], text: str, weight: float, *, include_bigrams: bool = True):
+    tokens = _semantic_cluster_tokenize(text)
+    if not tokens:
+        return
+    for token in tokens:
+        container[token] = container.get(token, 0.0) + weight
+    if include_bigrams and len(tokens) > 1:
+        for index in range(len(tokens) - 1):
+            bigram = f"{tokens[index]} {tokens[index + 1]}"
+            container[bigram] = container.get(bigram, 0.0) + (weight * 1.15)
+
+def _build_semantic_cluster_term_weights(paper: dict) -> Dict[str, float]:
+    weighted_terms: Dict[str, float] = {}
+    title = str((paper or {}).get("title") or "").strip()
+    abstract = str((paper or {}).get("abstract") or "").strip()
+    current_content = str((paper or {}).get("current_content") or "").strip()[:SEMANTIC_CLUSTER_CURRENT_CONTENT_LIMIT]
+    _semantic_cluster_add_weighted_terms(weighted_terms, title, 3.0, include_bigrams=True)
+    _semantic_cluster_add_weighted_terms(weighted_terms, abstract, 1.8, include_bigrams=True)
+    _semantic_cluster_add_weighted_terms(weighted_terms, current_content, 0.9, include_bigrams=False)
+    return weighted_terms
+
+def _normalize_vector(values: List[float]) -> List[float]:
+    norm = math.sqrt(sum(value * value for value in values)) or 1.0
+    return [value / norm for value in values]
+
+def _average_vectors(vectors: List[List[float]]) -> List[float]:
+    if not vectors:
+        return []
+    length = len(vectors[0])
+    sums = [0.0] * length
+    for vector in vectors:
+        for index, value in enumerate(vector):
+            sums[index] += value
+    return _normalize_vector([value / len(vectors) for value in sums])
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    if not a or not b:
+        return 0.0
+    length = min(len(a), len(b))
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for index in range(length):
+        dot += a[index] * b[index]
+        norm_a += a[index] * a[index]
+        norm_b += b[index] * b[index]
+    if norm_a <= 0 or norm_b <= 0:
+        return 0.0
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+
+def _hash_weighted_terms_to_vector(weighted_terms: Dict[str, float], document_frequency: Dict[str, int], total_docs: int, vector_dim: int = SEMANTIC_CLUSTER_TEXT_VECTOR_DIM) -> List[float]:
+    vector = [0.0] * vector_dim
+    for term, weight in weighted_terms.items():
+        df = document_frequency.get(term, 1)
+        idf = math.log((total_docs + 1) / (df + 1)) + 1.0
+        bucket_hash = _semantic_cluster_hash(term)
+        bucket = bucket_hash % vector_dim
+        sign = 1.0 if ((_semantic_cluster_hash(f"sign::{term}") & 1) == 0) else -1.0
+        vector[bucket] += weight * idf * sign
+    return _normalize_vector(vector)
+
+def _get_cluster_size_list(assignments: List[int], cluster_count: int) -> List[int]:
+    sizes = [0] * cluster_count
+    for index in assignments:
+        if 0 <= index < cluster_count:
+            sizes[index] += 1
+    return sizes
+
+def _assign_vectors_to_centroids(vectors: List[List[float]], centroids: List[List[float]]) -> List[int]:
+    assignments: List[int] = []
+    for vector in vectors:
+        best_index = 0
+        best_score = float("-inf")
+        for index, centroid in enumerate(centroids):
+            score = _cosine_similarity(vector, centroid)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        assignments.append(best_index)
+    return assignments
+
+def _assign_vectors_to_centroids_with_scores(vectors: List[List[float]], centroids: List[List[float]]) -> List[dict]:
+    results: List[dict] = []
+    for vector in vectors:
+        best_index = 0
+        best_score = float("-inf")
+        for index, centroid in enumerate(centroids):
+            score = _cosine_similarity(vector, centroid)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        results.append({"clusterIndex": best_index, "score": best_score})
+    return results
+
+def _recalculate_centroids(vectors: List[List[float]], assignments: List[int], cluster_count: int, fallback_centroids: List[List[float]]) -> List[List[float]]:
+    centroids: List[List[float]] = []
+    for cluster_index in range(cluster_count):
+        members = [vector for vector_index, vector in enumerate(vectors) if assignments[vector_index] == cluster_index]
+        centroids.append(_average_vectors(members) if members else fallback_centroids[cluster_index])
+    return centroids
+
+def _initialize_kmeans_plus_plus(vectors: List[List[float]], cluster_count: int, seed_offset: int = 0) -> List[List[float]]:
+    if not vectors:
+        return []
+    first_index = _semantic_cluster_hash(f"{seed_offset}:{len(vectors)}") % len(vectors)
+    centroid_indices = [first_index]
+    while len(centroid_indices) < cluster_count:
+        best_index = 0
+        best_distance = float("-inf")
+        for index, vector in enumerate(vectors):
+            if index in centroid_indices:
+                continue
+            nearest_similarity = max(_cosine_similarity(vector, vectors[centroid_index]) for centroid_index in centroid_indices)
+            distance = 1.0 - nearest_similarity
+            jitter = ((_semantic_cluster_hash(f"{seed_offset}:{index}") % 997) / 997000.0)
+            if distance + jitter > best_distance:
+                best_distance = distance + jitter
+                best_index = index
+        centroid_indices.append(best_index)
+    return [vectors[index] for index in centroid_indices]
+
+def _rebalance_undersized_clusters(vectors: List[List[float]], assignments: List[int], centroids: List[List[float]], min_size: int = SEMANTIC_CLUSTER_MIN_SIZE) -> Tuple[List[int], List[List[float]]]:
+    cluster_count = len(centroids)
+    if cluster_count <= 0 or len(vectors) < cluster_count * min_size:
+        return assignments, centroids
+    next_assignments = list(assignments)
+    next_centroids = [list(centroid) for centroid in centroids]
+    cluster_sizes = _get_cluster_size_list(next_assignments, cluster_count)
+    guard = 0
+    while any(size < min_size for size in cluster_sizes) and guard < len(vectors) * max(cluster_count, 1):
+        guard += 1
+        target_index = next((index for index, size in enumerate(cluster_sizes) if size < min_size), -1)
+        donor_indices = [index for index, size in enumerate(cluster_sizes) if size > min_size]
+        if target_index < 0 or not donor_indices:
+            break
+        best_vector_index = -1
+        best_score = float("-inf")
+        for donor_index in donor_indices:
+            for vector_index, assigned_cluster in enumerate(next_assignments):
+                if assigned_cluster != donor_index:
+                    continue
+                target_score = _cosine_similarity(vectors[vector_index], next_centroids[target_index])
+                donor_score = _cosine_similarity(vectors[vector_index], next_centroids[donor_index])
+                relocation_score = (target_score * 1.15) - donor_score
+                if relocation_score > best_score:
+                    best_score = relocation_score
+                    best_vector_index = vector_index
+        if best_vector_index < 0:
+            break
+        next_assignments[best_vector_index] = target_index
+        cluster_sizes = _get_cluster_size_list(next_assignments, cluster_count)
+        next_centroids = _recalculate_centroids(vectors, next_assignments, cluster_count, next_centroids)
+    return next_assignments, next_centroids
+
+def _evaluate_cluster_assignments(vectors: List[List[float]], assignments: List[int], centroids: List[List[float]]) -> float:
+    if not vectors or not centroids:
+        return 0.0
+    cluster_sizes = _get_cluster_size_list(assignments, len(centroids))
+    undersized_penalty = 0.0
+    for size in cluster_sizes:
+        if size < SEMANTIC_CLUSTER_MIN_SIZE:
+            undersized_penalty += (SEMANTIC_CLUSTER_MIN_SIZE - size) * 0.28
+    margin_total = 0.0
+    for vector_index, vector in enumerate(vectors):
+        own_index = assignments[vector_index]
+        own_score = _cosine_similarity(vector, centroids[own_index])
+        next_best = max([
+            _cosine_similarity(vector, centroid)
+            for centroid_index, centroid in enumerate(centroids)
+            if centroid_index != own_index
+        ] or [0.0])
+        margin_total += (own_score - next_best)
+    return (margin_total / len(vectors)) - undersized_penalty
+
+def _extract_semantic_candidate_terms(paper: dict) -> List[str]:
+    generic_terms = {
+        "paper", "study", "studies", "evidence", "model", "models", "analysis", "default",
+        "country", "countries", "international", "empirical", "approach", "effects", "effect",
+        "role", "global", "financial", "finance", "credit", "ratings", "rating", "risk", "risks"
+    }
+    title_tokens = [
+        token for token in _semantic_cluster_tokenize((paper or {}).get("title", ""))
+        if token not in generic_terms
+    ]
+    phrases: List[str] = []
+    for index in range(len(title_tokens) - 1):
+        phrase = f"{title_tokens[index]} {title_tokens[index + 1]}"
+        if not any(part in generic_terms for part in phrase.split(" ")):
+            phrases.append(phrase)
+    return phrases + title_tokens
+
+def _select_distinct_semantic_terms(cluster_papers: List[dict], all_papers: List[dict], limit: int = 4) -> List[str]:
+    cluster_df: Dict[str, int] = {}
+    global_df: Dict[str, int] = {}
+    for paper in all_papers:
+        for term in set(_extract_semantic_candidate_terms(paper)):
+            global_df[term] = global_df.get(term, 0) + 1
+    for paper in cluster_papers:
+        for term in set(_extract_semantic_candidate_terms(paper)):
+            cluster_df[term] = cluster_df.get(term, 0) + 1
+    total_docs = max(len(all_papers), 1)
+    cluster_size = max(len(cluster_papers), 1)
+    scored_terms: List[dict] = []
+    for term, count in cluster_df.items():
+        global_count = global_df.get(term, count)
+        cluster_ratio = count / cluster_size
+        global_ratio = global_count / total_docs
+        if global_ratio > 0.34:
+            continue
+        idf = math.log((total_docs + 1) / (global_count + 1)) + 1.0
+        lift = cluster_ratio / max(global_ratio, 0.0001)
+        phrase_boost = 1.18 if " " in term else 1.0
+        scored_terms.append({"term": term, "score": cluster_ratio * idf * lift * phrase_boost})
+    scored_terms.sort(key=lambda item: item["score"], reverse=True)
+    chosen: List[str] = []
+    for item in scored_terms:
+        term = item["term"]
+        if any(existing in term or term in existing for existing in chosen):
+            continue
+        chosen.append(term)
+        if len(chosen) >= limit:
+            break
+    return chosen
+
+def _title_case_semantic_words(words: List[str]) -> List[str]:
+    output: List[str] = []
+    for word in words:
+        output.append(" ".join(part[:1].upper() + part[1:] for part in word.split(" ") if part))
+    return output
+
+def _build_semantic_cluster_presentation(clusters: List[dict], all_papers: List[dict]) -> List[dict]:
+    presented: List[dict] = []
+    for index, cluster in enumerate(clusters):
+        top_terms = _select_distinct_semantic_terms(cluster.get("papers", []), all_papers)
+        label = " / ".join(_title_case_semantic_words(top_terms[:2])) if top_terms else f"Theme {index + 1}"
+        summary = (
+            f"This cluster emphasizes {', '.join(top_terms[:3])} rather than the corpus-wide baseline topics."
+            if top_terms else
+            "This cluster groups papers with similar semantic content."
+        )
+        presented.append({
+            **cluster,
+            "label": label,
+            "summary": summary,
+            "topTerms": top_terms
+        })
+    return presented
+
+def _build_semantic_cluster_signature(papers: List[dict], seed_limit: int, assignment_limit: int) -> str:
+    serialized = json.dumps([
+        {
+            "filename": str((paper or {}).get("filename") or ""),
+            "title": str((paper or {}).get("title") or "").strip(),
+            "abstract": str((paper or {}).get("abstract") or "").strip(),
+            "current_content": str((paper or {}).get("current_content") or "").strip()[:SEMANTIC_CLUSTER_CURRENT_CONTENT_LIMIT],
+            "similarity": round(float((paper or {}).get("similarity") or 0), 6),
+        }
+        for paper in papers
+    ], ensure_ascii=False, separators=(",", ":"))
+    return f"{SEMANTIC_CLUSTER_ALGORITHM_VERSION}:{seed_limit}:{assignment_limit}:{hashlib.sha1(serialized.encode('utf-8')).hexdigest()}"
+
+def _is_semantic_cluster_paper_analyzable(paper: dict) -> bool:
+    return bool(str((paper or {}).get("title") or "").strip()) and (
+        bool(str((paper or {}).get("abstract") or "").strip())
+        or bool(str((paper or {}).get("current_content") or "").strip())
+    )
+
+def _select_semantic_assignment_papers(papers: List[dict], assignment_limit: int) -> List[dict]:
+    analyzable = [paper for paper in (papers or []) if _is_semantic_cluster_paper_analyzable(paper)]
+    analyzable.sort(key=lambda paper: float((paper or {}).get("similarity") or 0), reverse=True)
+    normalized_limit = max(3, min(int(assignment_limit or MAX_TOP_PAPERS), MAX_TOP_PAPERS))
+    return analyzable[:normalized_limit]
+
+def _build_semantic_cluster_result(payload: SemanticClusterRequest, progress_callback=None) -> dict:
+    assignment_limit = max(3, min(int(payload.assignment_limit or MAX_TOP_PAPERS), MAX_TOP_PAPERS))
+    seed_limit = max(3, min(int(payload.seed_limit or SEMANTIC_CLUSTER_SEED_LIMIT), assignment_limit))
+    source_papers = [paper.model_dump() if hasattr(paper, "model_dump") else dict(paper) for paper in payload.papers[:MAX_TOP_PAPERS]]
+    assignment_papers = _select_semantic_assignment_papers(source_papers, assignment_limit)
+    seed_papers = assignment_papers[:seed_limit]
+    signature = _build_semantic_cluster_signature(assignment_papers, seed_limit, assignment_limit)
+
+    if progress_callback:
+        progress_callback("prepare", 6, f"Preparing {len(assignment_papers)} papers for backend semantic clustering...")
+
+    if len(seed_papers) < 3:
+        return {
+            "projectId": int(payload.project_id or 0),
+            "clusterMode": "semantic",
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "signature": signature,
+            "seedSignature": signature,
+            "paperCount": len(seed_papers),
+            "assignedPaperCount": len(assignment_papers),
+            "clusterQuality": 0,
+            "clusters": [],
+            "usedLlmThemeNaming": False
+        }
+
+    term_weights_by_paper: List[Dict[str, float]] = []
+    document_frequency: Dict[str, int] = {}
+    for index, paper in enumerate(assignment_papers, start=1):
+        weighted_terms = _build_semantic_cluster_term_weights(paper)
+        term_weights_by_paper.append(weighted_terms)
+        for term in set(weighted_terms.keys()):
+            document_frequency[term] = document_frequency.get(term, 0) + 1
+        if progress_callback and (index % 8 == 0 or index == len(assignment_papers)):
+            percent = 10 + int((index / max(len(assignment_papers), 1)) * 38)
+            progress_callback("embedding", percent, f"Building backend semantic embeddings: {index}/{len(assignment_papers)} papers")
+
+    total_docs = max(len(term_weights_by_paper), 1)
+    assignment_vectors = [
+        _hash_weighted_terms_to_vector(weighted_terms, document_frequency, total_docs)
+        for weighted_terms in term_weights_by_paper
+    ]
+    seed_vectors = assignment_vectors[:len(seed_papers)]
+
+    max_cluster_count = min(max(3, len(seed_papers)), len(seed_papers), max(SEMANTIC_CLUSTER_COUNT_OPTIONS))
+    candidate_counts = [count for count in SEMANTIC_CLUSTER_COUNT_OPTIONS if count <= max_cluster_count]
+    best_result = None
+    total_runs = 0
+    for cluster_count in candidate_counts:
+        total_runs += SEMANTIC_CLUSTER_BASE_ATTEMPTS + 1
+    completed_runs = 0
+
+    for cluster_count in candidate_counts:
+        candidate_best = None
+        for attempt_index in range(SEMANTIC_CLUSTER_BASE_ATTEMPTS + 1):
+            if attempt_index > 0 and candidate_best:
+                cluster_sizes = candidate_best.get("clusterSizes", [])
+                has_undersized = len(seed_vectors) >= cluster_count * SEMANTIC_CLUSTER_MIN_SIZE and any(size < SEMANTIC_CLUSTER_MIN_SIZE for size in cluster_sizes)
+                if candidate_best.get("score", 0) >= SEMANTIC_CLUSTER_QUALITY_RETRY_THRESHOLD and not has_undersized:
+                    break
+            if progress_callback:
+                completed_runs += 1
+                progress_callback(
+                    "clustering",
+                    50 + int((completed_runs / max(total_runs, 1)) * 28),
+                    f"Testing {cluster_count} semantic themes (pass {attempt_index + 1})..."
+                )
+            centroids = _initialize_kmeans_plus_plus(seed_vectors, cluster_count, seed_offset=attempt_index + cluster_count)
+            assignments = _assign_vectors_to_centroids(seed_vectors, centroids)
+            for _ in range(8):
+                centroids = _recalculate_centroids(seed_vectors, assignments, cluster_count, centroids)
+                next_assignments = _assign_vectors_to_centroids(seed_vectors, centroids)
+                if next_assignments == assignments:
+                    break
+                assignments = next_assignments
+            assignments, centroids = _rebalance_undersized_clusters(seed_vectors, assignments, centroids, SEMANTIC_CLUSTER_MIN_SIZE)
+            score = _evaluate_cluster_assignments(seed_vectors, assignments, centroids)
+            candidate = {
+                "clusterCount": cluster_count,
+                "assignments": assignments,
+                "centroids": centroids,
+                "score": score,
+                "clusterSizes": _get_cluster_size_list(assignments, cluster_count)
+            }
+            if not candidate_best or score > candidate_best["score"]:
+                candidate_best = candidate
+        if candidate_best and (not best_result or candidate_best["score"] > best_result["score"]):
+            best_result = candidate_best
+
+    if not best_result:
+        return {
+            "projectId": int(payload.project_id or 0),
+            "clusterMode": "semantic",
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "signature": signature,
+            "seedSignature": signature,
+            "paperCount": len(seed_papers),
+            "assignedPaperCount": len(assignment_papers),
+            "clusterQuality": 0,
+            "clusters": [],
+            "usedLlmThemeNaming": False
+        }
+
+    if progress_callback:
+        progress_callback("assignment", 84, f"Assigning top {len(assignment_papers)} papers using Visualization Density...")
+
+    assignment_results = _assign_vectors_to_centroids_with_scores(assignment_vectors, best_result["centroids"])
+    target_weighted_terms = {}
+    _semantic_cluster_add_weighted_terms(target_weighted_terms, payload.target_title, 3.0, include_bigrams=True)
+    _semantic_cluster_add_weighted_terms(target_weighted_terms, payload.target_abstract, 1.8, include_bigrams=True)
+    _semantic_cluster_add_weighted_terms(target_weighted_terms, str(payload.target_current_content or "")[:SEMANTIC_CLUSTER_CURRENT_CONTENT_LIMIT], 0.9, include_bigrams=False)
+    target_vector = _hash_weighted_terms_to_vector(target_weighted_terms, document_frequency, total_docs) if target_weighted_terms else []
+
+    clusters: List[dict] = []
+    for cluster_index, centroid in enumerate(best_result["centroids"]):
+        assigned = []
+        for paper_index, paper in enumerate(assignment_papers):
+            result = assignment_results[paper_index]
+            if result["clusterIndex"] != cluster_index:
+                continue
+            enriched = dict(paper)
+            enriched["cluster_similarity"] = result["score"]
+            assigned.append(enriched)
+        assigned.sort(key=lambda item: (float(item.get("cluster_similarity") or 0), float(item.get("similarity") or 0)), reverse=True)
+        if not assigned:
+            continue
+        clusters.append({
+            "index": cluster_index,
+            "target_relevance": max(0.0, _cosine_similarity(target_vector, centroid)) if target_vector else 0.0,
+            "papers": assigned,
+            "representative_papers": assigned[:SEMANTIC_CLUSTER_MAX_DISPLAY_PAPERS],
+        })
+    clusters.sort(key=lambda cluster: len(cluster.get("papers", [])), reverse=True)
+
+    if progress_callback:
+        progress_callback("labeling", 93, "Extracting local semantic theme labels...")
+
+    presented_clusters = _build_semantic_cluster_presentation(clusters, assignment_papers)
+    return {
+        "projectId": int(payload.project_id or 0),
+        "clusterMode": "semantic",
+        "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "signature": signature,
+        "seedSignature": signature,
+        "paperCount": len(seed_papers),
+        "assignedPaperCount": len(assignment_papers),
+        "clusterQuality": best_result.get("score", 0),
+        "clusters": presented_clusters,
+        "usedLlmThemeNaming": False
+    }
+
+def _create_semantic_cluster_job(total: int) -> str:
+    job_id = uuid.uuid4().hex
+    SEMANTIC_CLUSTER_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "queued",
+        "message": "Queued semantic cluster build...",
+        "total": total,
+        "completed": 0,
+        "progress": 0,
+        "result": None,
+        "error": None
+    }
+    return job_id
+
+def _update_semantic_cluster_job(job_id: str, **kwargs):
+    job = SEMANTIC_CLUSTER_JOBS.get(job_id)
+    if not job:
+        return
+    job.update(kwargs)
+
+async def _run_semantic_cluster_job(job_id: str, payload: SemanticClusterRequest):
+    _update_semantic_cluster_job(job_id, status="running", stage="prepare", message="Preparing backend semantic clustering...", total=min(len(payload.papers), MAX_TOP_PAPERS))
+    try:
+        def progress_callback(stage: str, percent: int, detail: str):
+            _update_semantic_cluster_job(
+                job_id,
+                stage=stage,
+                progress=max(0, min(100, int(percent))),
+                message=detail,
+                completed=max(0, min(len(payload.papers), int((max(0, min(100, int(percent))) / 100) * max(min(len(payload.papers), MAX_TOP_PAPERS), 1))))
+            )
+        result = await asyncio.to_thread(_build_semantic_cluster_result, payload, progress_callback)
+        _update_semantic_cluster_job(
+            job_id,
+            status="completed",
+            stage="completed",
+            progress=100,
+            completed=min(len(payload.papers), MAX_TOP_PAPERS),
+            message="Semantic clustering complete.",
+            result=result,
+            error=None
+        )
+    except Exception as exc:
+        _update_semantic_cluster_job(
+            job_id,
+            status="failed",
+            stage="failed",
+            message="Semantic clustering failed.",
+            error=str(exc)
+        )
 
 def _build_literature_watch_prompt(context: dict) -> str:
     core_lines = []
@@ -5187,6 +6041,33 @@ async def patch_claim_evidence_item(project_id: int, claim_id: int, evidence_id:
     )
     return {"evidence": updated}
 
+@app.post("/api/projects/{project_id}/claims/{claim_id}/challenge-expand")
+async def expand_claim_challenge_seed(project_id: int, claim_id: int, payload: ChallengeExpansionRequest, current_user: dict = Depends(_require_session)):
+    project_data = _get_owned_project(project_id, current_user["user_id"])
+    claim = _get_owned_claim(project_id, claim_id, current_user["user_id"])
+    payload = _validate_challenge_expansion_payload(payload)
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM claim_evidence_items WHERE id = ? AND claim_id = ? AND project_id = ? AND hidden = 0",
+        (payload.evidence_id, claim_id, project_id)
+    )
+    evidence_row = cursor.fetchone()
+    conn.close()
+    if not evidence_row:
+        raise HTTPException(status_code=404, detail="Challenge seed evidence item not found.")
+
+    result = _expand_challenge_seed(project_data, claim, dict(evidence_row), payload)
+    _write_audit_log(
+        "project_claim_expand_challenge",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"claim_id": claim_id, "evidence_id": payload.evidence_id, "returned_count": len(result.get("recommendations") or [])},
+        success=True
+    )
+    return result
+
 @app.delete("/api/projects/{project_id}/claims/{claim_id}")
 async def archive_project_claim(project_id: int, claim_id: int, current_user: dict = Depends(_require_session)):
     _get_owned_claim(project_id, claim_id, current_user["user_id"])
@@ -5486,6 +6367,21 @@ async def get_citation_graph_job(job_id: str, current_user: dict = Depends(_requ
     job = CITATION_GRAPH_JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Citation graph job not found.")
+    return job
+
+@app.post("/api/papers/semantic-cluster/jobs", response_model=SemanticClusterJobCreated)
+async def create_semantic_cluster_job(payload: SemanticClusterRequest, current_user: dict = Depends(_require_session)):
+    normalized_total = min(len(payload.papers), MAX_TOP_PAPERS, max(int(payload.assignment_limit or MAX_TOP_PAPERS), 0))
+    job_id = _create_semantic_cluster_job(normalized_total)
+    _write_audit_log("semantic_cluster_create", user_id=current_user["user_id"], detail={"paper_count": len(payload.papers), "assignment_limit": payload.assignment_limit, "job_id": job_id}, success=True)
+    asyncio.create_task(_run_semantic_cluster_job(job_id, payload))
+    return SemanticClusterJobCreated(job_id=job_id, status="queued")
+
+@app.get("/api/papers/semantic-cluster/jobs/{job_id}")
+async def get_semantic_cluster_job(job_id: str, current_user: dict = Depends(_require_session)):
+    job = SEMANTIC_CLUSTER_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Semantic cluster job not found.")
     return job
 
 @app.post("/api/update-account")

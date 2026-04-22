@@ -1096,7 +1096,7 @@
             padding: 9px 12px;
         }
 
-        #view-workspace #btn-clear-papers {
+        #btn-clear-papers {
             border-radius: 999px;
         }
 
@@ -1543,6 +1543,7 @@
                             <option value="citations">Citation Count</option>
                             <option value="import_source">Import Source</option>
                             <option value="theme_cluster">Theme Cluster</option>
+                            <option value="citation_cluster">Citation Cluster</option>
                         </select>
                         <select id="workspace-filter-value" class="workspace-filter-select" onchange="handleWorkspaceFilterValueChange()" disabled style="flex: 0 0 190px; width: 190px; min-width: 190px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-color); box-sizing: border-box; font-size: 12px; background: #fff;">
                             <option value="">Select Filter</option>
@@ -1555,7 +1556,6 @@
                             <h4 style="margin: 0; font-size: 14px; color: var(--primary);">Top Related Papers</h4>
                             <div id="workspace-filter-note" class="hidden" style="font-size:11px; color:var(--text-muted); padding:3px 8px; border-radius:999px; background:#f8fafc; border:1px solid #e2e8f0;"></div>
                         </div>
-                        <button id="btn-clear-papers" class="btn btn-danger hidden" style="padding: 4px 10px; font-size: 11px;" oncontextmenu="clearAllPapers(event)" title="Right-Click to Clear All">🗑️ Right-Click to Clear All</button>
                     </div>
                     <div class="ranking-container" id="ranking-list"></div>
                     <button id="load-more-btn" class="btn btn-outline hidden" style="width: 100%; margin-top: 10px; font-size: 12px; padding: 6px;" onclick="loadMorePapers()">View 10 More</button>
@@ -1891,7 +1891,7 @@
                 <div class="search-toggle-copy">
                     <div style="font-weight:800; color:var(--primary); margin-bottom:4px;">Enable Background Precompute</div>
                     <div class="search-helper-note">
-                        Preloads semantic theme-cluster seeds when you open the project so the cluster modal can start faster later. Recommended ON for higher-performance devices, OFF when conserving battery.
+                        Preloads citation clusters when you open the project so the Citation Cluster modal can start faster later. Semantic theme clusters are computed only when you open them manually. Recommended ON for higher-performance devices, OFF when conserving battery.
                     </div>
                 </div>
                 <label class="switch" aria-label="Toggle background precompute">
@@ -1953,6 +1953,13 @@
                     Keywords, abstract, or current content changed. Re-run similarity scoring to refresh the project ranking.
                 </div>
                 <button id="project-recalc-btn" class="btn btn-primary" style="width:100%;" onclick="startProjectSimilarityRecalc()">Recalculate Similarity</button>
+            </div>
+            <div id="project-danger-zone" style="margin-top:18px; padding-top:16px; border-top:1px solid #e2e8f0;">
+                <div style="font-weight:800; color:#991b1b; margin-bottom:4px;">Danger Zone</div>
+                <div class="search-helper-note" style="margin-bottom:10px;">
+                    To avoid accidental clicks in the workspace, clearing all related papers now lives here. Right-click only. Left-click does nothing.
+                </div>
+                <button id="btn-clear-papers" class="btn btn-danger hidden" style="width:100%; padding:10px 12px; font-size:12px;" oncontextmenu="clearAllPapers(event)" title="Right-Click to Clear All">🗑️ Right-Click to Clear All Related Papers</button>
             </div>
             <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
                 <button class="btn btn-outline" onclick="closeProjectSettingsModal()">Cancel</button>
@@ -2124,6 +2131,13 @@
     <div class="modal-content">
         <button class="modal-close-x" onclick="closeEvidenceReasoning()" aria-label="Close evidence reasoning">✕</button>
         <div id="evidence-reasoning-body"></div>
+    </div>
+</div>
+
+<div id="challenge-expansion-modal" class="modal-overlay hidden" onclick="handleChallengeExpansionOverlayClick(event)">
+    <div class="modal-content" style="width:min(96vw, 1160px); max-width:min(96vw, 1160px); max-height:86vh;">
+        <button class="modal-close-x" onclick="closeChallengeExpansion()" aria-label="Close challenge expansion">✕</button>
+        <div id="challenge-expansion-body"></div>
     </div>
 </div>
 
@@ -2401,6 +2415,16 @@
         progressStepsRemaining: '',
         progressTimer: null,
         analysisRange: 'medium',
+        challengeExpansionOpen: false,
+        challengeExpansionLoading: false,
+        challengeExpansionSeedEvidenceId: null,
+        challengeExpansionRecommendations: [],
+        challengeExpansionSelections: new Set(),
+        challengeExpansionSeedPaper: null,
+        challengeExpansionSourceSummary: null,
+        challengeExpansionStatus: '',
+        challengeExpansionError: '',
+        challengeExpansionRequestId: 0,
         claimRequestId: 0,
         boardRequestId: 0
     };
@@ -2594,34 +2618,28 @@
 
         try {
             if (shouldPreloadClusters) {
-                const cacheContext = getThemeClusterCacheContext(project, THEME_CLUSTER_TOP_PAPER_LIMIT);
-                const reusable = !force ? getReusableThemeClusterResult(project, cacheContext) : null;
+                const reusable = !force ? getReusableCitationClusterResult(project) : null;
                 if (reusable) {
                     if (isCurrentRun()) {
-                        currentThemeClusterResult = reusable;
-                        markThemeClusterCacheReady(true);
-                        showPreloadNotice('Background preload: theme clusters already ready. Zotero preview is next. Actions may feel slightly sluggish while preload finishes.', shouldPreloadZotero ? 'ETA ~15s' : 'ETA ~5s');
+                        currentCitationClusterResult = reusable;
+                        showPreloadNotice('Background preload: citation clusters already ready. Zotero preview is next.', shouldPreloadZotero ? 'ETA ~15s' : 'ETA ~5s');
                     }
                 } else {
-                    const warmSeed = !force ? getReusableThemeClusterSeedResult(project, cacheContext) : null;
-                    if (warmSeed && isCurrentRun()) {
-                        currentThemeClusterSeedResult = warmSeed;
-                    }
                     if (isCurrentRun()) {
-                        showPreloadNotice('Background preload: computing seed theme clusters now. Full assignment will wait until you open the modal.', 'ETA ~25s');
+                        showPreloadNotice('Background preload: computing citation clusters now. This may feel a bit heavy while the graph is being prepared.', 'ETA ~35s');
                     }
-                    const result = await computeThemeClusters(project, async progress => {
+                    const result = await computeCitationClusterResult(project, async progress => {
                         if (!isCurrentRun()) return;
                         const percent = Math.max(5, Math.round(progress.percent || 0));
+                        const detail = String(progress.detail || '').trim() || 'Computing citation clusters...';
                         showPreloadNotice(
-                            `Background preload: computing seed theme clusters (${percent}%). Full assignment will wait until you open the modal.`,
-                            formatPreloadEta(percent, 30)
+                            `Background preload: ${detail} (${percent}%).`,
+                            formatPreloadEta(percent, 40)
                         );
                         await new Promise(resolve => setTimeout(resolve, 0));
-                    }, cacheContext, { preloadOnly: true, applyLlmNaming: false, seedResult: warmSeed });
+                    }, { force });
                     if (isCurrentRun()) {
-                        currentThemeClusterSeedResult = result;
-                        refreshThemeClusterCacheIndicator(project);
+                        currentCitationClusterResult = result;
                     }
                 }
             }
@@ -3083,17 +3101,19 @@
         return `${THEME_CLUSTER_ALGORITHM_VERSION}::` + papers.map(paper => JSON.stringify({
             filename: paper?.filename || '',
             title: String(paper?.title || '').trim(),
-            abstract: String(paper?.abstract || '').trim().slice(0, 1200),
-            current_content: String(paper?.current_content || '').trim().slice(0, 1600),
+            abstract: String(paper?.abstract || '').trim(),
+            current_content: String(paper?.current_content || '').trim().slice(0, 1000),
             similarity: Number(paper?.similarity || 0).toFixed(5)
         })).join('||');
     }
 
-    const THEME_CLUSTER_ALGORITHM_VERSION = 'v6';
-    const THEME_CLUSTER_TOP_PAPER_LIMIT = 100;
+    const THEME_CLUSTER_ALGORITHM_VERSION = 'v7';
+    const THEME_CLUSTER_TOP_PAPER_LIMIT = 60;
     const THEME_CLUSTER_COUNT_OPTIONS = [3, 4, 5];
-    const THEME_CLUSTER_ATTEMPTS = 2;
+    const THEME_CLUSTER_ATTEMPTS = 1;
     const THEME_CLUSTER_MAX_DISPLAY_PAPERS = 10;
+    const THEME_CLUSTER_INITIAL_VISIBLE_PAPERS = 5;
+    const THEME_CLUSTER_SECONDARY_VISIBLE_PAPERS = 10;
     const THEME_CLUSTER_MIN_SIZE = 4;
     const CITATION_CLUSTER_ALGORITHM_VERSION = 'v1';
     const CITATION_CLUSTER_CORE_PAPER_LIMIT = 5;
@@ -3106,14 +3126,20 @@
             .sort((a, b) => b.similarity - a.similarity);
     }
 
-    function getThemeClusterCacheContext(project = currentProject, limit = THEME_CLUSTER_TOP_PAPER_LIMIT) {
+    function getThemeClusterAssignmentLimit(limit = currentChartRenderLimit) {
+        return [150, 300, 500].includes(Number(limit)) ? Number(limit) : 500;
+    }
+
+    function getThemeClusterCacheContext(project = currentProject, limit = THEME_CLUSTER_TOP_PAPER_LIMIT, assignmentLimit = getThemeClusterAssignmentLimit()) {
+        const normalizedAssignmentLimit = getThemeClusterAssignmentLimit(assignmentLimit);
         const papers = getTopPapersForInsights(project, limit);
-        const assignmentPapers = getAllAnalyzableClusterPapers(project);
-        const seedSignature = `${THEME_CLUSTER_ALGORITHM_VERSION}::seed=${buildThemeClusterCacheSignatureFromPapers(papers)}`;
-        const fullSignature = `${seedSignature}::all=${buildThemeClusterCacheSignatureFromPapers(assignmentPapers)}`;
+        const assignmentPapers = getAllAnalyzableClusterPapers(project).slice(0, normalizedAssignmentLimit);
+        const seedSignature = `${THEME_CLUSTER_ALGORITHM_VERSION}::seed=${limit}::${buildThemeClusterCacheSignatureFromPapers(papers)}`;
+        const fullSignature = `${seedSignature}::assignment=${normalizedAssignmentLimit}::${buildThemeClusterCacheSignatureFromPapers(assignmentPapers)}`;
         return {
             papers,
             assignmentPapers,
+            assignmentLimit: normalizedAssignmentLimit,
             seedSignature,
             fullSignature,
             signature: fullSignature
@@ -3143,7 +3169,7 @@
             markThemeClusterCacheReady(false, '');
             return;
         }
-        const cacheContext = getThemeClusterCacheContext(project, THEME_CLUSTER_TOP_PAPER_LIMIT);
+        const cacheContext = getThemeClusterCacheContext(project, THEME_CLUSTER_TOP_PAPER_LIMIT, getThemeClusterAssignmentLimit());
         const reusable = getReusableThemeClusterResult(project, cacheContext);
         if (reusable) {
             markThemeClusterCacheReady(true);
@@ -3778,6 +3804,28 @@ Rules:
             if (data.status === 'completed') return data.result;
             if (data.status === 'failed') {
                 throw new Error(data.error || data.message || 'Citation graph build failed.');
+            }
+            await new Promise(resolve => setTimeout(resolve, 700));
+        }
+    }
+
+    async function pollSemanticClusterJobForThemes(jobId, onProgress = null) {
+        while (true) {
+            const res = await fetch(`${API_BASE}/papers/semantic-cluster/jobs/${jobId}`);
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Failed to read semantic cluster progress.');
+            }
+            if (onProgress) {
+                await onProgress({
+                    stage: String(data.stage || 'semantic-clustering'),
+                    percent: Math.max(0, Math.min(100, Number(data.progress || 0))),
+                    detail: String(data.message || 'Computing semantic clusters...')
+                });
+            }
+            if (data.status === 'completed') return data.result;
+            if (data.status === 'failed') {
+                throw new Error(data.error || data.message || 'Semantic clustering failed.');
             }
             await new Promise(resolve => setTimeout(resolve, 700));
         }
@@ -5431,6 +5479,16 @@ Rules:
             progressStepsRemaining: '',
             progressTimer: null,
             analysisRange: 'medium',
+            challengeExpansionOpen: false,
+            challengeExpansionLoading: false,
+            challengeExpansionSeedEvidenceId: null,
+            challengeExpansionRecommendations: [],
+            challengeExpansionSelections: new Set(),
+            challengeExpansionSeedPaper: null,
+            challengeExpansionSourceSummary: null,
+            challengeExpansionStatus: '',
+            challengeExpansionError: '',
+            challengeExpansionRequestId: 0,
             claimRequestId: 0,
             boardRequestId: 0
         };
@@ -5498,6 +5556,10 @@ Rules:
 
     function getSelectedReasoningEvidence() {
         return findEvidenceItemInBoard(evidenceBoardState.reasoningEvidenceId);
+    }
+
+    function getSelectedChallengeExpansionSeed() {
+        return findEvidenceItemInBoard(evidenceBoardState.challengeExpansionSeedEvidenceId);
     }
 
     function shouldUseEvidenceReasoningDrawer() {
@@ -5761,6 +5823,7 @@ Rules:
         const paper = resolveEvidencePaper(item);
         const evidenceId = Number(item?.id || 0);
         const isSelected = Number(evidenceBoardState.reasoningEvidenceId || 0) === evidenceId;
+        const isChallenge = String(item?.stance || '').trim().toLowerCase() === 'challenge';
         return `
             <div class="evidence-card" style="--evidence-accent:${meta.accent};">
                 <div class="evidence-card-top">
@@ -5785,6 +5848,7 @@ Rules:
                 <div class="evidence-card-actions">
                     <button class="btn btn-outline" style="padding:6px 9px; font-size:11px; ${isSelected ? `color:${meta.accent}; border-color:${meta.accent};` : ''}" onclick="openEvidenceReasoning(${evidenceId})">${isSelected ? 'Viewing' : 'Reasoning'}</button>
                     <button class="btn btn-outline" style="padding:6px 9px; font-size:11px;" onclick="openEvidencePaper(${evidenceId})" ${paper ? '' : 'disabled'}>${paper ? 'Open Paper' : 'Missing'}</button>
+                    ${isChallenge ? `<button class="btn btn-outline" style="padding:6px 9px; font-size:11px;" onclick="openChallengeExpansion(${evidenceId})">Expand Trail</button>` : ''}
                 </div>
             </div>
         `;
@@ -5804,6 +5868,7 @@ Rules:
         renderEvidenceBoardStatus();
         renderEvidenceBoardColumns();
         renderEvidenceReasoningModal();
+        renderChallengeExpansionModal();
     }
 
     function renderEvidenceReasoningModal() {
@@ -5888,6 +5953,111 @@ Rules:
         modal.classList.remove('hidden');
     }
 
+    function renderChallengeExpansionModal() {
+        const modal = document.getElementById('challenge-expansion-modal');
+        const body = document.getElementById('challenge-expansion-body');
+        if (!modal || !body) return;
+        if (!evidenceBoardState.challengeExpansionOpen) {
+            modal.classList.add('hidden');
+            body.innerHTML = '';
+            return;
+        }
+
+        const seedItem = getSelectedChallengeExpansionSeed();
+        const seedPaper = evidenceBoardState.challengeExpansionSeedPaper || resolveEvidencePaper(seedItem) || null;
+        const recommendations = evidenceBoardState.challengeExpansionRecommendations || [];
+        const selectedCount = evidenceBoardState.challengeExpansionSelections?.size || 0;
+        const allSelected = recommendations.length && recommendations.every(paper => evidenceBoardState.challengeExpansionSelections.has(getLiteratureWatchRecommendationKey(paper)));
+        const summary = evidenceBoardState.challengeExpansionSourceSummary || {};
+
+        body.innerHTML = `
+            <div style="display:grid; gap:16px;">
+                <div style="display:flex; justify-content:space-between; gap:16px; align-items:flex-start; flex-wrap:wrap;">
+                    <div style="min-width:0; flex:1;">
+                        <div style="display:inline-flex; align-items:center; gap:8px; padding:5px 10px; border-radius:999px; background:#fef2f2; color:#b91c1c; font-size:11px; font-weight:800; margin-bottom:10px;">Challenge Trail Expansion</div>
+                        <div style="font-size:28px; line-height:1.08; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px;">${escapeHtml(seedPaper?.title || seedItem?.paper_title || 'Challenge seed')}</div>
+                        <div style="font-size:13px; color:#475569; line-height:1.75; max-width:900px;">Use this challenge paper as a one-hop seed. StarMap pulls its references and cited-by neighbors from OpenAlex, then filters for papers likely to extend the same challenge thread for the current claim.</div>
+                    </div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                        ${seedPaper ? `<button class="btn btn-outline" style="padding:9px 12px; font-size:12px;" onclick="openChallengeExpansionSeedPaper()">Open Seed Paper</button>` : ''}
+                        <button class="btn btn-outline" style="padding:9px 12px; font-size:12px;" onclick="closeChallengeExpansion()">Close</button>
+                    </div>
+                </div>
+
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <div class="evidence-chip" style="background:#fef2f2; color:#b91c1c; border-color:#fecaca;">References ${Number(summary.reference_count || 0)}</div>
+                    <div class="evidence-chip" style="background:#eff6ff; color:#1d4ed8; border-color:#dbeafe;">Cited By ${Number(summary.cited_by_count || 0)}</div>
+                    <div class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">New candidates ${Number(summary.candidate_count || 0)}</div>
+                    ${Number(summary.skipped_existing_count || 0) ? `<div class="evidence-chip" style="background:#fff7ed; color:#c2410c; border-color:#fed7aa;">Already in StarMap ${Number(summary.skipped_existing_count || 0)}</div>` : ''}
+                </div>
+
+                ${evidenceBoardState.challengeExpansionError ? `<div class="evidence-board-status error" style="display:block;">${escapeHtml(evidenceBoardState.challengeExpansionError)}</div>` : ''}
+                ${evidenceBoardState.challengeExpansionStatus ? `<div class="evidence-board-status" style="display:block;">${escapeHtml(evidenceBoardState.challengeExpansionStatus)}</div>` : ''}
+
+                ${evidenceBoardState.challengeExpansionLoading ? `
+                    <div style="padding:18px; border-radius:20px; border:1px solid rgba(148,163,184,0.18); background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.96));">
+                        <div style="font-size:14px; font-weight:800; color:#1f2a69; margin-bottom:8px;">Expanding one-hop challenge neighbors...</div>
+                        <div style="font-size:12px; color:#64748b; line-height:1.7;">Reading the seed paper, pulling references and cited-by neighbors, then screening them for likely challenge value before showing a recommendation list.</div>
+                    </div>
+                ` : recommendations.length ? `
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+                        <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#475569; font-weight:700;">
+                            <input type="checkbox" ${allSelected ? 'checked' : ''} onchange="toggleAllChallengeExpansionPapers(this.checked)">
+                            <span>Select all recommendations</span>
+                        </label>
+                        <button class="btn btn-primary" style="padding:10px 14px; font-size:12px;" onclick="addSelectedChallengeExpansionPapers()" ${selectedCount ? '' : 'disabled'}>Add Selected to StarMap${selectedCount ? ` (${selectedCount})` : ''}</button>
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:12px;">
+                        ${recommendations.map((paper, index) => {
+                            const key = getLiteratureWatchRecommendationKey(paper);
+                            const checked = evidenceBoardState.challengeExpansionSelections.has(key);
+                            return `
+                                <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:14px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.96)); box-shadow:0 10px 24px rgba(15,23,42,0.04);">
+                                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:10px;">
+                                        <label style="display:flex; align-items:flex-start; gap:10px; flex:1; cursor:pointer;">
+                                            <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleChallengeExpansionPaper('${encodeURIComponent(key)}', this.checked)" style="margin-top:3px;">
+                                            <div style="flex:1;">
+                                                <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
+                                                    <div style="padding:4px 8px; border-radius:999px; background:#fef2f2; color:#b91c1c; font-size:11px; font-weight:800;">Challenge ${index + 1}</div>
+                                                    <div style="padding:4px 8px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">${escapeHtml(paper.relationship_label || paper.relationship_type || 'One hop')}</div>
+                                                    ${paper.year ? `<div style="padding:4px 8px; border-radius:999px; background:#fff7ed; color:#c2410c; font-size:11px; font-weight:700;">${escapeHtml(paper.year)}</div>` : ''}
+                                                </div>
+                                                <div style="font-size:15px; line-height:1.38; font-weight:800; color:#3340a7; margin-bottom:6px;">${escapeHtml(paper.title || 'Untitled')}</div>
+                                                <div style="font-size:12px; color:#64748b; line-height:1.65;">${escapeHtml(paper.authors || 'Unknown authors')}${paper.publication_venue ? ` | ${escapeHtml(paper.publication_venue)}` : ''}</div>
+                                            </div>
+                                        </label>
+                                        <div style="padding:8px 10px; border-radius:14px; background:#f8fafc; min-width:86px; text-align:right;">
+                                            <div style="font-size:10px; color:#64748b; font-weight:800; text-transform:uppercase; letter-spacing:0.06em;">Challenge Fit</div>
+                                            <div style="font-size:18px; font-weight:900; color:#1f2a69;">${Number(paper.challenge_score || 0).toFixed(3)}</div>
+                                        </div>
+                                    </div>
+                                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+                                        <div style="padding:6px 9px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Seed overlap ${Number(paper.seed_similarity || 0).toFixed(3)}</div>
+                                        <div style="padding:6px 9px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Claim relevance ${Number(paper.claim_relevance || 0).toFixed(3)}</div>
+                                        <div style="padding:6px 9px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Citations ${formatFwciValue(paper.citation_count)}</div>
+                                    </div>
+                                    <div style="font-size:12px; color:#475569; line-height:1.7; margin-bottom:10px;">${escapeHtml(paper.why_matched || 'Potential challenge extension around the seed paper.')}</div>
+                                    ${paper.caveat ? `<div style="font-size:11px; color:#7c2d12; line-height:1.65; margin-bottom:10px; padding:10px 12px; border-radius:14px; background:#fff7ed;">${escapeHtml(paper.caveat)}</div>` : ''}
+                                    <div style="font-size:12px; color:#475569; line-height:1.65; margin-bottom:10px;">${escapeHtml((paper.abstract || 'No abstract available.').slice(0, 300))}${(paper.abstract || '').length > 300 ? '...' : ''}</div>
+                                    <div style="display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap;">
+                                        ${paper.paper_url ? `<a href="${escapeHtml(paper.paper_url)}" target="_blank" rel="noopener noreferrer" style="font-size:12px;">Open paper</a>` : ''}
+                                        ${paper.source_url && paper.source_url !== paper.paper_url ? `<a href="${escapeHtml(paper.source_url)}" target="_blank" rel="noopener noreferrer" style="font-size:12px;">Source</a>` : ''}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                ` : `
+                    <div style="padding:18px; border-radius:20px; border:1px dashed rgba(148,163,184,0.22); background:#fff;">
+                        <div style="font-size:14px; font-weight:800; color:#1f2a69; margin-bottom:8px;">No new challenge recommendations yet.</div>
+                        <div style="font-size:12px; color:#64748b; line-height:1.7;">This usually means the one-hop neighborhood was already inside StarMap, or the fetched neighbors looked too weak as challenge literature for the current claim.</div>
+                    </div>
+                `}
+            </div>
+        `;
+        modal.classList.remove('hidden');
+    }
+
     async function loadEvidenceBoard(claimId, options = {}) {
         if (!currentProject?.id || !claimId) {
             evidenceBoardState.board = null;
@@ -5914,6 +6084,20 @@ Rules:
             if (evidenceBoardState.reasoningEvidenceId) {
                 const reasoningStillExists = Object.values(evidenceBoardState.board || {}).some(items => (items || []).some(item => Number(item.id) === Number(evidenceBoardState.reasoningEvidenceId)));
                 if (!reasoningStillExists) evidenceBoardState.reasoningEvidenceId = null;
+            }
+            if (evidenceBoardState.challengeExpansionSeedEvidenceId) {
+                const challengeSeedStillExists = Object.values(evidenceBoardState.board || {}).some(items => (items || []).some(item => Number(item.id) === Number(evidenceBoardState.challengeExpansionSeedEvidenceId)));
+                if (!challengeSeedStillExists) {
+                    evidenceBoardState.challengeExpansionOpen = false;
+                    evidenceBoardState.challengeExpansionLoading = false;
+                    evidenceBoardState.challengeExpansionSeedEvidenceId = null;
+                    evidenceBoardState.challengeExpansionRecommendations = [];
+                    evidenceBoardState.challengeExpansionSelections = new Set();
+                    evidenceBoardState.challengeExpansionSeedPaper = null;
+                    evidenceBoardState.challengeExpansionSourceSummary = null;
+                    evidenceBoardState.challengeExpansionStatus = '';
+                    evidenceBoardState.challengeExpansionError = '';
+                }
             }
             evidenceBoardState.error = '';
             if (!options.silent) setEvidenceBoardStatus('Evidence board ready.', 'success');
@@ -6049,6 +6233,15 @@ Rules:
         evidenceBoardState.summary = null;
         evidenceBoardState.meta = null;
         evidenceBoardState.reasoningEvidenceId = null;
+        evidenceBoardState.challengeExpansionOpen = false;
+        evidenceBoardState.challengeExpansionLoading = false;
+        evidenceBoardState.challengeExpansionSeedEvidenceId = null;
+        evidenceBoardState.challengeExpansionRecommendations = [];
+        evidenceBoardState.challengeExpansionSelections = new Set();
+        evidenceBoardState.challengeExpansionSeedPaper = null;
+        evidenceBoardState.challengeExpansionSourceSummary = null;
+        evidenceBoardState.challengeExpansionStatus = '';
+        evidenceBoardState.challengeExpansionError = '';
         evidenceBoardState.expandedColumns = getInitialEvidenceColumnExpansion();
         renderEvidenceBoardSection();
         await loadEvidenceBoard(numericId, { silent: true });
@@ -6192,6 +6385,138 @@ Rules:
             return;
         }
         openPaperModal(paper);
+    };
+
+    window.openChallengeExpansionSeedPaper = () => {
+        const seedItem = getSelectedChallengeExpansionSeed();
+        const paper = evidenceBoardState.challengeExpansionSeedPaper || resolveEvidencePaper(seedItem);
+        if (!paper) return;
+        openPaperModal(paper);
+    };
+
+    window.openChallengeExpansion = async evidenceId => {
+        const numericId = Number(evidenceId || 0);
+        const item = findEvidenceItemInBoard(numericId);
+        if (!currentProject?.id || !evidenceBoardState.selectedClaimId || !numericId || !item) return;
+        if (String(item?.stance || '').trim().toLowerCase() !== 'challenge') {
+            setEvidenceBoardStatus('Challenge expansion only starts from a paper in the challenge column.', 'error');
+            renderEvidenceBoardSection();
+            return;
+        }
+
+        const requestId = (evidenceBoardState.challengeExpansionRequestId || 0) + 1;
+        evidenceBoardState.challengeExpansionRequestId = requestId;
+        evidenceBoardState.challengeExpansionOpen = true;
+        evidenceBoardState.challengeExpansionLoading = true;
+        evidenceBoardState.challengeExpansionSeedEvidenceId = numericId;
+        evidenceBoardState.challengeExpansionRecommendations = [];
+        evidenceBoardState.challengeExpansionSelections = new Set();
+        evidenceBoardState.challengeExpansionSeedPaper = resolveEvidencePaper(item) || null;
+        evidenceBoardState.challengeExpansionSourceSummary = null;
+        evidenceBoardState.challengeExpansionStatus = 'Loading one-hop challenge neighbors from OpenAlex...';
+        evidenceBoardState.challengeExpansionError = '';
+        renderEvidenceBoardSection();
+
+        try {
+            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/claims/${evidenceBoardState.selectedClaimId}/challenge-expand`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    evidence_id: numericId,
+                    ...getScholarConfig()
+                })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Challenge expansion failed.');
+            }
+            if (requestId !== evidenceBoardState.challengeExpansionRequestId) return;
+            evidenceBoardState.challengeExpansionRecommendations = Array.isArray(data.recommendations) ? data.recommendations : [];
+            evidenceBoardState.challengeExpansionSeedPaper = data.seed_paper || evidenceBoardState.challengeExpansionSeedPaper;
+            evidenceBoardState.challengeExpansionSourceSummary = data.source_summary || null;
+            evidenceBoardState.challengeExpansionStatus = evidenceBoardState.challengeExpansionRecommendations.length
+                ? 'Challenge recommendations are ready. Review them first, then add only the papers you want.'
+                : 'No new challenge recommendations cleared the one-hop screening for this seed paper.';
+        } catch (error) {
+            if (requestId !== evidenceBoardState.challengeExpansionRequestId) return;
+            evidenceBoardState.challengeExpansionError = error.message || 'Challenge expansion failed.';
+            evidenceBoardState.challengeExpansionStatus = '';
+        } finally {
+            if (requestId === evidenceBoardState.challengeExpansionRequestId) {
+                evidenceBoardState.challengeExpansionLoading = false;
+                renderEvidenceBoardSection();
+            }
+        }
+    };
+
+    window.closeChallengeExpansion = () => {
+        evidenceBoardState.challengeExpansionOpen = false;
+        evidenceBoardState.challengeExpansionLoading = false;
+        evidenceBoardState.challengeExpansionStatus = '';
+        evidenceBoardState.challengeExpansionError = '';
+        renderEvidenceBoardSection();
+    };
+
+    window.handleChallengeExpansionOverlayClick = event => {
+        if (event?.target?.id === 'challenge-expansion-modal') {
+            closeChallengeExpansion();
+        }
+    };
+
+    window.toggleChallengeExpansionPaper = (encodedKey, checked) => {
+        const key = decodeURIComponent(encodedKey || '');
+        const next = new Set(evidenceBoardState.challengeExpansionSelections || []);
+        if (checked) next.add(key);
+        else next.delete(key);
+        evidenceBoardState.challengeExpansionSelections = next;
+        renderChallengeExpansionModal();
+    };
+
+    window.toggleAllChallengeExpansionPapers = checked => {
+        const recommendations = evidenceBoardState.challengeExpansionRecommendations || [];
+        evidenceBoardState.challengeExpansionSelections = checked
+            ? new Set(recommendations.map(getLiteratureWatchRecommendationKey))
+            : new Set();
+        renderChallengeExpansionModal();
+    };
+
+    window.addSelectedChallengeExpansionPapers = async () => {
+        const recommendations = evidenceBoardState.challengeExpansionRecommendations || [];
+        if (!recommendations.length || !evidenceBoardState.challengeExpansionSelections?.size) return;
+        const selectedPapers = recommendations
+            .filter(paper => evidenceBoardState.challengeExpansionSelections.has(getLiteratureWatchRecommendationKey(paper)))
+            .map(paper => createImportedPaperRecord({
+                ...paper,
+                import_source: 'citation_import'
+            }, 'citation_import'));
+        if (!selectedPapers.length) return;
+
+        evidenceBoardState.challengeExpansionLoading = true;
+        evidenceBoardState.challengeExpansionError = '';
+        evidenceBoardState.challengeExpansionStatus = `Adding ${selectedPapers.length} challenge recommendation(s) to StarMap. Similarity will refresh in the background.`;
+        renderChallengeExpansionModal();
+
+        try {
+            const result = await mergeImportedPapersIntoProject(selectedPapers, 'Challenge expansion', {
+                deferSimilarity: true,
+                partialWorkspaceRefresh: true
+            });
+            const selectedKeys = new Set(selectedPapers.map(getLiteratureWatchRecommendationKey));
+            evidenceBoardState.challengeExpansionRecommendations = recommendations.filter(
+                paper => !selectedKeys.has(getLiteratureWatchRecommendationKey(paper))
+            );
+            evidenceBoardState.challengeExpansionSelections = new Set();
+            evidenceBoardState.challengeExpansionStatus = `Added ${result.imported} new paper(s) and updated ${result.updated} existing paper(s). Similarity scoring will finish in the background.`;
+            evidenceBoardState.challengeExpansionSourceSummary = {
+                ...(evidenceBoardState.challengeExpansionSourceSummary || {}),
+                returned_count: evidenceBoardState.challengeExpansionRecommendations.length
+            };
+        } catch (error) {
+            evidenceBoardState.challengeExpansionError = error.message || 'Could not add selected challenge papers to StarMap.';
+        } finally {
+            evidenceBoardState.challengeExpansionLoading = false;
+            renderEvidenceBoardSection();
+        }
     };
 
     window.toggleEvidenceColumn = stance => {
@@ -7010,11 +7335,13 @@ Rules:
 
     function getWorkspaceFilterThemeResult(project = currentProject) {
         if (!project?.id) return null;
-        if (currentThemeClusterResult?.projectId === project.id && currentThemeClusterResult?.clusters?.length) {
-            return currentThemeClusterResult;
-        }
-        const cacheContext = getThemeClusterCacheContext(project, THEME_CLUSTER_TOP_PAPER_LIMIT);
+        const cacheContext = getThemeClusterCacheContext(project, THEME_CLUSTER_TOP_PAPER_LIMIT, getThemeClusterAssignmentLimit());
         return getReusableThemeClusterResult(project, cacheContext);
+    }
+
+    function getWorkspaceFilterCitationResult(project = currentProject) {
+        if (!project?.id) return null;
+        return getReusableCitationClusterResult(project);
     }
 
     function getWorkspaceFilterOptions(filterType, papers = currentProject?.top_papers || []) {
@@ -7066,6 +7393,14 @@ Rules:
                 label: cluster.label || `Theme ${index + 1}`
             }));
         }
+        if (filterType === 'citation_cluster') {
+            const clusterResult = getWorkspaceFilterCitationResult();
+            if (!clusterResult?.clusters?.length) return [];
+            return clusterResult.clusters.map((cluster, index) => ({
+                value: String(cluster.id || `CC${index + 1}`),
+                label: cluster.label || `Citation Cluster ${index + 1}`
+            }));
+        }
         return [];
     }
 
@@ -7085,7 +7420,8 @@ Rules:
             year: 'Year',
             citations: 'Citations',
             import_source: 'Source',
-            theme_cluster: 'Theme'
+            theme_cluster: 'Theme',
+            citation_cluster: 'Citation'
         };
         noteEl.innerText = `${labels[workspaceFilterState.type] || 'Filter'}: ${option?.label || workspaceFilterState.value}`;
         noteEl.classList.remove('hidden');
@@ -7105,7 +7441,14 @@ Rules:
             return;
         }
         if (type === 'theme_cluster' && !options.length) {
-            valueEl.innerHTML = '<option value="">Run Auto Cluster Themes First</option>';
+            valueEl.innerHTML = '<option value="">Run Semantic Cluster First</option>';
+            valueEl.value = '';
+            valueEl.disabled = true;
+            updateWorkspaceFilterNote();
+            return;
+        }
+        if (type === 'citation_cluster' && !options.length) {
+            valueEl.innerHTML = '<option value="">Run Citation Cluster First</option>';
             valueEl.value = '';
             valueEl.disabled = true;
             updateWorkspaceFilterNote();
@@ -7172,6 +7515,17 @@ Rules:
             if (!cluster) return [];
             const keys = new Set((cluster.papers || []).map(getWorkspacePaperFilterKey).filter(Boolean));
             return papers.filter(paper => keys.has(getWorkspacePaperFilterKey(paper)));
+        }
+        if (type === 'citation_cluster') {
+            const normalizedValue = String(value || '').trim();
+            if (!normalizedValue) return papers;
+            const clusterResult = getWorkspaceFilterCitationResult();
+            const cluster = (clusterResult?.clusters || []).find(item => String(item?.id || '').trim() === normalizedValue);
+            if (cluster?.papers?.length) {
+                const keys = new Set((cluster.papers || []).map(getWorkspacePaperFilterKey).filter(Boolean));
+                return papers.filter(paper => keys.has(getWorkspacePaperFilterKey(paper)));
+            }
+            return papers.filter(paper => String(paper?.citation_cluster_id || '').trim() === normalizedValue);
         }
         return papers;
     }
@@ -7437,6 +7791,7 @@ Return ONLY a JSON object matching this exact schema:
         setProjectFwciWeightTier(settings.fwci_weight_tier);
         updateFwciSettingsUi();
         updateSimilarityRefreshUi();
+        updateClearAllPapersButtonVisibility();
         document.getElementById('project-settings-modal').classList.remove('hidden');
     };
 
@@ -9428,10 +9783,43 @@ Return ONLY a JSON object matching this exact schema:
         return 5;
     }
 
-    function getThemeClusterDisplayPapers(cluster) {
-        const papers = cluster?.representative_papers || cluster?.papers || [];
+    function getThemeClusterDisplayPapers(cluster, clusterResult = window.themeClusterUiState?.clusterResult) {
+        const isCitationMode = isCitationClusterMode(clusterResult);
+        const papers = isCitationMode
+            ? (cluster?.papers || [])
+            : (cluster?.representative_papers || cluster?.papers || []);
         if (!papers.length) return [];
+        if (isCitationMode) {
+            return [...papers].sort((a, b) => {
+                const indegreeDiff = Number(b?.citation_cluster_indegree || 0) - Number(a?.citation_cluster_indegree || 0);
+                if (indegreeDiff !== 0) return indegreeDiff;
+                const coreRankA = Number.isFinite(Number(a?.citation_cluster_core_rank)) ? Number(a.citation_cluster_core_rank) : Infinity;
+                const coreRankB = Number.isFinite(Number(b?.citation_cluster_core_rank)) ? Number(b.citation_cluster_core_rank) : Infinity;
+                if (coreRankA !== coreRankB) return coreRankA - coreRankB;
+                return Number(b?.similarity || 0) - Number(a?.similarity || 0);
+            });
+        }
         return papers.slice(0, Math.min(papers.length, THEME_CLUSTER_MAX_DISPLAY_PAPERS));
+    }
+
+    function getThemeClusterPaperExpansionStage(clusterIndex) {
+        return String(window.themeClusterUiState?.paperListExpansionStage?.[clusterIndex] || 'initial');
+    }
+
+    function getThemeClusterVisiblePaperCount(clusterIndex, totalCount) {
+        const stage = getThemeClusterPaperExpansionStage(clusterIndex);
+        if (stage === 'all') return totalCount;
+        if (stage === 'more') return Math.min(totalCount, THEME_CLUSTER_SECONDARY_VISIBLE_PAPERS);
+        return Math.min(totalCount, THEME_CLUSTER_INITIAL_VISIBLE_PAPERS);
+    }
+
+    function getThemeClusterPaperToggleLabel(clusterIndex, totalCount) {
+        const stage = getThemeClusterPaperExpansionStage(clusterIndex);
+        const visibleCount = getThemeClusterVisiblePaperCount(clusterIndex, totalCount);
+        if (totalCount <= THEME_CLUSTER_INITIAL_VISIBLE_PAPERS) return '';
+        if (stage === 'all') return 'Show Less';
+        if (stage === 'more') return 'Show All';
+        return `See ${Math.min(5, totalCount - visibleCount)} More`;
     }
 
     function assignVectorsToCentroidsWithScores(vectors, centroids) {
@@ -9701,10 +10089,9 @@ Return ONLY a JSON object matching this exact schema:
     async function computeThemeClusters(project = currentProject, onProgress = null, cacheContext = null, options = {}) {
         const {
             preloadOnly = false,
-            applyLlmNaming = !preloadOnly,
-            seedResult = null
+            applyLlmNaming = !preloadOnly
         } = options;
-        const resolvedCacheContext = cacheContext || getThemeClusterCacheContext(project, THEME_CLUSTER_TOP_PAPER_LIMIT);
+        const resolvedCacheContext = cacheContext || getThemeClusterCacheContext(project, THEME_CLUSTER_TOP_PAPER_LIMIT, getThemeClusterAssignmentLimit());
         const seedPapers = resolvedCacheContext.papers;
         const assignmentPapers = resolvedCacheContext.assignmentPapers || seedPapers;
         if (seedPapers.length < 3) {
@@ -9716,177 +10103,43 @@ Return ONLY a JSON object matching this exact schema:
                 clusters: []
             };
         }
-
-        if (onProgress) await onProgress({ stage: 'loading-model', percent: 8, detail: 'Loading local embedding model...' });
-        const extractor = await getSimilarityExtractor();
-        const vectors = [];
-        const seedVectorMap = new Map();
-        let bestResult = seedResult?.bestResult || null;
-        const hasReusableSeed = !!(seedResult && seedResult.seedSignature === resolvedCacheContext.seedSignature && seedResult.bestResult?.centroids?.length);
-
-        if (!hasReusableSeed) {
-            for (let i = 0; i < seedPapers.length; i++) {
-                const vector = await getCachedThemeClusterVector(extractor, seedPapers[i]);
-                vectors.push(vector);
-                seedVectorMap.set(seedPapers[i].filename || `${i}`, vector);
-                if (onProgress) {
-                    const percent = 12 + ((i + 1) / seedPapers.length) * 30;
-                    await onProgress({
-                        stage: 'embedding',
-                        percent,
-                        detail: `Embedding ${i + 1}/${seedPapers.length}: ${(seedPapers[i].title || 'Untitled').slice(0, 70)}`
-                    });
-                }
-                if ((i + 1) % 5 === 0 || i === seedPapers.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                }
-            }
-            const maxClusterCount = Math.min(getThemeClusterCount(seedPapers.length), seedPapers.length);
-            const candidateCounts = THEME_CLUSTER_COUNT_OPTIONS.filter(count => count <= maxClusterCount);
-            let bestFallbackResult = null;
-            let candidateStep = 0;
-
-            for (const clusterCount of candidateCounts) {
-                for (let attempt = 0; attempt < THEME_CLUSTER_ATTEMPTS; attempt++) {
-                    candidateStep += 1;
-                    if (onProgress) {
-                        await onProgress({
-                            stage: 'clustering',
-                            percent: 52 + (candidateStep / (candidateCounts.length * THEME_CLUSTER_ATTEMPTS)) * 26,
-                            detail: `Testing ${clusterCount} themes, pass ${attempt + 1}/${THEME_CLUSTER_ATTEMPTS}...`
-                        });
-                    }
-
-                    let centroids = initializeKMeansPlusPlus(vectors, clusterCount);
-                    let assignments = assignVectorsToCentroids(vectors, centroids);
-
-                    for (let iteration = 0; iteration < 8; iteration++) {
-                        centroids = centroids.map((centroid, index) => {
-                            const members = vectors.filter((_, vectorIndex) => assignments[vectorIndex] === index);
-                            return members.length ? averageVectors(members) : centroid;
-                        });
-                        const nextAssignments = assignVectorsToCentroids(vectors, centroids);
-                        if (nextAssignments.every((value, index) => value === assignments[index])) break;
-                        assignments = nextAssignments;
-                    }
-
-                    const repairedLayout = rebalanceUndersizedClusters(vectors, assignments, centroids, THEME_CLUSTER_MIN_SIZE);
-                    assignments = repairedLayout.assignments;
-                    centroids = repairedLayout.centroids;
-
-                    const score = evaluateClusterAssignments(vectors, assignments, centroids);
-                    const clusterSizes = getClusterSizeList(assignments, clusterCount);
-                    const hasUndersizedCluster = seedPapers.length >= clusterCount * THEME_CLUSTER_MIN_SIZE
-                        && clusterSizes.some(size => size < THEME_CLUSTER_MIN_SIZE);
-
-                    if (!bestFallbackResult || score > bestFallbackResult.score) {
-                        bestFallbackResult = { clusterCount, assignments, centroids, score, clusterSizes };
-                    }
-
-                    if (!hasUndersizedCluster && (!bestResult || score > bestResult.score)) {
-                        bestResult = { clusterCount, assignments, centroids, score, clusterSizes };
-                    }
-
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                }
-            }
-
-            if (!bestResult) {
-                bestResult = bestFallbackResult;
-            }
-        }
-
-        if (hasReusableSeed) {
-            seedPapers.forEach((paper, index) => {
-                seedVectorMap.set(paper.filename || `${index}`, seedResult.seedVectors?.[index] || null);
+        if (onProgress) {
+            await onProgress({
+                stage: 'prepare',
+                percent: 6,
+                detail: `Preparing backend semantic clustering for top ${resolvedCacheContext.assignmentLimit} papers...`
             });
         }
-
-        if (!bestResult) {
-            return { projectId: project?.id, paperCount: seedPapers.length, assignedPaperCount: assignmentPapers.length, clusters: [] };
+        const startRes = await fetch(`${API_BASE}/papers/semantic-cluster/jobs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                project_id: Number(project?.id || 0),
+                target_title: project?.target_title || '',
+                target_abstract: project?.target_abstract || '',
+                target_current_content: project?.target_current_content || '',
+                papers: project?.top_papers || [],
+                seed_limit: THEME_CLUSTER_TOP_PAPER_LIMIT,
+                assignment_limit: resolvedCacheContext.assignmentLimit
+            })
+        });
+        const startData = await startRes.json();
+        if (!startRes.ok) {
+            throw new Error(startData.detail || 'Failed to start semantic clustering.');
         }
-
-        if (preloadOnly) {
-            return {
-                projectId: project?.id,
-                seedSignature: resolvedCacheContext.seedSignature,
-                signature: resolvedCacheContext.seedSignature,
-                generatedAt: new Date().toISOString(),
-                paperCount: seedPapers.length,
-                assignedPaperCount: seedPapers.length,
-                clusterQuality: bestResult?.score || 0,
-                bestResult,
-                seedVectors: seedPapers.map((paper, index) => seedVectorMap.get(paper.filename || `${index}`))
-            };
-        }
-
-        if (onProgress) await onProgress({ stage: 'assignment', percent: 84, detail: 'Assigning all project papers into the discovered themes...' });
-
-        const targetVectors = await getCachedProjectSimilarityVectors(project, extractor);
-        const themeTargetVectorParts = [targetVectors?.title, targetVectors?.abstract, targetVectors?.currentContent].filter(Boolean);
-        const themeTargetVector = themeTargetVectorParts.length ? averageVectors(themeTargetVectorParts) : null;
-
-        const assignmentVectors = [];
-        for (let i = 0; i < assignmentPapers.length; i++) {
-            const cacheKey = assignmentPapers[i].filename || `${i}`;
-            let vector = seedVectorMap.get(cacheKey);
-            if (!vector) {
-                vector = await getCachedThemeClusterVector(extractor, assignmentPapers[i]);
-            }
-            assignmentVectors.push(vector);
-            if (onProgress && assignmentPapers.length > seedPapers.length) {
-                const percent = 84 + ((i + 1) / assignmentPapers.length) * 8;
-                await onProgress({
-                    stage: 'assignment',
-                    percent,
-                    detail: `Assigning ${i + 1}/${assignmentPapers.length}: ${(assignmentPapers[i].title || 'Untitled').slice(0, 70)}`
-                });
-            }
-            if ((i + 1) % 10 === 0 || i === assignmentPapers.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 0));
-            }
-        }
-
-        const assignmentResults = assignVectorsToCentroidsWithScores(assignmentVectors, bestResult.centroids);
-        const clusters = bestResult.centroids.map((_, index) => {
-            const assigned = assignmentPapers.map((paper, paperIndex) => ({
-                ...paper,
-                cluster_similarity: assignmentResults[paperIndex]?.score || 0
-            })).filter((_, paperIndex) => assignmentResults[paperIndex]?.clusterIndex === index)
-                .sort((a, b) => {
-                    const diff = Number(b.cluster_similarity || 0) - Number(a.cluster_similarity || 0);
-                    if (diff !== 0) return diff;
-                    return Number(b.similarity || 0) - Number(a.similarity || 0);
-                });
-            return {
-                index,
-                target_relevance: themeTargetVector ? Math.max(0, cosineSimilarity(themeTargetVector, bestResult.centroids[index])) : 0,
-                papers: assigned,
-                representative_papers: assigned.slice(0, THEME_CLUSTER_MAX_DISPLAY_PAPERS)
-            };
-        }).filter(cluster => cluster.papers.length > 0)
-            .sort((a, b) => b.papers.length - a.papers.length);
-
-        if (onProgress) await onProgress({ stage: 'labeling', percent: 93, detail: 'Extracting distinctive theme labels...' });
-
+        const result = await pollSemanticClusterJobForThemes(startData.job_id, onProgress);
         const localClusterResult = {
+            ...result,
             projectId: project?.id,
             seedSignature: resolvedCacheContext.seedSignature,
             signature: resolvedCacheContext.fullSignature,
-            generatedAt: new Date().toISOString(),
-            paperCount: seedPapers.length,
-            assignedPaperCount: assignmentPapers.length,
-            clusterQuality: bestResult?.score || 0,
-            clusters: buildThemeClusterPresentation(clusters, assignmentPapers),
+            generatedAt: result?.generatedAt || new Date().toISOString(),
+            paperCount: Number(result?.paperCount || seedPapers.length),
+            assignedPaperCount: Number(result?.assignedPaperCount || assignmentPapers.length),
             usedLlmThemeNaming: false
         };
-
-        if (!applyLlmNaming) {
-            return localClusterResult;
-        }
-
+        if (!applyLlmNaming) return localClusterResult;
         if (onProgress) await onProgress({ stage: 'labeling-llm', percent: 91, detail: 'Refining theme labels...' });
-
         return applyLlmThemeNaming(localClusterResult, project);
     }
 
@@ -10253,6 +10506,7 @@ About 500 words of literature review draft in markdown.`;
             clusterMode,
             selectedClusterIndex: window.themeClusterUiState?.selectedClusterIndex ?? null,
             expandedClusters: window.themeClusterUiState?.expandedClusters || {},
+            paperListExpansionStage: window.themeClusterUiState?.paperListExpansionStage || {},
             chartScale: window.themeClusterUiState?.chartScale || 1,
             citationTopologyMode: window.themeClusterUiState?.citationTopologyMode || 'all',
             citationTopologySelectedKey: window.themeClusterUiState?.citationTopologySelectedKey || '',
@@ -10269,7 +10523,7 @@ About 500 words of literature review draft in markdown.`;
         const activeCluster = clusterResult.clusters[activeClusterIndex];
         const clusterMeta = getClusterModeMeta(clusterResult);
         const selectedReviewPapers = clusterResult.clusters.flatMap((cluster, clusterIndex) =>
-            getThemeClusterDisplayPapers(cluster).filter(
+            getThemeClusterDisplayPapers(cluster, clusterResult).filter(
                 paper => window.themeClusterUiState.selectedReviewPaperKeys[getThemeClusterPaperSelectionKey(paper, clusterIndex)]
             )
         );
@@ -10320,19 +10574,21 @@ About 500 words of literature review draft in markdown.`;
                             </div>
                         </div>
                         <div style="border:1px solid ${hexToRgba(getThemeClusterPaletteColor(activeClusterIndex), 0.38)}; border-radius:22px; padding:18px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); box-shadow:0 12px 28px ${hexToRgba(getThemeClusterPaletteColor(activeClusterIndex), 0.12)};">
-                            <div style="display:flex; justify-content:space-between; gap:12px; align-items:start; margin-bottom:10px;">
-                                <div>
-                                    <div style="display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; background:${hexToRgba(getThemeClusterPaletteColor(activeClusterIndex), 0.12)}; color:${getThemeClusterPaletteColor(activeClusterIndex)}; font-size:11px; font-weight:800; margin-bottom:10px;">${clusterMeta.focusBadge} ${activeClusterIndex + 1}</div>
-                                    <div style="font-size:28px; line-height:1.02; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px;">${escapeHtml(activeCluster.label)}</div>
-                                    <div style="font-size:13px; line-height:1.55; color:#475569;">${escapeHtml(activeCluster.summary)}</div>
+                            <div style="display:grid; gap:12px; margin-bottom:10px;">
+                                <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap;">
+                                    <div style="display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; background:${hexToRgba(getThemeClusterPaletteColor(activeClusterIndex), 0.12)}; color:${getThemeClusterPaletteColor(activeClusterIndex)}; font-size:11px; font-weight:800;">${clusterMeta.focusBadge} ${activeClusterIndex + 1}</div>
+                                    <div style="display:grid; gap:8px; justify-items:end; flex:0 0 auto; margin-left:auto;">
+                                        ${clusterMode === 'citation'
+                                            ? `<div style="padding:8px 12px; border-radius:12px; background:#f8fafc; color:#475569; font-size:12px; font-weight:700; white-space:nowrap;">Local citation map synced to this cluster</div>`
+                                            : `<button class="btn btn-outline" style="padding:8px 12px; font-size:12px; white-space:nowrap;" onclick="focusThemeCluster(${activeClusterIndex})">${window.themeClusterUiState.selectedClusterIndex === activeClusterIndex ? clusterMeta.unfocusAction : clusterMeta.focusAction}</button>`}
+                                        ${clusterNeedsLlmOverview(activeCluster, clusterResult)
+                                            ? `<button id="citation-cluster-reoverview-btn" class="btn btn-outline" style="padding:8px 12px; font-size:12px; white-space:nowrap;" onclick="rerunCitationClusterOverview()">LLM Re-overview</button>`
+                                            : ''}
+                                    </div>
                                 </div>
-                                <div style="display:grid; gap:8px; justify-items:end;">
-                                    ${clusterMode === 'citation'
-                                        ? `<div style="padding:8px 12px; border-radius:12px; background:#f8fafc; color:#475569; font-size:12px; font-weight:700; white-space:nowrap;">Local citation map synced to this cluster</div>`
-                                        : `<button class="btn btn-outline" style="padding:8px 12px; font-size:12px; white-space:nowrap;" onclick="focusThemeCluster(${activeClusterIndex})">${window.themeClusterUiState.selectedClusterIndex === activeClusterIndex ? clusterMeta.unfocusAction : clusterMeta.focusAction}</button>`}
-                                    ${clusterNeedsLlmOverview(activeCluster, clusterResult)
-                                        ? `<button id="citation-cluster-reoverview-btn" class="btn btn-outline" style="padding:8px 12px; font-size:12px; white-space:nowrap;" onclick="rerunCitationClusterOverview()">LLM Re-overview</button>`
-                                        : ''}
+                                <div style="min-width:0;">
+                                    <div style="font-size:28px; line-height:1.02; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px; max-width:none;">${escapeHtml(activeCluster.label)}</div>
+                                    <div style="font-size:13px; line-height:1.7; color:#475569; max-width:none;">${escapeHtml(activeCluster.summary)}</div>
                                 </div>
                             </div>
                             <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
@@ -10341,15 +10597,7 @@ About 500 words of literature review draft in markdown.`;
                             </div>
                             <div style="font-size:12px; color:var(--text-muted); font-weight:800; letter-spacing:0.02em; text-transform:uppercase; margin-bottom:6px;">${clusterMeta.paperSectionTitle}</div>
                             <div style="font-size:12px; color:#64748b; margin-bottom:10px;">${clusterMeta.paperSectionHelp}</div>
-                            <div style="display:grid; gap:8px;">
-                                ${getThemeClusterDisplayPapers(activeCluster).slice(0, 5).map((paper, paperIndex) => renderThemeClusterPaperListItem(paper, activeClusterIndex, paperIndex)).join('')}
-                            </div>
-                            ${getThemeClusterDisplayPapers(activeCluster).slice(5, 10).length ? `
-                                <div id="theme-cluster-extra-${activeClusterIndex}" style="display:${window.themeClusterUiState.expandedClusters[activeClusterIndex] ? 'grid' : 'none'}; gap:8px; margin-top:8px;">
-                                    ${getThemeClusterDisplayPapers(activeCluster).slice(5, 10).map((paper, paperIndex) => renderThemeClusterPaperListItem(paper, activeClusterIndex, paperIndex + 5)).join('')}
-                                </div>
-                                <button class="btn btn-outline" style="margin-top:10px; width:100%; padding:10px 12px;" onclick="toggleThemeClusterPaperList(${activeClusterIndex})">${window.themeClusterUiState.expandedClusters[activeClusterIndex] ? 'Show Less' : 'See 5 More'}</button>
-                            ` : ''}
+                            ${renderThemeClusterPaperListSection(activeCluster, activeClusterIndex, clusterResult)}
                         </div>
                     ` : '<div class="mini-meta-card">No theme clusters were generated.</div>'}
                 </div>
@@ -10391,7 +10639,9 @@ About 500 words of literature review draft in markdown.`;
             ? `Cited by ${formatFwciValue(paper.citation_cluster_indegree || 0)} in cluster`
             : Number(paper.cluster_similarity || 0).toFixed(3);
         const rankLabel = isCitationMode
-            ? `Core rank ${paperIndex + 1} in Citation Cluster ${clusterIndex + 1}`
+            ? (paper?.citation_cluster_is_core && Number.isFinite(Number(paper?.citation_cluster_core_rank))
+                ? `Core rank ${paper.citation_cluster_core_rank} in Citation Cluster ${clusterIndex + 1}`
+                : `Cited rank ${paperIndex + 1} in Citation Cluster ${clusterIndex + 1}`)
             : `Rank ${paperIndex + 1} in Theme ${clusterIndex + 1}`;
         return `
             <div style="display:flex; align-items:stretch; gap:10px;">
@@ -10403,6 +10653,27 @@ About 500 words of literature review draft in markdown.`;
                     </div>
                     <div style="flex:0 0 auto; padding:5px 8px; border-radius:999px; background:rgba(79,70,229,0.08); color:#4338ca; font-size:11px; font-weight:800;">${metricLabel}</div>
                 </button>
+            </div>
+        `;
+    }
+
+    function renderThemeClusterPaperListSection(cluster, clusterIndex, clusterResult = window.themeClusterUiState?.clusterResult) {
+        const displayPapers = getThemeClusterDisplayPapers(cluster, clusterResult);
+        const visibleCount = getThemeClusterVisiblePaperCount(clusterIndex, displayPapers.length);
+        const toggleLabel = getThemeClusterPaperToggleLabel(clusterIndex, displayPapers.length);
+        const initialPapers = displayPapers.slice(0, Math.min(THEME_CLUSTER_INITIAL_VISIBLE_PAPERS, visibleCount));
+        const extraPapers = displayPapers.slice(THEME_CLUSTER_INITIAL_VISIBLE_PAPERS, visibleCount);
+        return `
+            <div id="theme-cluster-paper-section-${clusterIndex}">
+                <div style="display:grid; gap:8px;">
+                    ${initialPapers.map((paper, paperIndex) => renderThemeClusterPaperListItem(paper, clusterIndex, paperIndex)).join('')}
+                </div>
+                ${extraPapers.length ? `
+                    <div id="theme-cluster-extra-${clusterIndex}" style="display:grid; gap:8px; margin-top:8px;">
+                        ${extraPapers.map((paper, paperIndex) => renderThemeClusterPaperListItem(paper, clusterIndex, paperIndex + THEME_CLUSTER_INITIAL_VISIBLE_PAPERS)).join('')}
+                    </div>
+                ` : ''}
+                ${toggleLabel ? `<button class="btn btn-outline" style="margin-top:10px; width:100%; padding:10px 12px;" onclick="toggleThemeClusterPaperList(${clusterIndex})">${toggleLabel}</button>` : ''}
             </div>
         `;
     }
@@ -10980,12 +11251,22 @@ About 500 words of literature review draft in markdown.`;
 
     window.toggleThemeClusterPaperList = clusterIndex => {
         window.themeClusterUiState = window.themeClusterUiState || {};
-        const expanded = !!window.themeClusterUiState.expandedClusters?.[clusterIndex];
-        window.themeClusterUiState.expandedClusters = {
-            ...(window.themeClusterUiState.expandedClusters || {}),
-            [clusterIndex]: !expanded
+        const cluster = window.themeClusterUiState?.clusterResult?.clusters?.[clusterIndex];
+        const totalCount = getThemeClusterDisplayPapers(cluster, window.themeClusterUiState?.clusterResult).length;
+        const currentStage = getThemeClusterPaperExpansionStage(clusterIndex);
+        const nextStage = currentStage === 'initial'
+            ? (totalCount > THEME_CLUSTER_SECONDARY_VISIBLE_PAPERS ? 'more' : 'all')
+            : (currentStage === 'more' ? 'all' : 'initial');
+        window.themeClusterUiState.paperListExpansionStage = {
+            ...(window.themeClusterUiState.paperListExpansionStage || {}),
+            [clusterIndex]: nextStage
         };
         window.themeClusterUiState.activeClusterIndex = clusterIndex;
+        const sectionEl = document.getElementById(`theme-cluster-paper-section-${clusterIndex}`);
+        if (sectionEl && cluster) {
+            sectionEl.outerHTML = renderThemeClusterPaperListSection(cluster, clusterIndex, window.themeClusterUiState.clusterResult);
+            return;
+        }
         renderThemeClusterModal(window.themeClusterUiState.clusterResult);
     };
 
@@ -11251,6 +11532,7 @@ About 500 words of literature review draft in markdown.`;
             selectedClusterIndex: null,
             activeClusterIndex: 0,
             expandedClusters: {},
+            paperListExpansionStage: {},
             reviewSelectionMode: false,
             selectedReviewPaperKeys: {}
         };
@@ -11258,6 +11540,7 @@ About 500 words of literature review draft in markdown.`;
         if (normalizedMode === 'citation') {
             const reusableCitation = !force ? getReusableCitationClusterResult(currentProject) : null;
             if (reusableCitation) {
+                populateWorkspaceFilterValueOptions();
                 if (shouldApplyClusterModalResult()) {
                     renderThemeClusterModal(reusableCitation);
                 }
@@ -11287,6 +11570,7 @@ About 500 words of literature review draft in markdown.`;
                     return;
                 }
                 setThemeClusterProgress(97, 'Rendering citation communities...');
+                populateWorkspaceFilterValueOptions();
                 renderThemeClusterModal(currentCitationClusterResult);
             } catch (error) {
                 console.error('Citation clustering failed:', error);
@@ -11296,7 +11580,7 @@ About 500 words of literature review draft in markdown.`;
             return;
         }
 
-        const cacheContext = getThemeClusterCacheContext(currentProject, THEME_CLUSTER_TOP_PAPER_LIMIT);
+        const cacheContext = getThemeClusterCacheContext(currentProject, THEME_CLUSTER_TOP_PAPER_LIMIT, getThemeClusterAssignmentLimit());
         const reusableResult = !force ? getReusableThemeClusterResult(currentProject, cacheContext) : null;
         if (reusableResult) {
             markThemeClusterCacheReady(true);
@@ -11306,7 +11590,10 @@ About 500 words of literature review draft in markdown.`;
             }
             return;
         }
-        const reusableSeed = !force ? getReusableThemeClusterSeedResult(currentProject, cacheContext) : null;
+
+        if (cacheContext.assignmentLimit === 500) {
+            alert('Reminder: Semantic Cluster at Visualization Density 500 will use noticeably more compute and may take longer to finish. If you want a lighter run, switch Visualization Density to Top 300 or Top 150 first.');
+        }
 
         openReviewModalContent(
             'Theme Clusters',
@@ -11314,18 +11601,18 @@ About 500 words of literature review draft in markdown.`;
             `${getClusterModeToggleHtml(normalizedMode)}<div style="margin-top:14px;">${renderThemeClusterProgressShell()}</div>`,
             { width: 'min(1380px, 96vw)', maxWidth: '96vw', maxHeight: '92vh' }
         );
-        setThemeClusterProgress(3, reusableSeed ? 'Using preloaded semantic seed clusters...' : 'Preparing candidate papers...');
+        setThemeClusterProgress(3, `Preparing semantic clustering for the top ${cacheContext.assignmentLimit} papers selected by Visualization Density...`);
 
         try {
             currentThemeClusterResult = await computeThemeClusters(currentProject, async progress => {
                 if (!shouldApplyClusterModalResult()) return;
                 setThemeClusterProgress(progress.percent, progress.detail, progress.stage === 'clustering'
-                    ? 'Testing multiple cluster layouts to improve separation.'
+                    ? 'Running backend semantic clustering. A second pass is only added when quality is too weak.'
                     : (progress.stage === 'labeling-llm'
                         ? 'Refining labels only. Cluster memberships will stay unchanged.'
-                        : 'Building a differentiated semantic map.'));
+                        : `Semantic assignment is limited to the top ${cacheContext.assignmentLimit} papers from Visualization Density.`));
                 await new Promise(resolve => setTimeout(resolve, 0));
-            }, cacheContext, { preloadOnly: false, applyLlmNaming: true, seedResult: reusableSeed });
+            }, cacheContext, { preloadOnly: false, applyLlmNaming: true });
             markThemeClusterCacheReady(true);
             populateWorkspaceFilterValueOptions();
             if (!shouldApplyClusterModalResult()) {
@@ -12115,6 +12402,7 @@ About 500 words of literature review draft in markdown.`;
         if (currentProject?.id) {
             saveProjectSearchSettings({ chart_render_limit: normalizedLimit }, currentProject.id);
         }
+        refreshThemeClusterCacheIndicator(currentProject);
         setChartRenderLimitButtons();
         updateChartDensityWarning(normalizedLimit);
         updateChartGestureHint(normalizedLimit);
@@ -12140,6 +12428,7 @@ About 500 words of literature review draft in markdown.`;
             if (currentProject?.id) {
                 saveProjectSearchSettings({ chart_render_limit: requiredLimit }, currentProject.id);
             }
+            refreshThemeClusterCacheIndicator(currentProject);
             setChartRenderLimitButtons();
         }
         if (currentChartMode !== 'network') {
@@ -12311,6 +12600,7 @@ About 500 words of literature review draft in markdown.`;
         renderMarkedNodesPanel();
         renderEvidenceBoardSection();
         renderLiteratureWatchModal();
+        updateClearAllPapersButtonVisibility();
         renderWorkspacePaperView();
 
         if (deferChart) {
@@ -12325,10 +12615,16 @@ About 500 words of literature review draft in markdown.`;
         updateWorkspacePanels({ resetSearchAndFilter: true, deferChart: false });
     }
 
+    function updateClearAllPapersButtonVisibility() {
+        const clearBtn = document.getElementById('btn-clear-papers');
+        if (!clearBtn) return;
+        clearBtn.classList.toggle('hidden', !(currentProject?.top_papers?.length));
+    }
+
     function renderWorkspaceList(papers, isSearching = false) {
         const c = document.getElementById('ranking-list'); 
         const loadMoreBtn = document.getElementById('load-more-btn'); 
-        const clearBtn = document.getElementById('btn-clear-papers');
+        updateClearAllPapersButtonVisibility();
 
         if (!papers || papers.length === 0) { 
             const query = (workspaceSearchState.query || '').trim();
@@ -12352,12 +12648,8 @@ About 500 words of literature review draft in markdown.`;
                 c.innerHTML = '<div style="font-size:12px; color:#94a3b8; padding:10px;">No papers found.</div>';
             }
             loadMoreBtn.classList.add('hidden'); 
-            if (!isSearching && clearBtn) clearBtn.classList.add('hidden');
             return; 
         }
-
-        if (!isSearching && clearBtn) clearBtn.classList.remove('hidden');
-        if (isSearching && clearBtn) clearBtn.classList.add('hidden'); 
         
         const visiblePapers = isSearching ? papers : papers.slice(0, visiblePaperCount);
         
