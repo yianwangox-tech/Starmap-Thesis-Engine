@@ -830,6 +830,39 @@
             overflow: hidden;
         }
 
+        .evidence-secondary-toggle {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 14px 12px;
+            border: none;
+            background: #f8fafc;
+            border-bottom: 1px solid rgba(148,163,184,0.12);
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.16s ease;
+        }
+
+        .evidence-secondary-toggle:hover {
+            background: #f1f5f9;
+        }
+
+        .evidence-secondary-toggle-meta {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            flex: 0 0 auto;
+        }
+
+        .evidence-secondary-toggle-caret {
+            font-size: 14px;
+            font-weight: 900;
+            color: #475569;
+            line-height: 1;
+        }
+
         .evidence-secondary-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -1633,7 +1666,10 @@
                     <button id="btn-citation-all" class="mini-toggle" onclick="setCitationDisplayMode('all')">Show All</button>
                 </div>
 
-                <div style="position: absolute; top: 18px; right: 18px; z-index: 20;">
+                <div style="position: absolute; top: 18px; right: 18px; z-index: 20; display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+                    <button id="btn-return-chart-focus" class="btn btn-outline hidden" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px; color: #0f766e; border-color: #10b981; background: rgba(255,255,255,0.92); backdrop-filter: blur(3px);" onclick="returnToProjectTargetStarMap()">
+                        ↩ Back to Project Target
+                    </button>
                     <button id="btn-refresh-chart" class="btn btn-outline hidden" style="padding: 6px 12px; font-size: 12px; display: flex; align-items: center; gap: 6px; color: var(--primary); border-color: var(--primary); background: rgba(255,255,255,0.92); backdrop-filter: blur(3px);" onclick="forceRefreshChart()">
                         🔄 Refresh Chart
                     </button>
@@ -1715,6 +1751,24 @@
                     </div>
                 </div>
             </div>
+        </div>
+
+        <div class="workspace-title-row" style="margin-top:22px; align-items:flex-end;">
+            <div class="workspace-section-title">
+                <div>
+                    <div class="workspace-pill">Counter-Evidence Lab</div>
+                    <h3>Challenge Stardusts</h3>
+                    <div class="workspace-section-copy">Store up to five challenge-driven side networks. Each Stardust keeps its own seed paper, sub-target thesis, and imported paper queue outside the main StarMap until you decide what to pull in.</div>
+                </div>
+            </div>
+            <button id="workspace-section-toggle-stardust" class="workspace-section-toggle" type="button" onclick="toggleWorkspaceSection('stardust')" aria-expanded="true" data-collapsed="false">
+                <span id="workspace-section-toggle-icon-stardust">▾</span>
+                <span id="workspace-section-toggle-label-stardust">Collapse</span>
+            </button>
+        </div>
+
+        <div id="workspace-section-body-stardust" class="workspace-section-body">
+            <div id="challenge-stardust-section" class="panel" style="padding:20px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(247,249,255,0.97)); border-radius:24px; box-shadow:0 18px 40px rgba(15,23,42,0.06);"></div>
         </div>
 
         <div class="workspace-title-row" style="margin-top:22px; align-items:flex-end;">
@@ -2141,6 +2195,13 @@
     </div>
 </div>
 
+<div id="challenge-stardust-paper-modal" class="modal-overlay hidden" onclick="handleChallengeStardustPaperOverlayClick(event)">
+    <div class="modal-content" style="width:min(96vw, 1180px); max-width:min(96vw, 1180px); max-height:86vh;">
+        <button class="modal-close-x" onclick="closeChallengeStardustPaperModal()" aria-label="Close Challenge Stardust paper details">✕</button>
+        <div id="challenge-stardust-paper-body"></div>
+    </div>
+</div>
+
 <div id="change-password-modal" class="modal-overlay hidden">
     <div class="modal-content modal-content-small">
         <h3 style="margin-top:0; color: var(--primary);">Update Account Settings</h3>
@@ -2370,6 +2431,7 @@
     const DEFAULT_WORKSPACE_SECTION_COLLAPSE_STATE = {
         starmap: false,
         evidence: false,
+        stardust: false,
         watch: false
     };
     const WORKSPACE_SECTION_STORAGE_KEY = 'starmap:workspace-section-collapse';
@@ -2381,6 +2443,7 @@
             return {
                 starmap: !!parsed?.starmap,
                 evidence: !!parsed?.evidence,
+                stardust: !!parsed?.stardust,
                 watch: !!parsed?.watch
             };
         } catch {
@@ -2404,6 +2467,7 @@
         draftType: 'thesis_claim',
         draftSection: '',
         reasoningEvidenceId: null,
+        pendingSectionCollapsed: true,
         expandedColumns: {
             support: false,
             challenge: false,
@@ -2428,12 +2492,40 @@
         claimRequestId: 0,
         boardRequestId: 0
     };
+    let challengeStardustState = {
+        projectId: null,
+        items: [],
+        selectedId: null,
+        detail: null,
+        loadingList: false,
+        loadingDetail: false,
+        status: '',
+        error: '',
+        sourceFilter: 'all',
+        paperSelectionsByStardust: {},
+        paperListExpandedByStardust: {},
+        createModalOpen: false,
+        createLoading: false,
+        createSeedEvidenceId: null,
+        createSeedPaper: null,
+        createSeedItem: null,
+        createName: '',
+        createSubTargetThesis: '',
+        createReplaceStardustId: '',
+        createStatus: '',
+        createError: '',
+        listRequestId: 0,
+        detailRequestId: 0,
+        createRequestId: 0,
+        paperModalPaperId: null
+    };
     let myChart = null;
     let currentImportInProgress = false;
     let currentImportCancellationRequested = false;
     let visiblePaperCount = 10; 
     let currentChartMode = 'orbital'; 
     let currentChartRenderLimit = 500;
+    let currentStarMapFocusKey = '';
     let markedNodeOrbitalFocusKey = '';
     let markedNodeOrbitalPulseOn = false;
     let markedNodeOrbitalPulseTimer = null;
@@ -2771,9 +2863,7 @@
         const latestBatchPapers = latestBatchId
             ? sorted.filter(paper => paper.import_batch_id === latestBatchId)
             : sorted.filter(paper => Number(paper.import_batch_started_at || 0) === latestBatchStartedAt);
-
-        const highlighted = latestBatchPapers.length > 10 ? latestBatchPapers : sorted.slice(0, 10);
-        return new Set(highlighted.map(getImportVisualKey).filter(Boolean));
+        return new Set(latestBatchPapers.map(getImportVisualKey).filter(Boolean));
     }
 
     function isRainbowRecentImport(paper, highlightKeys = null) {
@@ -3048,12 +3138,13 @@
         return !!paper?.zotero_item_key && !!paper?.zotero_has_pdf_attachment && !isMeaningfulText(paper?.current_content || '');
     }
 
-    function getTargetPaperData(project) {
+    function getTargetPaperData(project, extra = {}) {
         return {
             title: project?.target_title || '',
             abstract: project?.target_abstract || '',
             current_content: project?.target_current_content || '',
-            isCenter: true
+            isCenter: true,
+            ...extra
         };
     }
 
@@ -3065,6 +3156,130 @@
             paper?.authors || '',
             includeNotes ? (paper?.notes || '') : ''
         ].join(' ').trim();
+    }
+
+    function getCurrentStarMapFocusPaper(project = currentProject) {
+        const focusKey = String(currentStarMapFocusKey || '').trim();
+        if (!focusKey || !project?.top_papers?.length) return null;
+        return project.top_papers.find(paper => getStablePaperGraphKey(paper) === focusKey) || null;
+    }
+
+    function hasFocusedStarMapForCurrentMode() {
+        return currentChartMode !== 'citation' && !!getCurrentStarMapFocusPaper();
+    }
+
+    function getChartNodeBaseColor(paperData) {
+        if (paperData?.chartFocusCenter) return '#4f46e5';
+        if (paperData?.isOriginalTargetCenter) return '#10b981';
+        if (paperData?.isCenter) return '#eab308';
+        return getPaperColor(paperData);
+    }
+
+    async function ensureNetworkEmbeddingModel(progressMessage = 'Initializing AI Embedding Engine...') {
+        if (!window.networkExtModel) {
+            setChartLoadingProgress(progressMessage, 12, 'Loading the embedding model for focused StarMap reconstruction');
+            await new Promise(resolve => setTimeout(resolve, 100));
+            window.networkExtModel = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+        }
+        return window.networkExtModel;
+    }
+
+    function cosineSimilarityVectors(a, b) {
+        if (!a || !b || !a.length || !b.length || a.length !== b.length) return 0;
+        let dot = 0;
+        let normA = 0;
+        let normB = 0;
+        for (let i = 0; i < a.length; i += 1) {
+            dot += a[i] * b[i];
+            normA += a[i] ** 2;
+            normB += b[i] ** 2;
+        }
+        if (!normA || !normB) return 0;
+        return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+    }
+
+    async function getNetworkTextVector(text, progressMessage = 'Embedding text for focused StarMap...') {
+        const model = await ensureNetworkEmbeddingModel(progressMessage);
+        const output = await model(text || ' ', { pooling: 'mean', normalize: true });
+        return Array.from(output.data || []);
+    }
+
+    async function ensurePaperNetworkVectors(papers = [], { startPercent = 18, endPercent = 70, loadingLabel = 'Preparing paper embeddings...' } = {}) {
+        const candidatePapers = (papers || []).filter(Boolean);
+        if (!candidatePapers.length) return false;
+        await ensureNetworkEmbeddingModel(loadingLabel);
+        let computedAny = false;
+        for (let i = 0; i < candidatePapers.length; i += 1) {
+            const paper = candidatePapers[i];
+            if (paper?.network_vec?.length) continue;
+            const progress = startPercent + ((i + 1) / candidatePapers.length) * Math.max(endPercent - startPercent, 1);
+            setChartLoadingProgress(loadingLabel, progress, `Embedding ${i + 1}/${candidatePapers.length} papers`);
+            try {
+                const safeText = buildPaperContentText(paper).substring(0, 800) || ' ';
+                paper.network_vec = await getNetworkTextVector(safeText, loadingLabel);
+                computedAny = true;
+            } catch {
+                paper.network_vec = new Array(384).fill(0.0001);
+            }
+        }
+        if (computedAny) {
+            setChartLoadingProgress('Saving embeddings...', Math.max(endPercent, 72), 'Persisting newly computed vectors to the project database');
+            await syncPapersToBackend();
+        }
+        return computedAny;
+    }
+
+    async function ensureProjectTargetNetworkVector(project = currentProject) {
+        if (!project) return [];
+        const targetText = buildPaperContentText(getTargetPaperData(project));
+        if (!targetText) return [];
+        if (project.__target_network_vec_text === targetText && Array.isArray(project.__target_network_vec) && project.__target_network_vec.length) {
+            return project.__target_network_vec;
+        }
+        setChartLoadingProgress('Embedding the original target thesis...', 76, 'Keeping the project target visible inside the focused StarMap');
+        project.__target_network_vec = await getNetworkTextVector(targetText, 'Embedding the original target thesis...');
+        project.__target_network_vec_text = targetText;
+        return project.__target_network_vec;
+    }
+
+    async function buildFocusedStarMapContext(allPapers = [], focalPaper) {
+        const normalizedFocusKey = getStablePaperGraphKey(focalPaper);
+        if (!normalizedFocusKey) return null;
+        const candidatePapers = (allPapers || []).filter(Boolean);
+        await ensurePaperNetworkVectors(candidatePapers, {
+            startPercent: 18,
+            endPercent: 68,
+            loadingLabel: 'Preparing embeddings for the focused StarMap...'
+        });
+        const targetVector = await ensureProjectTargetNetworkVector(currentProject);
+        const resolvedFocalPaper = candidatePapers.find(paper => getStablePaperGraphKey(paper) === normalizedFocusKey) || focalPaper;
+        const focalVector = resolvedFocalPaper?.network_vec || [];
+        const rankedPapers = candidatePapers
+            .filter(paper => getStablePaperGraphKey(paper) && getStablePaperGraphKey(paper) !== normalizedFocusKey)
+            .map(paper => ({
+                ...paper,
+                __focus_similarity: cosineSimilarityVectors(focalVector, paper.network_vec || [])
+            }))
+            .sort((a, b) => Number(b.__focus_similarity || 0) - Number(a.__focus_similarity || 0));
+        return {
+            focalPaper: resolvedFocalPaper,
+            focalKey: normalizedFocusKey,
+            rankedPapers,
+            originalTargetSimilarity: cosineSimilarityVectors(focalVector, targetVector)
+        };
+    }
+
+    function updateChartActionButtons() {
+        const refreshBtn = document.getElementById('btn-refresh-chart');
+        const returnBtn = document.getElementById('btn-return-chart-focus');
+        const showFocusedActions = hasFocusedStarMapForCurrentMode();
+        if (refreshBtn) {
+            const hasNewPapers = !!(currentProject?.top_papers && currentProject.top_papers.some(paper => paper.is_new));
+            refreshBtn.classList.toggle('hidden', !(showFocusedActions || hasNewPapers));
+        }
+        if (returnBtn) {
+            returnBtn.classList.toggle('hidden', !showFocusedActions);
+        }
     }
 
     function invalidateThemeClusterResult(projectId = currentProject?.id, reason = 'new imports') {
@@ -4134,6 +4349,9 @@ Rules:
                 marked_node_keys: Array.isArray(parsed.marked_node_keys)
                     ? parsed.marked_node_keys.map(item => String(item || '').trim()).filter(Boolean).slice(0, 18)
                     : [],
+                marked_node_entries: Array.isArray(parsed.marked_node_entries)
+                    ? parsed.marked_node_entries.map(item => normalizeMarkedNodeEntry(item)).filter(Boolean).slice(0, 18)
+                    : [],
                 marked_node_panel_collapsed: parsed.marked_node_panel_collapsed === true,
                 marked_node_panel_position: parsed.marked_node_panel_position && typeof parsed.marked_node_panel_position === 'object'
                     ? {
@@ -4149,7 +4367,7 @@ Rules:
                     : (Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, parsed.fwci_weight_tier) ? parsed.fwci_weight_tier : 'medium')
             };
         } catch {
-            return { use_background_precompute: true, use_llm_theme_naming: true, use_zotero_sync_preload: true, use_fwci_filter: false, literature_watch_discipline: '', literature_watch_disciplines: [], literature_watch_range: '3m', literature_watch_scholars: [], literature_watch_journals: [], marked_node_keys: [], marked_node_panel_collapsed: false, marked_node_panel_position: { x: 18, y: 18 }, chart_render_limit: 500, fwci_weight_tier: 'medium' };
+            return { use_background_precompute: true, use_llm_theme_naming: true, use_zotero_sync_preload: true, use_fwci_filter: false, literature_watch_discipline: '', literature_watch_disciplines: [], literature_watch_range: '3m', literature_watch_scholars: [], literature_watch_journals: [], marked_node_keys: [], marked_node_entries: [], marked_node_panel_collapsed: false, marked_node_panel_position: { x: 18, y: 18 }, chart_render_limit: 500, fwci_weight_tier: 'medium' };
         }
     }
 
@@ -4176,6 +4394,73 @@ Rules:
             .slice(0, 18);
         saveProjectSearchSettings({ marked_node_keys: nextKeys }, projectId);
         return nextKeys;
+    }
+
+    function normalizeMarkedNodeEntry(raw = {}) {
+        const key = String(raw?.key || raw?.selection_key || '').trim();
+        if (!key) return null;
+        const sourceType = String(raw?.source_type || '').trim().toLowerCase() === 'stardust' ? 'stardust' : 'project';
+        const stardustId = Number(raw?.stardust_id || 0);
+        const paperId = Number(raw?.paper_id || 0);
+        return {
+            key,
+            title: String(raw?.title || '').trim(),
+            authors: String(raw?.authors || '').trim(),
+            year: String(raw?.year || '').trim(),
+            source_type: sourceType,
+            stardust_id: stardustId > 0 ? stardustId : null,
+            stardust_name: String(raw?.stardust_name || '').trim(),
+            paper_id: paperId > 0 ? paperId : null,
+            paper_key: String(raw?.paper_key || key).trim() || key
+        };
+    }
+
+    function getMarkedNodeEntries(projectId = currentProject?.id) {
+        return getProjectSearchSettings(projectId).marked_node_entries || [];
+    }
+
+    function setMarkedNodeEntries(entries = [], projectId = currentProject?.id) {
+        const nextEntries = entries
+            .map(item => normalizeMarkedNodeEntry(item))
+            .filter(Boolean)
+            .filter((item, index, arr) => arr.findIndex(candidate => candidate.key === item.key) === index)
+            .slice(0, 18);
+        saveProjectSearchSettings({ marked_node_entries: nextEntries }, projectId);
+        return nextEntries;
+    }
+
+    function getMarkedNodeEntryByKey(key, projectId = currentProject?.id) {
+        const normalizedKey = String(key || '').trim();
+        if (!normalizedKey) return null;
+        return getMarkedNodeEntries(projectId).find(item => item.key === normalizedKey) || null;
+    }
+
+    function upsertMarkedNodeEntry(entry, projectId = currentProject?.id) {
+        const normalized = normalizeMarkedNodeEntry(entry);
+        if (!normalized) return getMarkedNodeEntries(projectId);
+        const nextEntries = [
+            ...getMarkedNodeEntries(projectId).filter(item => item.key !== normalized.key),
+            normalized
+        ];
+        return setMarkedNodeEntries(nextEntries, projectId);
+    }
+
+    function removeMarkedNodeEntry(key, projectId = currentProject?.id) {
+        const normalizedKey = String(key || '').trim();
+        return setMarkedNodeEntries(
+            getMarkedNodeEntries(projectId).filter(item => item.key !== normalizedKey),
+            projectId
+        );
+    }
+
+    function buildMarkedNodeEntryFromPaper(paper) {
+        return normalizeMarkedNodeEntry({
+            key: getStablePaperGraphKey(paper),
+            title: paper?.title || '',
+            authors: paper?.authors || '',
+            year: paper?.year || '',
+            source_type: 'project'
+        });
     }
 
     function getMarkedNodeKeySet(project = currentProject) {
@@ -4367,16 +4652,23 @@ Rules:
     function renderMarkedNodesPanel() {
         const panel = document.getElementById('marked-node-panel');
         if (!panel) return;
-        if (!currentProject?.top_papers?.length) {
+        if (!currentProject?.id) {
             panel.classList.add('hidden');
             panel.innerHTML = '';
             return;
         }
         const savedKeys = getMarkedNodeKeys(currentProject.id);
+        const savedEntries = getMarkedNodeEntries(currentProject.id);
         const keyToPaper = new Map((currentProject.top_papers || []).map(paper => [getStablePaperGraphKey(paper), paper]));
-        const validKeys = savedKeys.filter(key => keyToPaper.has(key));
+        const entryByKey = new Map(savedEntries.map(entry => [entry.key, entry]));
+        const validKeys = savedKeys.filter(key => keyToPaper.has(key) || entryByKey.has(key));
         if (validKeys.length !== savedKeys.length) {
             setMarkedNodeKeys(validKeys, currentProject.id);
+        }
+        const validKeySet = new Set(validKeys);
+        const validEntries = savedEntries.filter(entry => validKeySet.has(entry.key));
+        if (validEntries.length !== savedEntries.length) {
+            setMarkedNodeEntries(validEntries, currentProject.id);
         }
         if (!validKeys.length) {
             panel.classList.add('hidden');
@@ -4408,11 +4700,16 @@ Rules:
                     <div style="display:flex; gap:8px; flex-wrap:wrap;">
                         ${validKeys.map(key => {
                             const paper = keyToPaper.get(key);
-                            const title = truncateText(paper?.title || 'Untitled', 34);
+                            const entry = entryByKey.get(key);
+                            const title = truncateText(paper?.title || entry?.title || 'Untitled', 34);
+                            const isStardustOnly = !paper && entry?.source_type === 'stardust';
+                            const isFocusedStarMap = String(currentStarMapFocusKey || '').trim() === key && currentChartMode !== 'citation';
+                            const encodedKey = encodeURIComponent(key);
                             return `
-                                <div style="display:inline-flex; align-items:center; gap:8px; padding:8px 10px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:12px; font-weight:700; max-width:100%;">
-                                    <button onclick="focusMarkedNode('${encodeURIComponent(key)}')" style="background:transparent; border:none; color:inherit; cursor:pointer; padding:0; font:inherit; text-align:left; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(title)}</button>
-                                    <button onclick="removeMarkedNode('${encodeURIComponent(key)}')" style="background:transparent; border:none; cursor:pointer; color:#64748b; font-size:12px; padding:0;">✕</button>
+                                <div oncontextmenu="promptMarkedNodeStarMapFocus(event, '${encodedKey}')" title="Left-click to jump back. Right-click to generate a StarMap centered on this paper." style="display:inline-flex; align-items:center; gap:8px; padding:8px 10px; border-radius:999px; background:${isFocusedStarMap ? '#ede9fe' : (isStardustOnly ? '#fff7ed' : '#eef2ff')}; color:${isStardustOnly ? '#c2410c' : '#4338ca'}; font-size:12px; font-weight:700; max-width:100%; border:${isFocusedStarMap ? '1px solid rgba(99,102,241,0.3)' : '1px solid transparent'};">
+                                    ${isStardustOnly ? `<span style="font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:0.04em;">Stardust</span>` : ''}
+                                    <button onclick="focusMarkedNode('${encodedKey}')" style="background:transparent; border:none; color:inherit; cursor:pointer; padding:0; font:inherit; text-align:left; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(title)}</button>
+                                    <button onclick="removeMarkedNode('${encodedKey}')" style="background:transparent; border:none; cursor:pointer; color:#64748b; font-size:12px; padding:0;">✕</button>
                                 </div>
                             `;
                         }).join('')}
@@ -5454,6 +5751,36 @@ Rules:
         evidenceBoardState.progressStepsRemaining = '';
     }
 
+    function resetChallengeStardustState(projectId = currentProject?.id) {
+        challengeStardustState = {
+            projectId: projectId || null,
+            items: [],
+            selectedId: null,
+            detail: null,
+            loadingList: false,
+            loadingDetail: false,
+            status: '',
+            error: '',
+            sourceFilter: 'all',
+            paperSelectionsByStardust: {},
+            paperListExpandedByStardust: {},
+            createModalOpen: false,
+            createLoading: false,
+            createSeedEvidenceId: null,
+            createSeedPaper: null,
+            createSeedItem: null,
+            createName: '',
+            createSubTargetThesis: '',
+            createReplaceStardustId: '',
+            createStatus: '',
+            createError: '',
+            listRequestId: 0,
+            detailRequestId: 0,
+            createRequestId: 0,
+            paperModalPaperId: null
+        };
+    }
+
     function resetEvidenceBoardState(projectId = currentProject?.id) {
         clearEvidenceProgressTimer();
         evidenceBoardState = {
@@ -5473,6 +5800,7 @@ Rules:
             draftType: 'thesis_claim',
             draftSection: '',
             reasoningEvidenceId: null,
+            pendingSectionCollapsed: true,
             expandedColumns: getInitialEvidenceColumnExpansion(),
             progressPercent: 0,
             progressDetail: '',
@@ -5520,6 +5848,12 @@ Rules:
                 buttonId: 'workspace-section-toggle-evidence',
                 iconId: 'workspace-section-toggle-icon-evidence',
                 labelId: 'workspace-section-toggle-label-evidence'
+            },
+            stardust: {
+                bodyId: 'workspace-section-body-stardust',
+                buttonId: 'workspace-section-toggle-stardust',
+                iconId: 'workspace-section-toggle-icon-stardust',
+                labelId: 'workspace-section-toggle-label-stardust'
             },
             watch: {
                 bodyId: 'workspace-section-body-watch',
@@ -5742,6 +6076,8 @@ Rules:
             return;
         }
         const board = evidenceBoardState.board || {};
+        const pendingItems = board.pending || [];
+        const pendingSectionCollapsed = evidenceBoardState.pendingSectionCollapsed !== false;
         const renderColumn = (stance, options = {}) => {
             const meta = getEvidenceStanceMeta(stance);
             const items = board[stance] || [];
@@ -5782,21 +6118,28 @@ Rules:
                 ${primaryColumns.map(stance => renderColumn(stance, { columnClass: 'evidence-column evidence-primary-column' })).join('')}
             </div>
             <div class="evidence-secondary-panel">
-                <div style="padding:14px 14px 12px; background:${EVIDENCE_STANCE_META.pending.soft}; border-bottom:1px solid rgba(148,163,184,0.12);">
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
-                        <div>
-                            <div style="font-size:13px; font-weight:900; color:${EVIDENCE_STANCE_META.pending.accent};">Pending Pool</div>
-                            <div style="font-size:11px; color:${EVIDENCE_STANCE_META.pending.accent}; opacity:0.78; line-height:1.55;">Relevant enough to revisit later, but not strong enough to act on yet.</div>
-                        </div>
-                        <div class="evidence-chip" style="background:white; color:${EVIDENCE_STANCE_META.pending.accent}; border-color:rgba(255,255,255,0.65);">${(board.pending || []).length}</div>
+                <button
+                    class="evidence-secondary-toggle"
+                    type="button"
+                    onclick="toggleEvidencePendingSection()"
+                    aria-expanded="${pendingSectionCollapsed ? 'false' : 'true'}"
+                    data-collapsed="${pendingSectionCollapsed ? 'true' : 'false'}"
+                >
+                    <div>
+                        <div style="font-size:13px; font-weight:900; color:${EVIDENCE_STANCE_META.pending.accent};">Pending Pool</div>
+                        <div style="font-size:11px; color:${EVIDENCE_STANCE_META.pending.accent}; opacity:0.78; line-height:1.55;">Relevant enough to revisit later, but not strong enough to act on yet.</div>
                     </div>
-                </div>
-                ${(board.pending || []).length ? `
+                    <div class="evidence-secondary-toggle-meta">
+                        <div class="evidence-chip" style="background:white; color:${EVIDENCE_STANCE_META.pending.accent}; border-color:rgba(255,255,255,0.65);">${pendingItems.length}</div>
+                        <div class="evidence-secondary-toggle-caret">${pendingSectionCollapsed ? '▸' : '▾'}</div>
+                    </div>
+                </button>
+                ${pendingSectionCollapsed ? '' : pendingItems.length ? `
                     <div class="evidence-secondary-grid">
                         ${(() => {
                             const stance = 'pending';
                             const meta = getEvidenceStanceMeta(stance);
-                            const items = board[stance] || [];
+                            const items = pendingItems;
                             const columnExpanded = !!evidenceBoardState.expandedColumns?.[stance];
                             const visibleItems = columnExpanded ? items : items.slice(0, 5);
                             return visibleItems.map(item => renderEvidenceCard(item, meta)).join('');
@@ -5807,10 +6150,10 @@ Rules:
                         <div class="evidence-empty">No papers are waiting in the pending pool right now.</div>
                     </div>
                 `}
-                ${(board.pending || []).length > 5 ? `
+                ${!pendingSectionCollapsed && pendingItems.length > 5 ? `
                     <div class="evidence-column-footer">
                         <button class="btn btn-outline" style="width:100%; padding:8px 12px; font-size:12px;" onclick="toggleEvidenceColumn('pending')">
-                            ${evidenceBoardState.expandedColumns?.pending ? 'Show Top 5 Only' : `Show ${(board.pending || []).length - 5} More`}
+                            ${evidenceBoardState.expandedColumns?.pending ? 'Show Top 5 Only' : `Show ${pendingItems.length - 5} More`}
                         </button>
                     </div>
                 ` : ''}
@@ -5869,6 +6212,7 @@ Rules:
         renderEvidenceBoardColumns();
         renderEvidenceReasoningModal();
         renderChallengeExpansionModal();
+        renderChallengeStardustPaperModal();
     }
 
     function renderEvidenceReasoningModal() {
@@ -5953,106 +6297,503 @@ Rules:
         modal.classList.remove('hidden');
     }
 
+    function getChallengeStardustLimit() {
+        return 5;
+    }
+
+    function getChallengeStardustSelectionKey(paper) {
+        return String(paper?.id || paper?.paper_key || '').trim();
+    }
+
+    function getChallengeStardustSelectionSet(stardustId = challengeStardustState.selectedId) {
+        const key = String(stardustId || '').trim();
+        if (!key) return new Set();
+        if (!(challengeStardustState.paperSelectionsByStardust[key] instanceof Set)) {
+            challengeStardustState.paperSelectionsByStardust[key] = new Set();
+        }
+        return challengeStardustState.paperSelectionsByStardust[key];
+    }
+
+    function getSelectedChallengeStardust() {
+        const selectedId = Number(challengeStardustState.selectedId || 0);
+        return (challengeStardustState.items || []).find(item => Number(item.id) === selectedId) || challengeStardustState.detail || null;
+    }
+
+    function getChallengeStardustSourceLabel(source) {
+        const value = String(source || '').trim().toLowerCase();
+        if (!value || value === 'all') return 'All Sources';
+        if (value.includes('hop_1')) return 'Hop 1';
+        if (value.includes('hop_2')) return 'Hop 2';
+        if (value.includes('semantic')) return 'Semantic Supplement';
+        return value.replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+    }
+
+    function getChallengeStardustSourceMatches(paper, filterKey = challengeStardustState.sourceFilter) {
+        const normalized = String(filterKey || 'all').trim().toLowerCase();
+        if (!normalized || normalized === 'all') return true;
+        const source = String(paper?.discovery_source || '').trim().toLowerCase();
+        return source.includes(normalized);
+    }
+
+    function getFilteredChallengeStardustPapers() {
+        const papers = Array.isArray(challengeStardustState.detail?.papers) ? challengeStardustState.detail.papers : [];
+        return papers.filter(paper => getChallengeStardustSourceMatches(paper));
+    }
+
+    function initializeChallengeStardustSelections(stardust) {
+        const key = String(stardust?.id || '').trim();
+        if (!key || challengeStardustState.paperSelectionsByStardust[key] instanceof Set) return;
+        challengeStardustState.paperSelectionsByStardust[key] = new Set(
+            (stardust?.papers || [])
+                .filter(paper => paper?.selected_for_import)
+                .map(getChallengeStardustSelectionKey)
+                .filter(Boolean)
+        );
+    }
+
+    async function syncChallengeStardustPaperSelection(paperId, selected) {
+        const stardustId = Number(challengeStardustState.detail?.id || challengeStardustState.selectedId || 0);
+        const numericPaperId = Number(paperId || 0);
+        if (!currentProject?.id || !stardustId || !numericPaperId) return;
+        try {
+            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/stardusts/${stardustId}/papers/${numericPaperId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ selected_for_import: !!selected })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Could not update this Stardust paper.');
+            }
+            if (challengeStardustState.detail?.papers?.length) {
+                challengeStardustState.detail.papers = challengeStardustState.detail.papers.map(paper => (
+                    Number(paper.id) === numericPaperId
+                        ? { ...paper, ...(data.paper || {}), selected_for_import: !!selected }
+                        : paper
+                ));
+            }
+        } catch (error) {
+            challengeStardustState.error = error.message || 'Could not update this Stardust paper.';
+            renderChallengeStardustSection();
+        }
+    }
+
+    async function loadProjectStardustDetail(stardustId, options = {}) {
+        const numericId = Number(stardustId || 0);
+        if (!currentProject?.id || !numericId) {
+            challengeStardustState.selectedId = null;
+            challengeStardustState.detail = null;
+            renderChallengeStardustSection();
+            return null;
+        }
+        const requestId = (challengeStardustState.detailRequestId || 0) + 1;
+        challengeStardustState.detailRequestId = requestId;
+        challengeStardustState.selectedId = numericId;
+        challengeStardustState.loadingDetail = true;
+        if (!options.silent) {
+            challengeStardustState.status = 'Loading Challenge Stardust...';
+            challengeStardustState.error = '';
+        }
+        renderChallengeStardustSection();
+        try {
+            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/stardusts/${numericId}`);
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Could not load this Challenge Stardust.');
+            }
+            if (requestId !== challengeStardustState.detailRequestId || Number(currentProject?.id) !== Number(challengeStardustState.projectId || currentProject.id)) return null;
+            challengeStardustState.detail = data.stardust || null;
+            initializeChallengeStardustSelections(challengeStardustState.detail);
+            if (!options.silent) challengeStardustState.status = 'Challenge Stardust ready.';
+            challengeStardustState.error = '';
+            renderChallengeStardustSection();
+            return challengeStardustState.detail;
+        } catch (error) {
+            if (requestId !== challengeStardustState.detailRequestId) return null;
+            challengeStardustState.error = error.message || 'Could not load this Challenge Stardust.';
+            renderChallengeStardustSection();
+            return null;
+        } finally {
+            if (requestId === challengeStardustState.detailRequestId) {
+                challengeStardustState.loadingDetail = false;
+                renderChallengeStardustSection();
+            }
+        }
+    }
+
+    async function loadProjectStardusts(options = {}) {
+        if (!currentProject?.id) return [];
+        const requestId = (challengeStardustState.listRequestId || 0) + 1;
+        challengeStardustState.listRequestId = requestId;
+        challengeStardustState.projectId = currentProject.id;
+        challengeStardustState.loadingList = true;
+        if (!options.silent) {
+            challengeStardustState.status = 'Loading Challenge Stardusts...';
+            challengeStardustState.error = '';
+        }
+        renderChallengeStardustSection();
+        try {
+            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/stardusts`);
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Could not load Challenge Stardusts.');
+            }
+            if (requestId !== challengeStardustState.listRequestId || Number(currentProject?.id) !== Number(challengeStardustState.projectId)) return [];
+            challengeStardustState.items = Array.isArray(data.stardusts) ? data.stardusts : [];
+            const preferredId = Number(options.selectStardustId || challengeStardustState.selectedId || challengeStardustState.detail?.id || 0);
+            const nextSelectedId = challengeStardustState.items.some(item => Number(item.id) === preferredId)
+                ? preferredId
+                : Number(challengeStardustState.items[0]?.id || 0) || null;
+            challengeStardustState.selectedId = nextSelectedId;
+            challengeStardustState.error = '';
+            if (!options.silent) {
+                challengeStardustState.status = challengeStardustState.items.length
+                    ? 'Challenge Stardusts loaded.'
+                    : 'No Challenge Stardusts yet. Create one from a challenge evidence card.';
+            }
+            renderChallengeStardustSection();
+            if (nextSelectedId) {
+                await loadProjectStardustDetail(nextSelectedId, { silent: true });
+            } else {
+                challengeStardustState.detail = null;
+                renderChallengeStardustSection();
+            }
+            return challengeStardustState.items;
+        } catch (error) {
+            if (requestId !== challengeStardustState.listRequestId) return [];
+            challengeStardustState.items = [];
+            challengeStardustState.selectedId = null;
+            challengeStardustState.detail = null;
+            challengeStardustState.error = error.message || 'Could not load Challenge Stardusts.';
+            renderChallengeStardustSection();
+            return [];
+        } finally {
+            if (requestId === challengeStardustState.listRequestId) {
+                challengeStardustState.loadingList = false;
+                renderChallengeStardustSection();
+            }
+        }
+    }
+
     function renderChallengeExpansionModal() {
         const modal = document.getElementById('challenge-expansion-modal');
         const body = document.getElementById('challenge-expansion-body');
         if (!modal || !body) return;
-        if (!evidenceBoardState.challengeExpansionOpen) {
+        if (!challengeStardustState.createModalOpen) {
             modal.classList.add('hidden');
             body.innerHTML = '';
             return;
         }
 
-        const seedItem = getSelectedChallengeExpansionSeed();
-        const seedPaper = evidenceBoardState.challengeExpansionSeedPaper || resolveEvidencePaper(seedItem) || null;
-        const recommendations = evidenceBoardState.challengeExpansionRecommendations || [];
-        const selectedCount = evidenceBoardState.challengeExpansionSelections?.size || 0;
-        const allSelected = recommendations.length && recommendations.every(paper => evidenceBoardState.challengeExpansionSelections.has(getLiteratureWatchRecommendationKey(paper)));
-        const summary = evidenceBoardState.challengeExpansionSourceSummary || {};
+        const seedItem = challengeStardustState.createSeedItem || findEvidenceItemInBoard(challengeStardustState.createSeedEvidenceId);
+        const seedPaper = challengeStardustState.createSeedPaper || resolveEvidencePaper(seedItem) || null;
+        const selectedClaim = getSelectedEvidenceClaim();
+        const currentCount = (challengeStardustState.items || []).length;
+        const atLimit = currentCount >= getChallengeStardustLimit();
+        const replaceValue = String(challengeStardustState.createReplaceStardustId || '').trim();
+        const canCreate = !!String(challengeStardustState.createName || '').trim()
+            && !!String(challengeStardustState.createSubTargetThesis || '').trim()
+            && (!atLimit || !!replaceValue)
+            && !challengeStardustState.createLoading;
+        const seedPaperMarked = !!seedPaper && isMarkedPaper(seedPaper);
 
         body.innerHTML = `
-            <div style="display:grid; gap:16px;">
+            <div style="display:grid; gap:18px;">
                 <div style="display:flex; justify-content:space-between; gap:16px; align-items:flex-start; flex-wrap:wrap;">
                     <div style="min-width:0; flex:1;">
-                        <div style="display:inline-flex; align-items:center; gap:8px; padding:5px 10px; border-radius:999px; background:#fef2f2; color:#b91c1c; font-size:11px; font-weight:800; margin-bottom:10px;">Challenge Trail Expansion</div>
+                        <div style="display:inline-flex; align-items:center; gap:8px; padding:5px 10px; border-radius:999px; background:#fef2f2; color:#b91c1c; font-size:11px; font-weight:800; margin-bottom:10px;">Create Challenge Stardust</div>
                         <div style="font-size:28px; line-height:1.08; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px;">${escapeHtml(seedPaper?.title || seedItem?.paper_title || 'Challenge seed')}</div>
-                        <div style="font-size:13px; color:#475569; line-height:1.75; max-width:900px;">Use this challenge paper as a one-hop seed. StarMap pulls its references and cited-by neighbors from OpenAlex, then filters for papers likely to extend the same challenge thread for the current claim.</div>
+                        <div style="font-size:13px; color:#475569; line-height:1.75; max-width:920px;">Use this challenge paper as the seed for a stored side-network. StarMap will build a challenge-only Stardust with two-hop citation expansion, semantic supplement retrieval, and a capped paper set you can review before importing anything into the main project.</div>
                     </div>
                     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                        ${seedPaper ? `<button class="btn btn-outline" style="padding:9px 12px; font-size:12px; ${seedPaperMarked ? 'border-color:rgba(79,70,229,0.34); color:#4338ca; background:#eef2ff;' : ''}" onclick="toggleChallengeExpansionSeedMarkedNode()">${seedPaperMarked ? '✓ Marked Node' : '🔖 Mark Node'}</button>` : ''}
                         ${seedPaper ? `<button class="btn btn-outline" style="padding:9px 12px; font-size:12px;" onclick="openChallengeExpansionSeedPaper()">Open Seed Paper</button>` : ''}
                         <button class="btn btn-outline" style="padding:9px 12px; font-size:12px;" onclick="closeChallengeExpansion()">Close</button>
                     </div>
                 </div>
 
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                    <div class="evidence-chip" style="background:#fef2f2; color:#b91c1c; border-color:#fecaca;">References ${Number(summary.reference_count || 0)}</div>
-                    <div class="evidence-chip" style="background:#eff6ff; color:#1d4ed8; border-color:#dbeafe;">Cited By ${Number(summary.cited_by_count || 0)}</div>
-                    <div class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">New candidates ${Number(summary.candidate_count || 0)}</div>
-                    ${Number(summary.skipped_existing_count || 0) ? `<div class="evidence-chip" style="background:#fff7ed; color:#c2410c; border-color:#fed7aa;">Already in StarMap ${Number(summary.skipped_existing_count || 0)}</div>` : ''}
+                    <div class="evidence-chip" style="background:#eef2ff; color:#4338ca; border-color:#e0e7ff;">Claim ${escapeHtml(getClaimTypeLabel(selectedClaim?.claim_type || 'thesis_claim'))}</div>
+                    <div class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">Stored Stardusts ${currentCount}/${getChallengeStardustLimit()}</div>
+                    <div class="evidence-chip" style="background:#fff7ed; color:#c2410c; border-color:#fed7aa;">Max 50 papers</div>
+                    <div class="evidence-chip" style="background:#eff6ff; color:#1d4ed8; border-color:#dbeafe;">Two-hop + semantic supplement</div>
                 </div>
 
-                ${evidenceBoardState.challengeExpansionError ? `<div class="evidence-board-status error" style="display:block;">${escapeHtml(evidenceBoardState.challengeExpansionError)}</div>` : ''}
-                ${evidenceBoardState.challengeExpansionStatus ? `<div class="evidence-board-status" style="display:block;">${escapeHtml(evidenceBoardState.challengeExpansionStatus)}</div>` : ''}
+                ${challengeStardustState.createError ? `<div class="evidence-board-status error" style="display:block;">${escapeHtml(challengeStardustState.createError)}</div>` : ''}
+                ${challengeStardustState.createStatus ? `<div class="evidence-board-status" style="display:block;">${escapeHtml(challengeStardustState.createStatus)}</div>` : ''}
 
-                ${evidenceBoardState.challengeExpansionLoading ? `
-                    <div style="padding:18px; border-radius:20px; border:1px solid rgba(148,163,184,0.18); background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.96));">
-                        <div style="font-size:14px; font-weight:800; color:#1f2a69; margin-bottom:8px;">Expanding one-hop challenge neighbors...</div>
-                        <div style="font-size:12px; color:#64748b; line-height:1.7;">Reading the seed paper, pulling references and cited-by neighbors, then screening them for likely challenge value before showing a recommendation list.</div>
+                <div style="display:grid; grid-template-columns:minmax(0, 1.15fr) minmax(320px, 0.85fr); gap:16px;">
+                    <div style="border:1px solid rgba(148,163,184,0.18); border-radius:20px; padding:16px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.96));">
+                        <label for="challenge-stardust-name" style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px; display:block;">Stardust Name</label>
+                        <input id="challenge-stardust-name" type="text" value="${escapeHtml(challengeStardustState.createName || '')}" oninput="updateChallengeStardustDraft('name', this.value)" placeholder="Example: Rating Spillover Challenge Stardust" style="padding:12px 14px; border-radius:14px; border:1px solid rgba(148,163,184,0.22); background:#fff; font-size:13px; box-sizing:border-box; margin-bottom:14px;">
+                        <label for="challenge-stardust-thesis" style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px; display:block;">Sub Target Thesis</label>
+                        <textarea id="challenge-stardust-thesis" oninput="updateChallengeStardustDraft('sub_target_thesis', this.value)" placeholder="Write the narrower challenge thesis this Stardust should trace." style="min-height:160px; resize:vertical; padding:12px 14px; border-radius:16px; border:1px solid rgba(148,163,184,0.22); background:#fff; font-size:13px; line-height:1.7; box-sizing:border-box;">${escapeHtml(challengeStardustState.createSubTargetThesis || '')}</textarea>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+                            <div style="padding:6px 10px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Hop 1 seed neighbors</div>
+                            <div style="padding:6px 10px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Hop 2 follow-up seeds</div>
+                            <div style="padding:6px 10px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Semantic supplement beyond graph</div>
+                        </div>
                     </div>
-                ` : recommendations.length ? `
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
-                        <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#475569; font-weight:700;">
-                            <input type="checkbox" ${allSelected ? 'checked' : ''} onchange="toggleAllChallengeExpansionPapers(this.checked)">
-                            <span>Select all recommendations</span>
-                        </label>
-                        <button class="btn btn-primary" style="padding:10px 14px; font-size:12px;" onclick="addSelectedChallengeExpansionPapers()" ${selectedCount ? '' : 'disabled'}>Add Selected to StarMap${selectedCount ? ` (${selectedCount})` : ''}</button>
+                    <div style="display:grid; gap:14px;">
+                        <div style="border:1px solid rgba(148,163,184,0.18); border-radius:20px; padding:16px; background:#fff;">
+                            <div style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px;">Seed Claim</div>
+                            <div style="font-size:13px; line-height:1.72; color:#334155;">${escapeHtml(selectedClaim?.claim_text || 'No active claim selected.')}</div>
+                        </div>
+                        <div style="border:1px solid rgba(148,163,184,0.18); border-radius:20px; padding:16px; background:#fff;">
+                            <div style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px;">Seed Evidence Summary</div>
+                            <div style="font-size:13px; line-height:1.72; color:#334155;">${escapeHtml(seedItem?.why_matched || 'No challenge rationale was stored for this seed paper yet.')}</div>
+                            ${seedItem?.caveat ? `<div style="margin-top:10px; font-size:12px; line-height:1.65; color:#92400e; background:#fff7ed; padding:10px 12px; border-radius:14px;">${escapeHtml(seedItem.caveat)}</div>` : ''}
+                        </div>
+                        <div style="border:1px solid rgba(148,163,184,0.18); border-radius:20px; padding:16px; background:#fff;">
+                            <div style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px;">Capacity Reminder</div>
+                            <div style="font-size:12px; line-height:1.72; color:#475569;">Each project can store up to five Challenge Stardusts. Stardust papers stay outside the main StarMap until you import them manually.</div>
+                        </div>
                     </div>
-                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:12px;">
-                        ${recommendations.map((paper, index) => {
-                            const key = getLiteratureWatchRecommendationKey(paper);
-                            const checked = evidenceBoardState.challengeExpansionSelections.has(key);
-                            return `
-                                <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:14px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.96)); box-shadow:0 10px 24px rgba(15,23,42,0.04);">
-                                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:10px;">
-                                        <label style="display:flex; align-items:flex-start; gap:10px; flex:1; cursor:pointer;">
-                                            <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleChallengeExpansionPaper('${encodeURIComponent(key)}', this.checked)" style="margin-top:3px;">
-                                            <div style="flex:1;">
-                                                <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
-                                                    <div style="padding:4px 8px; border-radius:999px; background:#fef2f2; color:#b91c1c; font-size:11px; font-weight:800;">Challenge ${index + 1}</div>
-                                                    <div style="padding:4px 8px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">${escapeHtml(paper.relationship_label || paper.relationship_type || 'One hop')}</div>
-                                                    ${paper.year ? `<div style="padding:4px 8px; border-radius:999px; background:#fff7ed; color:#c2410c; font-size:11px; font-weight:700;">${escapeHtml(paper.year)}</div>` : ''}
+                </div>
+
+                ${atLimit ? `
+                    <div style="border:1px solid #fdba74; border-radius:18px; padding:16px; background:#fff7ed;">
+                        <div style="font-size:13px; font-weight:900; color:#9a3412; margin-bottom:8px;">This project already has ${getChallengeStardustLimit()} Challenge Stardusts.</div>
+                        <div style="font-size:12px; line-height:1.7; color:#9a3412; margin-bottom:12px;">Creating a new Stardust will delete one existing Stardust first. Choose which stored Stardust should be replaced.</div>
+                        <select id="challenge-stardust-replace-select" onchange="updateChallengeStardustReplacement(this.value)" style="padding:11px 12px; border-radius:14px; border:1px solid rgba(251,146,60,0.35); background:#fff; font-size:13px;">
+                            <option value="">Select a Stardust to replace</option>
+                            ${(challengeStardustState.items || []).map(item => `<option value="${Number(item.id)}" ${String(item.id) === replaceValue ? 'selected' : ''}>${escapeHtml(item.name || `Challenge Stardust ${item.id}`)} · ${Number(item.paper_count || 0)} papers</option>`).join('')}
+                        </select>
+                    </div>
+                ` : ''}
+
+                <div style="display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap;">
+                    <button class="btn btn-outline" style="padding:10px 14px; font-size:12px;" onclick="closeChallengeExpansion()" ${challengeStardustState.createLoading ? 'disabled' : ''}>Cancel</button>
+                    <button class="btn btn-primary" style="padding:10px 16px; font-size:12px;" onclick="createChallengeStardustFromModal()" ${canCreate ? '' : 'disabled'}>${challengeStardustState.createLoading ? 'Generating Challenge Stardust...' : 'Generate Challenge Stardust'}</button>
+                </div>
+            </div>
+        `;
+        modal.classList.remove('hidden');
+    }
+
+    function renderChallengeStardustSection() {
+        const container = document.getElementById('challenge-stardust-section');
+        if (!container) return;
+        if (!currentProject?.id) {
+            container.innerHTML = `<div style="font-size:13px; color:var(--text-muted);">Open a project to view Challenge Stardusts.</div>`;
+            return;
+        }
+
+        const items = challengeStardustState.items || [];
+        const detail = challengeStardustState.detail;
+        const filteredPapers = getFilteredChallengeStardustPapers();
+        const selectionSet = getChallengeStardustSelectionSet(detail?.id);
+        const selectedCount = selectionSet.size;
+        const allSelected = filteredPapers.length && filteredPapers.every(paper => selectionSet.has(getChallengeStardustSelectionKey(paper)));
+        const sourceSummary = detail?.source_summary || {};
+        const detailKey = String(detail?.id || '').trim();
+        const isPaperListExpanded = !!challengeStardustState.paperListExpandedByStardust[detailKey];
+
+        container.innerHTML = `
+            <div style="display:grid; gap:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
+                    <div>
+                        <div style="font-size:13px; font-weight:900; color:#24307b; margin-bottom:4px;">Challenge Stardust Workspace</div>
+                        <div style="font-size:12px; color:#64748b; line-height:1.7; max-width:760px;">Create Stardusts from challenge papers in the Evidence Board. Each one stores a side-network of counter-evidence candidates outside the main StarMap until you import selected papers.</div>
+                    </div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                        <div class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">Stored ${items.length}/${getChallengeStardustLimit()}</div>
+                        <button class="btn btn-outline" style="padding:9px 12px; font-size:12px;" onclick="refreshChallengeStardusts()">Refresh</button>
+                    </div>
+                </div>
+
+                ${challengeStardustState.error ? `<div class="evidence-board-status error" style="display:block;">${escapeHtml(challengeStardustState.error)}</div>` : ''}
+                ${challengeStardustState.status ? `<div class="evidence-board-status" style="display:block;">${escapeHtml(challengeStardustState.status)}</div>` : ''}
+
+                <div style="display:grid; grid-template-columns:minmax(280px, 0.9fr) minmax(0, 1.6fr); gap:16px; align-items:start;">
+                    <div style="display:grid; gap:12px;">
+                        <div style="border:1px solid rgba(148,163,184,0.18); border-radius:20px; padding:16px; background:#fff;">
+                            <div style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px;">Stored Stardusts</div>
+                            ${challengeStardustState.loadingList && !items.length ? `<div style="font-size:12px; color:#64748b;">Loading Challenge Stardusts...</div>` : items.length ? `
+                                <div style="display:grid; gap:10px;">
+                                    ${items.map(item => {
+                                        const active = Number(item.id) === Number(challengeStardustState.selectedId || detail?.id || 0);
+                                        return `
+                                            <button type="button" onclick="selectChallengeStardust(${Number(item.id)})" style="text-align:left; padding:14px; border-radius:18px; border:1px solid ${active ? 'rgba(79,70,229,0.35)' : 'rgba(148,163,184,0.18)'}; background:${active ? 'linear-gradient(180deg, rgba(238,242,255,0.88), rgba(255,255,255,0.96))' : 'linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.96))'}; cursor:pointer; box-shadow:${active ? '0 14px 28px rgba(79,70,229,0.08)' : '0 8px 18px rgba(15,23,42,0.04)'};">
+                                                <div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start; margin-bottom:8px;">
+                                                    <div style="font-size:14px; font-weight:800; line-height:1.35; color:${active ? '#312e81' : '#1f2a69'};">${escapeHtml(item.name || `Challenge Stardust ${item.id}`)}</div>
+                                                    <div style="padding:5px 8px; border-radius:999px; background:#fff; color:#475569; font-size:10px; font-weight:800;">${Number(item.paper_count || 0)} papers</div>
                                                 </div>
-                                                <div style="font-size:15px; line-height:1.38; font-weight:800; color:#3340a7; margin-bottom:6px;">${escapeHtml(paper.title || 'Untitled')}</div>
-                                                <div style="font-size:12px; color:#64748b; line-height:1.65;">${escapeHtml(paper.authors || 'Unknown authors')}${paper.publication_venue ? ` | ${escapeHtml(paper.publication_venue)}` : ''}</div>
-                                            </div>
-                                        </label>
-                                        <div style="padding:8px 10px; border-radius:14px; background:#f8fafc; min-width:86px; text-align:right;">
-                                            <div style="font-size:10px; color:#64748b; font-weight:800; text-transform:uppercase; letter-spacing:0.06em;">Challenge Fit</div>
-                                            <div style="font-size:18px; font-weight:900; color:#1f2a69;">${Number(paper.challenge_score || 0).toFixed(3)}</div>
+                                                <div style="font-size:11px; color:#64748b; line-height:1.65; margin-bottom:8px;">${escapeHtml(item.seed?.paper_title || 'Seed paper unavailable')}</div>
+                                                <div style="font-size:11px; color:#475569; line-height:1.7;">${escapeHtml((item.sub_target_thesis || '').slice(0, 120))}${String(item.sub_target_thesis || '').length > 120 ? '...' : ''}</div>
+                                            </button>
+                                        `;
+                                    }).join('')}
+                                </div>
+                            ` : `
+                                <div style="padding:14px; border-radius:16px; background:#f8fafc; font-size:12px; color:#64748b; line-height:1.7;">No Challenge Stardusts yet. Use <b>Expand Trail</b> on a paper in the challenge column to create one.</div>
+                            `}
+                        </div>
+                    </div>
+
+                    <div style="display:grid; gap:12px;">
+                        ${detail ? `
+                            <div style="border:1px solid rgba(148,163,184,0.18); border-radius:22px; padding:18px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.96));">
+                                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; margin-bottom:12px;">
+                                    <div style="min-width:0; flex:1;">
+                                        <div style="display:inline-flex; align-items:center; gap:8px; padding:5px 10px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:11px; font-weight:800; margin-bottom:8px;">${escapeHtml(detail.status || 'ready')}</div>
+                                        <div style="font-size:26px; line-height:1.08; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px;">${escapeHtml(detail.name || 'Challenge Stardust')}</div>
+                                        <div style="font-size:13px; color:#475569; line-height:1.75; margin-bottom:10px;">${escapeHtml(detail.sub_target_thesis || '')}</div>
+                                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                            <div class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">Seed ${escapeHtml(detail.seed?.paper_title || 'Unknown')}</div>
+                                            <div class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">Claim ${escapeHtml(detail.claim?.section_label || getClaimTypeLabel(detail.claim?.claim_type || 'thesis_claim'))}</div>
+                                            <div class="evidence-chip" style="background:#fff7ed; color:#c2410c; border-color:#fed7aa;">Stored papers ${Number(detail.paper_count || 0)}</div>
                                         </div>
                                     </div>
-                                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
-                                        <div style="padding:6px 9px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Seed overlap ${Number(paper.seed_similarity || 0).toFixed(3)}</div>
-                                        <div style="padding:6px 9px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Claim relevance ${Number(paper.claim_relevance || 0).toFixed(3)}</div>
-                                        <div style="padding:6px 9px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Citations ${formatFwciValue(paper.citation_count)}</div>
-                                    </div>
-                                    <div style="font-size:12px; color:#475569; line-height:1.7; margin-bottom:10px;">${escapeHtml(paper.why_matched || 'Potential challenge extension around the seed paper.')}</div>
-                                    ${paper.caveat ? `<div style="font-size:11px; color:#7c2d12; line-height:1.65; margin-bottom:10px; padding:10px 12px; border-radius:14px; background:#fff7ed;">${escapeHtml(paper.caveat)}</div>` : ''}
-                                    <div style="font-size:12px; color:#475569; line-height:1.65; margin-bottom:10px;">${escapeHtml((paper.abstract || 'No abstract available.').slice(0, 300))}${(paper.abstract || '').length > 300 ? '...' : ''}</div>
-                                    <div style="display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap;">
-                                        ${paper.paper_url ? `<a href="${escapeHtml(paper.paper_url)}" target="_blank" rel="noopener noreferrer" style="font-size:12px;">Open paper</a>` : ''}
-                                        ${paper.source_url && paper.source_url !== paper.paper_url ? `<a href="${escapeHtml(paper.source_url)}" target="_blank" rel="noopener noreferrer" style="font-size:12px;">Source</a>` : ''}
+                                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                                        <button class="btn btn-outline" style="padding:9px 12px; font-size:12px;" onclick="selectChallengeStardust(${Number(detail.id)})" ${challengeStardustState.loadingDetail ? 'disabled' : ''}>Reload</button>
+                                        <button class="btn btn-outline" style="padding:9px 12px; font-size:12px; color:#b91c1c; border-color:#fecaca; background:#fff5f5;" onclick="deleteChallengeStardust(${Number(detail.id)})" ${challengeStardustState.loadingDetail ? 'disabled' : ''}>Delete Stardust</button>
+                                        <button class="btn btn-primary" style="padding:9px 12px; font-size:12px;" onclick="addSelectedChallengeStardustPapers()" ${selectedCount ? '' : 'disabled'}>Add Selected to StarMap${selectedCount ? ` (${selectedCount})` : ''}</button>
                                     </div>
                                 </div>
-                            `;
-                        }).join('')}
+
+                                <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+                                    <button class="mini-toggle ${challengeStardustState.sourceFilter === 'all' ? 'active' : ''}" onclick="setChallengeStardustSourceFilter('all')">All</button>
+                                    <button class="mini-toggle ${challengeStardustState.sourceFilter === 'hop_1' ? 'active' : ''}" onclick="setChallengeStardustSourceFilter('hop_1')">Hop 1</button>
+                                    <button class="mini-toggle ${challengeStardustState.sourceFilter === 'hop_2' ? 'active' : ''}" onclick="setChallengeStardustSourceFilter('hop_2')">Hop 2</button>
+                                    <button class="mini-toggle ${challengeStardustState.sourceFilter === 'semantic_supplement' ? 'active' : ''}" onclick="setChallengeStardustSourceFilter('semantic_supplement')">Semantic Supplement</button>
+                                </div>
+
+                                <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+                                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                        <div class="evidence-chip" style="background:#fef2f2; color:#b91c1c; border-color:#fecaca;">Hop 1 refs ${Number(sourceSummary.hop1_reference_count || 0)}</div>
+                                        <div class="evidence-chip" style="background:#eff6ff; color:#1d4ed8; border-color:#dbeafe;">Hop 1 cited-by ${Number(sourceSummary.hop1_cited_by_count || 0)}</div>
+                                        <div class="evidence-chip" style="background:#eef2ff; color:#4338ca; border-color:#e0e7ff;">Hop 2 seeds ${Number(sourceSummary.hop2_seed_count || 0)}</div>
+                                        <div class="evidence-chip" style="background:#ecfeff; color:#0f766e; border-color:#99f6e4;">Semantic ${Number(sourceSummary.semantic_result_count || 0)}</div>
+                                    </div>
+                                    ${filteredPapers.length ? `
+                                        <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#475569; font-weight:700;">
+                                            <input type="checkbox" ${allSelected ? 'checked' : ''} onchange="toggleAllChallengeStardustPapers(this.checked)">
+                                            <span>Select visible papers</span>
+                                        </label>
+                                    ` : ''}
+                                </div>
+
+                                ${challengeStardustState.loadingDetail ? `
+                                    <div style="padding:18px; border-radius:18px; border:1px solid rgba(148,163,184,0.18); background:#fff; font-size:12px; color:#64748b;">Loading Stardust papers...</div>
+                                ` : filteredPapers.length ? `
+                                    <div style="display:grid; gap:12px;">
+                                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:12px; ${isPaperListExpanded ? '' : 'max-height:760px; overflow-y:auto; padding-right:4px; align-content:start;'}">
+                                            ${filteredPapers.map((paper, index) => {
+                                                const selectionKey = getChallengeStardustSelectionKey(paper);
+                                                const checked = selectionSet.has(selectionKey);
+                                                return `
+                                                    <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:14px; background:#fff; box-shadow:0 10px 24px rgba(15,23,42,0.04);">
+                                                        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:10px;">
+                                                            <label style="display:flex; align-items:flex-start; gap:10px; flex:1; cursor:pointer;">
+                                                                <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleChallengeStardustPaper('${encodeURIComponent(selectionKey)}', this.checked)" style="margin-top:3px;">
+                                                                <div style="flex:1;">
+                                                                    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
+                                                                        <div style="padding:4px 8px; border-radius:999px; background:#fef2f2; color:#b91c1c; font-size:11px; font-weight:800;">Candidate ${index + 1}</div>
+                                                                        <div style="padding:4px 8px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">${escapeHtml(getChallengeStardustSourceLabel(paper.discovery_source || paper.relationship_type || 'all'))}</div>
+                                                                        <div style="padding:4px 8px; border-radius:999px; background:#fff7ed; color:#c2410c; font-size:11px; font-weight:700;">Hop ${Number(paper.hop_distance || 0)}</div>
+                                                                        ${paper.year ? `<div style="padding:4px 8px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:11px; font-weight:700;">${escapeHtml(paper.year)}</div>` : ''}
+                                                                    </div>
+                                                                    <div style="font-size:15px; line-height:1.38; font-weight:800; color:#3340a7; margin-bottom:6px;">${escapeHtml(paper.title || 'Untitled')}</div>
+                                                                    <div style="font-size:12px; color:#64748b; line-height:1.65;">${escapeHtml(paper.authors || 'Unknown authors')}${paper.publication_venue ? ` | ${escapeHtml(paper.publication_venue)}` : ''}</div>
+                                                                </div>
+                                                            </label>
+                                                            <div style="padding:8px 10px; border-radius:14px; background:#f8fafc; min-width:90px; text-align:right;">
+                                                                <div style="font-size:10px; color:#64748b; font-weight:800; text-transform:uppercase; letter-spacing:0.06em;">Challenge Fit</div>
+                                                                <div style="font-size:18px; font-weight:900; color:#1f2a69;">${Number(paper.challenge_score || 0).toFixed(3)}</div>
+                                                            </div>
+                                                        </div>
+                                                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+                                                            <div style="padding:6px 9px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Seed overlap ${Number(paper.seed_similarity || 0).toFixed(3)}</div>
+                                                            <div style="padding:6px 9px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Claim relevance ${Number(paper.claim_relevance || 0).toFixed(3)}</div>
+                                                            <div style="padding:6px 9px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:700;">Citations ${formatFwciValue(paper.citation_count)}</div>
+                                                        </div>
+                                                        <div style="font-size:12px; color:#475569; line-height:1.72; margin-bottom:10px;">${escapeHtml(paper.why_matched || 'Stored as a challenge-side candidate.')}</div>
+                                                        ${paper.caveat ? `<div style="font-size:11px; color:#7c2d12; line-height:1.65; margin-bottom:10px; padding:10px 12px; border-radius:14px; background:#fff7ed;">${escapeHtml(paper.caveat)}</div>` : ''}
+                                                        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                                                            <div style="font-size:12px; color:#64748b; line-height:1.65;">${escapeHtml((paper.abstract || 'No abstract available.').slice(0, 220))}${(paper.abstract || '').length > 220 ? '...' : ''}</div>
+                                                            <button class="btn btn-outline" style="padding:7px 10px; font-size:11px;" onclick="openChallengeStardustPaperModal('${encodeURIComponent(selectionKey)}')">View Details</button>
+                                                        </div>
+                                                    </div>
+                                                `;
+                                            }).join('')}
+                                        </div>
+                                        ${filteredPapers.length > 4 ? `
+                                            <div style="display:flex; justify-content:center;">
+                                                <button class="btn btn-outline" style="padding:10px 14px; font-size:12px; min-width:180px;" onclick="toggleChallengeStardustPaperListExpanded(${Number(detail.id)})">
+                                                    ${isPaperListExpanded ? 'Collapse List' : `Expand Full List (${filteredPapers.length})`}
+                                                </button>
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                ` : `
+                                    <div style="padding:18px; border-radius:18px; border:1px dashed rgba(148,163,184,0.22); background:#fff; font-size:12px; color:#64748b; line-height:1.7;">No papers matched the current source filter. Try switching back to <b>All</b>.</div>
+                                `}
+                            </div>
+                        ` : `
+                            <div style="border:1px dashed rgba(148,163,184,0.22); border-radius:22px; padding:22px; background:#fff; font-size:12px; color:#64748b; line-height:1.8;">
+                                Select a stored Stardust to inspect its papers, or create one from a challenge paper in the Evidence Board.
+                            </div>
+                        `}
                     </div>
-                ` : `
-                    <div style="padding:18px; border-radius:20px; border:1px dashed rgba(148,163,184,0.22); background:#fff;">
-                        <div style="font-size:14px; font-weight:800; color:#1f2a69; margin-bottom:8px;">No new challenge recommendations yet.</div>
-                        <div style="font-size:12px; color:#64748b; line-height:1.7;">This usually means the one-hop neighborhood was already inside StarMap, or the fetched neighbors looked too weak as challenge literature for the current claim.</div>
+                </div>
+            </div>
+        `;
+
+        renderChallengeStardustPaperModal();
+    }
+
+    function renderChallengeStardustPaperModal() {
+        const modal = document.getElementById('challenge-stardust-paper-modal');
+        const body = document.getElementById('challenge-stardust-paper-body');
+        if (!modal || !body) return;
+        const detail = challengeStardustState.detail;
+        const targetKey = String(challengeStardustState.paperModalPaperId || '').trim();
+        const paper = (detail?.papers || []).find(item => getChallengeStardustSelectionKey(item) === targetKey);
+        if (!paper) {
+            modal.classList.add('hidden');
+            body.innerHTML = '';
+            return;
+        }
+        const selectionKey = getChallengeStardustSelectionKey(paper);
+        body.innerHTML = `
+            <div style="display:grid; gap:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
+                    <div style="min-width:0; flex:1;">
+                        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+                            <div class="evidence-chip" style="background:#fef2f2; color:#b91c1c; border-color:#fecaca;">${escapeHtml(getChallengeStardustSourceLabel(paper.discovery_source || paper.relationship_type || 'all'))}</div>
+                            <div class="evidence-chip" style="background:#fff7ed; color:#c2410c; border-color:#fed7aa;">Hop ${Number(paper.hop_distance || 0)}</div>
+                            <div class="evidence-chip" style="background:#eef2ff; color:#4338ca; border-color:#e0e7ff;">Challenge ${Number(paper.challenge_score || 0).toFixed(3)}</div>
+                        </div>
+                        <div style="font-size:28px; line-height:1.1; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px;">${escapeHtml(paper.title || 'Untitled')}</div>
+                        <div style="font-size:13px; color:#64748b; line-height:1.75;">${escapeHtml(paper.authors || 'Unknown authors')}${paper.year ? ` | ${escapeHtml(paper.year)}` : ''}${paper.publication_venue ? ` | ${escapeHtml(paper.publication_venue)}` : ''}</div>
                     </div>
-                `}
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button class="btn btn-outline" style="padding:9px 12px; font-size:12px;" onclick="toggleChallengeStardustPaper('${encodeURIComponent(selectionKey)}', true)">Select for Import</button>
+                        ${paper.paper_url ? `<a class="btn btn-outline" href="${escapeHtml(paper.paper_url)}" target="_blank" rel="noopener noreferrer" style="padding:9px 12px; font-size:12px; text-decoration:none;">Open Paper</a>` : ''}
+                        ${paper.source_url && paper.source_url !== paper.paper_url ? `<a class="btn btn-outline" href="${escapeHtml(paper.source_url)}" target="_blank" rel="noopener noreferrer" style="padding:9px 12px; font-size:12px; text-decoration:none;">Source</a>` : ''}
+                    </div>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <div class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">Seed overlap ${Number(paper.seed_similarity || 0).toFixed(3)}</div>
+                    <div class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">Claim relevance ${Number(paper.claim_relevance || 0).toFixed(3)}</div>
+                    <div class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">Quality ${Number(paper.quality_score || 0).toFixed(3)}</div>
+                    <div class="evidence-chip" style="background:#f8fafc; color:#475569; border-color:#e2e8f0;">Citations ${formatFwciValue(paper.citation_count)}</div>
+                </div>
+                <div class="secondary-panel" style="margin:0; padding:16px;">
+                    <div style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px;">Why Matched</div>
+                    <div style="font-size:13px; line-height:1.78; color:#334155;">${escapeHtml(paper.why_matched || 'No stored rationale.')}</div>
+                </div>
+                ${paper.caveat ? `
+                    <div class="secondary-panel" style="margin:0; padding:16px; background:#fff7ed; border-color:#fed7aa;">
+                        <div style="font-size:12px; font-weight:900; color:#9a3412; margin-bottom:8px;">Caveat</div>
+                        <div style="font-size:13px; line-height:1.78; color:#9a3412;">${escapeHtml(paper.caveat)}</div>
+                    </div>
+                ` : ''}
+                <div class="secondary-panel" style="margin:0; padding:16px;">
+                    <div style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px;">Abstract</div>
+                    <div style="font-size:13px; line-height:1.8; color:#334155;">${escapeHtml(paper.abstract || 'No abstract available.')}</div>
+                </div>
             </div>
         `;
         modal.classList.remove('hidden');
@@ -6146,6 +6887,7 @@ Rules:
             const hasRequestedSelection = evidenceBoardState.claims.some(claim => Number(claim.id) === requestedSelection);
             if (!hasRequestedSelection) {
                 evidenceBoardState.reasoningEvidenceId = null;
+                evidenceBoardState.pendingSectionCollapsed = true;
                 evidenceBoardState.expandedColumns = getInitialEvidenceColumnExpansion();
             }
             evidenceBoardState.selectedClaimId = hasRequestedSelection
@@ -6233,6 +6975,7 @@ Rules:
         evidenceBoardState.summary = null;
         evidenceBoardState.meta = null;
         evidenceBoardState.reasoningEvidenceId = null;
+        evidenceBoardState.pendingSectionCollapsed = true;
         evidenceBoardState.challengeExpansionOpen = false;
         evidenceBoardState.challengeExpansionLoading = false;
         evidenceBoardState.challengeExpansionSeedEvidenceId = null;
@@ -6243,6 +6986,10 @@ Rules:
         evidenceBoardState.challengeExpansionStatus = '';
         evidenceBoardState.challengeExpansionError = '';
         evidenceBoardState.expandedColumns = getInitialEvidenceColumnExpansion();
+        challengeStardustState.createModalOpen = false;
+        challengeStardustState.createLoading = false;
+        challengeStardustState.createStatus = '';
+        challengeStardustState.createError = '';
         renderEvidenceBoardSection();
         await loadEvidenceBoard(numericId, { silent: true });
     };
@@ -6303,6 +7050,7 @@ Rules:
         try {
             evidenceBoardState.analyzing = true;
             evidenceBoardState.reasoningEvidenceId = null;
+            evidenceBoardState.pendingSectionCollapsed = true;
             evidenceBoardState.expandedColumns = getInitialEvidenceColumnExpansion();
             startEvidenceAnalysisProgress();
             setEvidenceBoardStatus(`Analyzing candidate papers for this claim with the ${range.label.toLowerCase()} range…`, 'muted');
@@ -6388,10 +7136,18 @@ Rules:
     };
 
     window.openChallengeExpansionSeedPaper = () => {
-        const seedItem = getSelectedChallengeExpansionSeed();
-        const paper = evidenceBoardState.challengeExpansionSeedPaper || resolveEvidencePaper(seedItem);
+        const seedItem = challengeStardustState.createSeedItem || findEvidenceItemInBoard(challengeStardustState.createSeedEvidenceId);
+        const paper = challengeStardustState.createSeedPaper || resolveEvidencePaper(seedItem);
         if (!paper) return;
         openPaperModal(paper);
+    };
+
+    window.toggleChallengeExpansionSeedMarkedNode = () => {
+        const seedItem = challengeStardustState.createSeedItem || findEvidenceItemInBoard(challengeStardustState.createSeedEvidenceId);
+        const paper = challengeStardustState.createSeedPaper || resolveEvidencePaper(seedItem);
+        if (!paper) return;
+        togglePaperMarkForPaper(paper);
+        renderChallengeExpansionModal();
     };
 
     window.openChallengeExpansion = async evidenceId => {
@@ -6403,58 +7159,33 @@ Rules:
             renderEvidenceBoardSection();
             return;
         }
-
-        const requestId = (evidenceBoardState.challengeExpansionRequestId || 0) + 1;
-        evidenceBoardState.challengeExpansionRequestId = requestId;
-        evidenceBoardState.challengeExpansionOpen = true;
-        evidenceBoardState.challengeExpansionLoading = true;
-        evidenceBoardState.challengeExpansionSeedEvidenceId = numericId;
-        evidenceBoardState.challengeExpansionRecommendations = [];
-        evidenceBoardState.challengeExpansionSelections = new Set();
-        evidenceBoardState.challengeExpansionSeedPaper = resolveEvidencePaper(item) || null;
-        evidenceBoardState.challengeExpansionSourceSummary = null;
-        evidenceBoardState.challengeExpansionStatus = 'Loading one-hop challenge neighbors from OpenAlex...';
-        evidenceBoardState.challengeExpansionError = '';
-        renderEvidenceBoardSection();
-
-        try {
-            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/claims/${evidenceBoardState.selectedClaimId}/challenge-expand`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    evidence_id: numericId,
-                    ...getScholarConfig()
-                })
-            });
-            const data = await res.json();
-            if (!res.ok) {
-                throw new Error(data.detail || 'Challenge expansion failed.');
-            }
-            if (requestId !== evidenceBoardState.challengeExpansionRequestId) return;
-            evidenceBoardState.challengeExpansionRecommendations = Array.isArray(data.recommendations) ? data.recommendations : [];
-            evidenceBoardState.challengeExpansionSeedPaper = data.seed_paper || evidenceBoardState.challengeExpansionSeedPaper;
-            evidenceBoardState.challengeExpansionSourceSummary = data.source_summary || null;
-            evidenceBoardState.challengeExpansionStatus = evidenceBoardState.challengeExpansionRecommendations.length
-                ? 'Challenge recommendations are ready. Review them first, then add only the papers you want.'
-                : 'No new challenge recommendations cleared the one-hop screening for this seed paper.';
-        } catch (error) {
-            if (requestId !== evidenceBoardState.challengeExpansionRequestId) return;
-            evidenceBoardState.challengeExpansionError = error.message || 'Challenge expansion failed.';
-            evidenceBoardState.challengeExpansionStatus = '';
-        } finally {
-            if (requestId === evidenceBoardState.challengeExpansionRequestId) {
-                evidenceBoardState.challengeExpansionLoading = false;
-                renderEvidenceBoardSection();
-            }
+        if (!challengeStardustState.items.length && !challengeStardustState.loadingList) {
+            await loadProjectStardusts({ silent: true });
         }
+        const seedPaper = resolveEvidencePaper(item) || null;
+        const suggestedNameBase = String(seedPaper?.title || item?.paper_title || 'Challenge Trail')
+            .trim()
+            .replace(/\s+/g, ' ')
+            .slice(0, 72);
+        challengeStardustState.createModalOpen = true;
+        challengeStardustState.createLoading = false;
+        challengeStardustState.createSeedEvidenceId = numericId;
+        challengeStardustState.createSeedItem = item;
+        challengeStardustState.createSeedPaper = seedPaper;
+        challengeStardustState.createName = `${suggestedNameBase}${suggestedNameBase ? ' — ' : ''}Challenge Stardust`;
+        challengeStardustState.createSubTargetThesis = String(getSelectedEvidenceClaim()?.claim_text || '').trim();
+        challengeStardustState.createReplaceStardustId = '';
+        challengeStardustState.createStatus = '';
+        challengeStardustState.createError = '';
+        renderChallengeExpansionModal();
     };
 
     window.closeChallengeExpansion = () => {
-        evidenceBoardState.challengeExpansionOpen = false;
-        evidenceBoardState.challengeExpansionLoading = false;
-        evidenceBoardState.challengeExpansionStatus = '';
-        evidenceBoardState.challengeExpansionError = '';
-        renderEvidenceBoardSection();
+        challengeStardustState.createModalOpen = false;
+        challengeStardustState.createLoading = false;
+        challengeStardustState.createStatus = '';
+        challengeStardustState.createError = '';
+        renderChallengeExpansionModal();
     };
 
     window.handleChallengeExpansionOverlayClick = event => {
@@ -6463,59 +7194,247 @@ Rules:
         }
     };
 
-    window.toggleChallengeExpansionPaper = (encodedKey, checked) => {
-        const key = decodeURIComponent(encodedKey || '');
-        const next = new Set(evidenceBoardState.challengeExpansionSelections || []);
-        if (checked) next.add(key);
-        else next.delete(key);
-        evidenceBoardState.challengeExpansionSelections = next;
+    window.updateChallengeStardustDraft = (field, value) => {
+        if (field === 'name') {
+            challengeStardustState.createName = value || '';
+        } else if (field === 'sub_target_thesis') {
+            challengeStardustState.createSubTargetThesis = value || '';
+        }
         renderChallengeExpansionModal();
     };
 
-    window.toggleAllChallengeExpansionPapers = checked => {
-        const recommendations = evidenceBoardState.challengeExpansionRecommendations || [];
-        evidenceBoardState.challengeExpansionSelections = checked
-            ? new Set(recommendations.map(getLiteratureWatchRecommendationKey))
-            : new Set();
+    window.updateChallengeStardustReplacement = value => {
+        challengeStardustState.createReplaceStardustId = String(value || '').trim();
         renderChallengeExpansionModal();
     };
 
-    window.addSelectedChallengeExpansionPapers = async () => {
-        const recommendations = evidenceBoardState.challengeExpansionRecommendations || [];
-        if (!recommendations.length || !evidenceBoardState.challengeExpansionSelections?.size) return;
-        const selectedPapers = recommendations
-            .filter(paper => evidenceBoardState.challengeExpansionSelections.has(getLiteratureWatchRecommendationKey(paper)))
-            .map(paper => createImportedPaperRecord({
-                ...paper,
-                import_source: 'citation_import'
-            }, 'citation_import'));
-        if (!selectedPapers.length) return;
+    window.createChallengeStardustFromModal = async () => {
+        if (!currentProject?.id || !evidenceBoardState.selectedClaimId || !challengeStardustState.createSeedEvidenceId) return;
+        const currentCount = (challengeStardustState.items || []).length;
+        const atLimit = currentCount >= getChallengeStardustLimit();
+        const replaceId = Number(challengeStardustState.createReplaceStardustId || 0);
+        if (atLimit && !replaceId) {
+            challengeStardustState.createError = `This project already stores ${getChallengeStardustLimit()} Challenge Stardusts. Choose one to replace before creating a new Stardust.`;
+            challengeStardustState.createStatus = '';
+            renderChallengeExpansionModal();
+            return;
+        }
 
-        evidenceBoardState.challengeExpansionLoading = true;
-        evidenceBoardState.challengeExpansionError = '';
-        evidenceBoardState.challengeExpansionStatus = `Adding ${selectedPapers.length} challenge recommendation(s) to StarMap. Similarity will refresh in the background.`;
+        const payload = {
+            claim_id: Number(evidenceBoardState.selectedClaimId),
+            seed_evidence_id: Number(challengeStardustState.createSeedEvidenceId),
+            name: String(challengeStardustState.createName || '').trim(),
+            sub_target_thesis: String(challengeStardustState.createSubTargetThesis || '').trim(),
+            max_papers: 50,
+            ...getScholarConfig()
+        };
+        if (!payload.name || !payload.sub_target_thesis) {
+            challengeStardustState.createError = 'Stardust name and sub target thesis are both required.';
+            challengeStardustState.createStatus = '';
+            renderChallengeExpansionModal();
+            return;
+        }
+        if (replaceId) payload.replace_stardust_id = replaceId;
+
+        const requestId = (challengeStardustState.createRequestId || 0) + 1;
+        challengeStardustState.createRequestId = requestId;
+        challengeStardustState.createLoading = true;
+        challengeStardustState.createError = '';
+        challengeStardustState.createStatus = 'Generating Challenge Stardust from the selected seed paper...';
         renderChallengeExpansionModal();
 
         try {
-            const result = await mergeImportedPapersIntoProject(selectedPapers, 'Challenge expansion', {
+            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/stardusts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                if (res.status === 409) {
+                    void loadProjectStardusts({ silent: true });
+                }
+                throw new Error(data.detail || 'Could not create the Challenge Stardust.');
+            }
+            if (requestId !== challengeStardustState.createRequestId) return;
+            challengeStardustState.createStatus = `Challenge Stardust created with ${Number(data?.stardust?.paper_count || 0)} stored papers.`;
+            challengeStardustState.createLoading = false;
+            challengeStardustState.createModalOpen = false;
+            challengeStardustState.status = challengeStardustState.createStatus;
+            challengeStardustState.sourceFilter = 'all';
+            if (workspaceSectionCollapseState.stardust) {
+                workspaceSectionCollapseState = {
+                    ...workspaceSectionCollapseState,
+                    stardust: false
+                };
+                persistWorkspaceSectionCollapseState();
+                applyWorkspaceSectionCollapseState();
+            }
+            await loadProjectStardusts({ selectStardustId: data?.stardust?.id, silent: true });
+        } catch (error) {
+            if (requestId !== challengeStardustState.createRequestId) return;
+            challengeStardustState.createError = error.message || 'Could not create the Challenge Stardust.';
+            challengeStardustState.createStatus = '';
+        } finally {
+            if (requestId === challengeStardustState.createRequestId) {
+                challengeStardustState.createLoading = false;
+                renderChallengeExpansionModal();
+                renderChallengeStardustSection();
+            }
+        }
+    };
+
+    window.selectChallengeStardust = async stardustId => {
+        const numericId = Number(stardustId || 0);
+        if (!numericId || !currentProject?.id) return;
+        challengeStardustState.selectedId = numericId;
+        challengeStardustState.sourceFilter = 'all';
+        challengeStardustState.paperModalPaperId = null;
+        renderChallengeStardustSection();
+        await loadProjectStardustDetail(numericId, { silent: true });
+    };
+
+    window.refreshChallengeStardusts = async () => {
+        await loadProjectStardusts({ selectStardustId: challengeStardustState.selectedId, silent: false });
+    };
+
+    window.deleteChallengeStardust = async stardustId => {
+        const numericId = Number(stardustId || 0);
+        if (!currentProject?.id || !numericId) return;
+        const target = (challengeStardustState.items || []).find(item => Number(item.id) === numericId)
+            || (challengeStardustState.detail && Number(challengeStardustState.detail.id) === numericId ? challengeStardustState.detail : null);
+        const label = target?.name || `Challenge Stardust ${numericId}`;
+        if (!confirm(`Delete "${label}" from this project? This only removes the stored Stardust, not papers already imported into the main StarMap.`)) return;
+
+        challengeStardustState.loadingDetail = true;
+        challengeStardustState.error = '';
+        challengeStardustState.status = `Deleting "${label}"...`;
+        renderChallengeStardustSection();
+        try {
+            const res = await fetch(`${API_BASE}/projects/${currentProject.id}/stardusts/${numericId}`, {
+                method: 'DELETE'
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Could not delete this Challenge Stardust.');
+            }
+
+            delete challengeStardustState.paperSelectionsByStardust[String(numericId)];
+            delete challengeStardustState.paperListExpandedByStardust[String(numericId)];
+            if (Number(challengeStardustState.selectedId || 0) === numericId) {
+                challengeStardustState.selectedId = null;
+                challengeStardustState.detail = null;
+            }
+            challengeStardustState.status = `"${label}" was deleted.`;
+            await loadProjectStardusts({ silent: true });
+        } catch (error) {
+            challengeStardustState.error = error.message || 'Could not delete this Challenge Stardust.';
+        } finally {
+            challengeStardustState.loadingDetail = false;
+            renderChallengeStardustSection();
+        }
+    };
+
+    window.setChallengeStardustSourceFilter = filterKey => {
+        challengeStardustState.sourceFilter = String(filterKey || 'all').trim().toLowerCase() || 'all';
+        renderChallengeStardustSection();
+    };
+
+    window.toggleChallengeStardustPaper = (encodedKey, checked) => {
+        const key = decodeURIComponent(encodedKey || '');
+        const detailId = challengeStardustState.detail?.id || challengeStardustState.selectedId;
+        const next = new Set(getChallengeStardustSelectionSet(detailId));
+        const paper = (challengeStardustState.detail?.papers || []).find(item => getChallengeStardustSelectionKey(item) === key);
+        if (checked) next.add(key);
+        else next.delete(key);
+        challengeStardustState.paperSelectionsByStardust[String(detailId || '')] = next;
+        renderChallengeStardustSection();
+        if (paper?.id) {
+            void syncChallengeStardustPaperSelection(paper.id, checked);
+        }
+    };
+
+    window.toggleAllChallengeStardustPapers = checked => {
+        const detailId = challengeStardustState.detail?.id || challengeStardustState.selectedId;
+        const visiblePapers = getFilteredChallengeStardustPapers();
+        challengeStardustState.paperSelectionsByStardust[String(detailId || '')] = checked
+            ? new Set(visiblePapers.map(getChallengeStardustSelectionKey).filter(Boolean))
+            : new Set();
+        renderChallengeStardustSection();
+        visiblePapers.forEach(paper => {
+            if (paper?.id) {
+                void syncChallengeStardustPaperSelection(paper.id, checked);
+            }
+        });
+    };
+
+    window.toggleChallengeStardustPaperListExpanded = stardustId => {
+        const key = String(Number(stardustId || 0) || '').trim();
+        if (!key) return;
+        challengeStardustState.paperListExpandedByStardust[key] = !challengeStardustState.paperListExpandedByStardust[key];
+        renderChallengeStardustSection();
+    };
+
+    window.openChallengeStardustPaperModal = encodedKey => {
+        challengeStardustState.paperModalPaperId = decodeURIComponent(encodedKey || '');
+        renderChallengeStardustPaperModal();
+    };
+
+    window.closeChallengeStardustPaperModal = () => {
+        challengeStardustState.paperModalPaperId = null;
+        renderChallengeStardustPaperModal();
+    };
+
+    window.handleChallengeStardustPaperOverlayClick = event => {
+        if (event?.target?.id === 'challenge-stardust-paper-modal') {
+            closeChallengeStardustPaperModal();
+        }
+    };
+
+    window.addSelectedChallengeStardustPapers = async () => {
+        const detail = challengeStardustState.detail;
+        if (!detail?.papers?.length) return;
+        const selectionSet = getChallengeStardustSelectionSet(detail.id);
+        if (!selectionSet.size) return;
+        const selectedPapers = detail.papers
+            .filter(paper => selectionSet.has(getChallengeStardustSelectionKey(paper)))
+            .map(paper => createImportedPaperRecord({
+                ...paper,
+                import_source: 'challenge_stardust'
+            }, 'challenge_stardust'));
+        if (!selectedPapers.length) return;
+
+        challengeStardustState.loadingDetail = true;
+        challengeStardustState.error = '';
+        challengeStardustState.status = `Adding ${selectedPapers.length} Challenge Stardust paper(s) to StarMap. Similarity will refresh in the background.`;
+        renderChallengeStardustSection();
+
+        try {
+            const result = await mergeImportedPapersIntoProject(selectedPapers, 'Challenge Stardust', {
                 deferSimilarity: true,
                 partialWorkspaceRefresh: true
             });
-            const selectedKeys = new Set(selectedPapers.map(getLiteratureWatchRecommendationKey));
-            evidenceBoardState.challengeExpansionRecommendations = recommendations.filter(
-                paper => !selectedKeys.has(getLiteratureWatchRecommendationKey(paper))
-            );
-            evidenceBoardState.challengeExpansionSelections = new Set();
-            evidenceBoardState.challengeExpansionStatus = `Added ${result.imported} new paper(s) and updated ${result.updated} existing paper(s). Similarity scoring will finish in the background.`;
-            evidenceBoardState.challengeExpansionSourceSummary = {
-                ...(evidenceBoardState.challengeExpansionSourceSummary || {}),
-                returned_count: evidenceBoardState.challengeExpansionRecommendations.length
-            };
+            const selectedPaperIds = detail.papers
+                .filter(paper => selectionSet.has(getChallengeStardustSelectionKey(paper)))
+                .map(paper => Number(paper.id || 0))
+                .filter(Boolean);
+            challengeStardustState.paperSelectionsByStardust[String(detail.id)] = new Set();
+            if (challengeStardustState.detail?.papers?.length) {
+                challengeStardustState.detail.papers = challengeStardustState.detail.papers.map(paper => (
+                    selectedPaperIds.includes(Number(paper.id || 0))
+                        ? { ...paper, selected_for_import: false }
+                        : paper
+                ));
+            }
+            selectedPaperIds.forEach(paperId => {
+                void syncChallengeStardustPaperSelection(paperId, false);
+            });
+            challengeStardustState.status = `Added ${result.imported} new paper(s) and updated ${result.updated} existing paper(s) from this Stardust. Similarity scoring will finish in the background.`;
         } catch (error) {
-            evidenceBoardState.challengeExpansionError = error.message || 'Could not add selected challenge papers to StarMap.';
+            challengeStardustState.error = error.message || 'Could not add selected Challenge Stardust papers to StarMap.';
         } finally {
-            evidenceBoardState.challengeExpansionLoading = false;
-            renderEvidenceBoardSection();
+            challengeStardustState.loadingDetail = false;
+            renderChallengeStardustSection();
         }
     };
 
@@ -6526,6 +7445,11 @@ Rules:
             ...(evidenceBoardState.expandedColumns || getInitialEvidenceColumnExpansion()),
             [key]: !evidenceBoardState.expandedColumns?.[key]
         };
+        renderEvidenceBoardSection();
+    };
+
+    window.toggleEvidencePendingSection = () => {
+        evidenceBoardState.pendingSectionCollapsed = !(evidenceBoardState.pendingSectionCollapsed !== false);
         renderEvidenceBoardSection();
     };
 
@@ -8688,6 +9612,8 @@ Return ONLY a JSON object matching this exact schema:
             closeReviewModal();
             closeProjectSettingsModal();
             closeZoteroSyncModal();
+            closeChallengeExpansion();
+            closeChallengeStardustPaperModal();
         }
         if (v !== 'dashboard') {
             closeIntroductionModal();
@@ -9088,7 +10014,7 @@ Return ONLY a JSON object matching this exact schema:
         if (currentChartMode === 'network' && currentNetworkGraphState?.baseNodes?.length) {
             const baseNode = currentNetworkGraphState.baseNodes.find(node => node.selectionKey === selectionKey);
             if (!baseNode) return;
-            const baseColor = baseNode.paperData?.isCenter ? '#eab308' : getPaperColor(baseNode.paperData);
+            const baseColor = getChartNodeBaseColor(baseNode.paperData);
             baseNode.symbol = getPaperNodeSymbol(baseNode.paperData, recentImportHighlightKeys);
             baseNode.itemStyle = getPaperNodeStyle(baseNode.paperData, {
                 color: baseColor,
@@ -9154,6 +10080,8 @@ Return ONLY a JSON object matching this exact schema:
             ? currentKeys.filter(item => item !== key)
             : [...currentKeys, key];
         setMarkedNodeKeys(nextKeys, currentProject.id);
+        if (isMarked) removeMarkedNodeEntry(key, currentProject.id);
+        else upsertMarkedNodeEntry(buildMarkedNodeEntryFromPaper(paper), currentProject.id);
         updateMarkedPaperButton(paper);
         renderMarkedNodesPanel();
         refreshMarkedNodeVisualInCurrentChart(paper);
@@ -9169,17 +10097,48 @@ Return ONLY a JSON object matching this exact schema:
         const key = decodeURIComponent(encodedKey || '');
         const paper = currentProject?.top_papers?.find(item => getStablePaperGraphKey(item) === key);
         setMarkedNodeKeys(getMarkedNodeKeys(currentProject.id).filter(item => item !== key), currentProject.id);
+        removeMarkedNodeEntry(key, currentProject.id);
         renderMarkedNodesPanel();
         updateMarkedPaperButton();
         if (paper) refreshMarkedNodeVisualInCurrentChart(paper);
     };
 
     window.focusMarkedNode = async (encodedKey) => {
-        if (!currentProject?.top_papers?.length) return;
+        if (!currentProject?.id) return;
         const key = decodeURIComponent(encodedKey || '');
-        const paper = currentProject.top_papers.find(item => getStablePaperGraphKey(item) === key);
+        const paper = (currentProject.top_papers || []).find(item => getStablePaperGraphKey(item) === key);
         if (!paper) {
+            const entry = getMarkedNodeEntryByKey(key, currentProject.id);
+            if (entry?.source_type === 'stardust' && entry.stardust_id) {
+                if (workspaceSectionCollapseState.stardust) {
+                    workspaceSectionCollapseState = {
+                        ...workspaceSectionCollapseState,
+                        stardust: false
+                    };
+                    persistWorkspaceSectionCollapseState();
+                    applyWorkspaceSectionCollapseState();
+                }
+                challengeStardustState.selectedId = Number(entry.stardust_id);
+                challengeStardustState.paperModalPaperId = null;
+                renderChallengeStardustSection();
+                const detail = await loadProjectStardustDetail(Number(entry.stardust_id), { silent: true });
+                const targetPaper = (detail?.papers || []).find(item => (
+                    getChallengeStardustSelectionKey(item) === String(entry.paper_key || '').trim()
+                    || getStablePaperGraphKey(item) === key
+                ));
+                if (!targetPaper) {
+                    challengeStardustState.paperModalPaperId = null;
+                    challengeStardustState.error = 'This marked node is no longer available inside its Challenge Stardust.';
+                    renderChallengeStardustSection();
+                    return;
+                }
+                challengeStardustState.paperModalPaperId = getChallengeStardustSelectionKey(targetPaper);
+                renderChallengeStardustPaperModal();
+                document.getElementById('challenge-stardust-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                return;
+            }
             setMarkedNodeKeys(getMarkedNodeKeys(currentProject.id).filter(item => item !== key), currentProject.id);
+            removeMarkedNodeEntry(key, currentProject.id);
             renderMarkedNodesPanel();
             return;
         }
@@ -9192,6 +10151,37 @@ Return ONLY a JSON object matching this exact schema:
             return;
         }
         startMarkedNodeOrbitalFocus(key);
+    };
+
+    window.promptMarkedNodeStarMapFocus = async (event, encodedKey) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        if (!currentProject?.top_papers?.length || currentChartMode === 'citation') return false;
+        const key = decodeURIComponent(encodedKey || '');
+        const paper = currentProject.top_papers.find(item => getStablePaperGraphKey(item) === key);
+        if (!paper || paper.isCenter) return false;
+        const confirmed = window.confirm(
+            'Do you want to generate a StarMap centered on this paper?\n\nThe Orbital / Network StarMap will be rebuilt around it, and your original project thesis will remain visible in green.'
+        );
+        if (!confirmed) return false;
+        closePaperModal();
+        currentStarMapFocusKey = key;
+        currentNetworkViewportFocusKey = null;
+        currentNetworkSelectionKey = getStablePaperGraphKey(paper);
+        updateChartActionButtons();
+        document.getElementById('starmap-visualization-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        await renderChart(currentProject.top_papers || []);
+        return false;
+    };
+
+    window.returnToProjectTargetStarMap = async () => {
+        if (!currentProject?.id) return;
+        closePaperModal();
+        currentStarMapFocusKey = '';
+        currentNetworkSelectionKey = null;
+        currentNetworkViewportFocusKey = null;
+        updateChartActionButtons();
+        await renderChart(currentProject.top_papers || []);
     };
 
     window.collapseMarkedNodePanel = (event) => {
@@ -12228,6 +13218,7 @@ About 500 words of literature review draft in markdown.`;
         const migrated = normalizeProjectPaperStates(currentProject);
         if (migrated) await syncPapersToBackend();
         resetEvidenceBoardState(currentProject.id);
+        resetChallengeStardustState(currentProject.id);
         literatureWatchState = {
             projectId: currentProject.id,
             mode: 'target',
@@ -12254,6 +13245,7 @@ About 500 words of literature review draft in markdown.`;
         updateChartDensityWarning(currentChartRenderLimit);
         updateChartGestureHint(currentChartRenderLimit);
         zoteroSyncCache = { projectId: null, collections: [], previewsByCollection: {} };
+        currentStarMapFocusKey = '';
         currentNetworkSelectionKey = null;
         currentNetworkGraphState = null;
         closePaperModal();
@@ -12261,7 +13253,9 @@ About 500 words of literature review draft in markdown.`;
         switchView('workspace');
         runProjectPreload(currentProject, projectSettings);
         renderEvidenceBoardSection();
+        renderChallengeStardustSection();
         void hydrateEvidenceBoardForProject(currentProject.id, { silent: false });
+        void loadProjectStardusts({ silent: false });
         
         if (!myChart) {
             myChart = echarts.init(document.getElementById('chart-container'));
@@ -12379,6 +13373,7 @@ About 500 words of literature review draft in markdown.`;
         document.getElementById('btn-citation').classList.remove('active'); 
         document.getElementById(`btn-${mode}`).classList.add('active'); 
         updateCitationControlVisibility();
+        updateChartActionButtons();
         await updateWorkspaceUI(); 
     };
 
@@ -12579,15 +13574,12 @@ About 500 words of literature review draft in markdown.`;
         updateSimilarityRefreshUi();
         refreshThemeClusterCacheIndicator(currentProject);
         updateImportActionButton();
-
-        const refreshBtn = document.getElementById('btn-refresh-chart');
-        if (refreshBtn) {
-            if (currentProject.top_papers && currentProject.top_papers.some(p => p.is_new)) {
-                refreshBtn.classList.remove('hidden');
-            } else {
-                refreshBtn.classList.add('hidden');
-            }
+        if (currentStarMapFocusKey && !getCurrentStarMapFocusPaper(currentProject)) {
+            currentStarMapFocusKey = '';
+            currentNetworkSelectionKey = null;
+            currentNetworkViewportFocusKey = null;
         }
+        updateChartActionButtons();
 
         syncWorkspaceSearchAndFilterControls(resetSearchAndFilter);
         literatureWatchState.projectId = currentProject?.id || null;
@@ -12599,6 +13591,7 @@ About 500 words of literature review draft in markdown.`;
         literatureWatchState.journalSearchLoading = false;
         renderMarkedNodesPanel();
         renderEvidenceBoardSection();
+        renderChallengeStardustSection();
         renderLiteratureWatchModal();
         updateClearAllPapersButtonVisibility();
         renderWorkspacePaperView();
@@ -13978,6 +14971,7 @@ ${rawText}`;
         setChartRenderLimitButtons();
         updateChartDensityWarning(currentChartRenderLimit);
         updateChartGestureHint(currentChartRenderLimit);
+        updateChartActionButtons();
         if (!papers || papers.length === 0) { 
             currentOrbitalGraphState = null;
             currentNetworkGraphState = null;
@@ -13990,14 +14984,37 @@ ${rawText}`;
             .sort((a,b) => b.similarity - a.similarity)
             .slice(0, currentChartRenderLimit);
         const recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject);
-        const visibleOrbitalKeys = new Set(sortedPapers.map(paper => getStablePaperGraphKey(paper)).filter(Boolean));
-        if (markedNodeOrbitalFocusKey && !visibleOrbitalKeys.has(markedNodeOrbitalFocusKey)) {
-            clearMarkedNodeOrbitalFocus();
-        }
         myChart.clear(); 
         
         const hintBtn = document.getElementById('network-hint');
         updateCitationControlVisibility();
+        const focusedPaper = getCurrentStarMapFocusPaper();
+        if (focusedPaper && currentChartMode !== 'citation') {
+            currentCitationGraphState = null;
+            currentCitationSelectionKey = null;
+            if (hintBtn) {
+                hintBtn.classList.remove('hidden');
+                hintBtn.innerText = currentChartMode === 'orbital'
+                    ? `Focused orbital StarMap: centered on “${truncateText(focusedPaper.title || 'Focused paper', 42)}” • original thesis remains green`
+                    : `Focused network StarMap: centered on “${truncateText(focusedPaper.title || 'Focused paper', 42)}” • original thesis remains green`;
+            }
+            if (currentChartMode === 'orbital') {
+                currentNetworkGraphState = null;
+                currentNetworkSelectionKey = null;
+                currentNetworkViewportFocusKey = null;
+                await renderFocusedOrbital(papers, focusedPaper, recentImportHighlightKeys);
+            } else {
+                currentOrbitalGraphState = null;
+                currentNetworkViewportFocusKey = null;
+                currentNetworkSelectionKey = getStablePaperGraphKey(focusedPaper);
+                await renderFocusedNetwork(papers, focusedPaper, recentImportHighlightKeys);
+            }
+            return;
+        }
+        const visibleOrbitalKeys = new Set(sortedPapers.map(paper => getStablePaperGraphKey(paper)).filter(Boolean));
+        if (markedNodeOrbitalFocusKey && !visibleOrbitalKeys.has(markedNodeOrbitalFocusKey)) {
+            clearMarkedNodeOrbitalFocus();
+        }
         if (currentChartMode === 'orbital') { 
             currentOrbitalGraphState = null;
             currentNetworkGraphState = null;
@@ -14027,6 +15044,32 @@ ${rawText}`;
         }
     }
 
+    function getOrbitalPlacementByRank(rank = 1) {
+        let radius;
+        let nodeSize;
+        if (rank <= 20) {
+            radius = 60;
+            nodeSize = 25;
+        } else if (rank <= 50) {
+            radius = 120;
+            nodeSize = 18;
+        } else if (rank <= 100) {
+            radius = 180;
+            nodeSize = 12;
+        } else {
+            radius = 240 + Math.random() * 30;
+            nodeSize = 8;
+        }
+
+        let angle;
+        if (rank <= 20) angle = (rank / 20) * Math.PI * 2;
+        else if (rank <= 50) angle = ((rank - 20) / 30) * Math.PI * 2;
+        else if (rank <= 100) angle = ((rank - 50) / 50) * Math.PI * 2;
+        else angle = Math.random() * Math.PI * 2;
+
+        return { radius, nodeSize, angle };
+    }
+
     async function renderOrbital(papers, recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject)) {
         let data = [{ 
             name: currentProject.target_title, 
@@ -14039,21 +15082,8 @@ ${rawText}`;
         papers.forEach((p, idx) => {
             normalizePaperState(p);
             const rank = idx + 1; 
-            let radius, nodeSize;
-            
-            // 按相似度排名分配轨道半径和节点大小
-            if (rank <= 20) { radius = 60; nodeSize = 25; } 
-            else if (rank <= 50) { radius = 120; nodeSize = 18; } 
-            else if (rank <= 100) { radius = 180; nodeSize = 12; } 
-            else { radius = 240 + Math.random() * 30; nodeSize = 8; } 
+            const { radius, nodeSize, angle } = getOrbitalPlacementByRank(rank);
             const color = getPaperColor(p);
-            
-            // 按排名计算圆周上的分布角度
-            let angle; 
-            if(rank <= 20) angle = (rank / 20) * Math.PI * 2; 
-            else if(rank <= 50) angle = ((rank - 20) / 30) * Math.PI * 2; 
-            else if(rank <= 100) angle = ((rank - 50) / 50) * Math.PI * 2; 
-            else angle = Math.random() * Math.PI * 2; 
             
             data.push({ 
                 name: 'PAPER_' + idx, 
@@ -14090,6 +15120,87 @@ ${rawText}`;
         }
     }
 
+    async function renderFocusedOrbital(allPapers, focalPaper, recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject)) {
+        const loadingBox = document.getElementById('chart-loading');
+        loadingBox.classList.remove('hidden');
+        try {
+            setChartLoadingProgress('Re-centering the orbital StarMap...', 8, 'Building a marked-node-centered orbital view');
+            const context = await buildFocusedStarMapContext(allPapers, focalPaper);
+            if (!context?.focalPaper) return;
+            const displayPapers = context.rankedPapers.slice(0, currentChartRenderLimit);
+            const visibleOrbitalKeys = new Set([
+                context.focalKey,
+                ...displayPapers.map(paper => getStablePaperGraphKey(paper)).filter(Boolean)
+            ]);
+            if (markedNodeOrbitalFocusKey && !visibleOrbitalKeys.has(markedNodeOrbitalFocusKey)) {
+                clearMarkedNodeOrbitalFocus();
+            }
+
+            const targetRadius = context.originalTargetSimilarity >= 0.68
+                ? 72
+                : (context.originalTargetSimilarity >= 0.5 ? 126 : 188);
+            const data = [{
+                name: 'FOCUSED_TARGET_CENTER',
+                value: [0, 0, 1],
+                itemStyle: { color: '#4f46e5', shadowBlur: 18, shadowColor: 'rgba(79,70,229,0.25)' },
+                symbolSize: 47,
+                label: { show: true, formatter: 'Focused Target', position: 'bottom', color: '#312e81', fontWeight: 'bold' },
+                paperData: { ...context.focalPaper, chartFocusCenter: true },
+                selectionKey: context.focalKey
+            }, {
+                name: 'TARGET_CENTER',
+                value: [0, -targetRadius, context.originalTargetSimilarity],
+                itemStyle: { color: '#10b981', shadowBlur: 14, shadowColor: 'rgba(16,185,129,0.2)' },
+                symbolSize: 28,
+                label: { show: true, formatter: 'Original Thesis', position: 'top', color: '#047857', fontWeight: 'bold' },
+                paperData: getTargetPaperData(currentProject, { isOriginalTargetCenter: true }),
+                selectionKey: '__TARGET_CENTER__'
+            }];
+
+            displayPapers.forEach((paper, idx) => {
+                normalizePaperState(paper);
+                const rank = idx + 1;
+                const { radius, nodeSize, angle } = getOrbitalPlacementByRank(rank);
+                const color = getPaperColor(paper);
+                data.push({
+                    name: `PAPER_${idx}`,
+                    symbol: getPaperNodeSymbol(paper, recentImportHighlightKeys),
+                    value: [radius * Math.cos(angle), radius * Math.sin(angle), Number(paper.__focus_similarity || 0)],
+                    itemStyle: getPaperNodeStyle(paper, { color, opacity: 0.88, shadowBlur: 10, shadowColor: hexToRgba(color, 0.2) }, recentImportHighlightKeys),
+                    symbolSize: getLatestImportSymbolSize(nodeSize, paper, recentImportHighlightKeys),
+                    paperData: paper,
+                    selectionKey: getStablePaperGraphKey(paper)
+                });
+            });
+
+            currentOrbitalGraphState = {
+                baseData: data.map(node => ({
+                    ...node,
+                    itemStyle: node.itemStyle ? { ...node.itemStyle } : node.itemStyle,
+                    label: node.label ? { ...node.label } : node.label
+                })),
+                nodeByKey: Object.fromEntries(
+                    data
+                        .filter(node => node.selectionKey)
+                        .map(node => [node.selectionKey, { x: node.value?.[0] || 0, y: node.value?.[1] || 0 }])
+                )
+            };
+            myChart.setOption({
+                backgroundColor: 'transparent',
+                tooltip: getTooltipFormatter(),
+                dataZoom: getOrbitalDataZoomConfig(currentChartRenderLimit),
+                xAxis: { show: false, min: -280, max: 280 },
+                yAxis: { show: false, min: -280, max: 280 },
+                series: [{ type: 'scatter', data, animationDurationUpdate: 300 }]
+            });
+            if (markedNodeOrbitalFocusKey) {
+                applyOrbitalMarkedNodeFocusVisual();
+            }
+        } finally {
+            loadingBox.classList.add('hidden');
+        }
+    }
+
     function cloneBaseNode(node) {
         return {
             id: node.id,
@@ -14114,6 +15225,7 @@ ${rawText}`;
             target: link.target,
             weight: link.weight,
             isTargetLine: link.isTargetLine,
+            isOriginalTargetLine: link.isOriginalTargetLine,
             sourceTitle: link.sourceTitle,
             targetTitle: link.targetTitle,
             hidden: link.hidden,
@@ -14142,11 +15254,15 @@ ${rawText}`;
             const touchesMarked = (sourceKey && markedKeys.has(sourceKey)) || (targetKey && markedKeys.has(targetKey));
             const baseWidth = link.isTargetLine ? 5 : 1.25;
             const nextBaseStyle = {
-                width: link.isTargetLine ? Math.max(link.lineStyle?.width || 0, 3.2) : (link.lineStyle?.width || baseWidth),
-                opacity: link.isTargetLine ? 0.92 : 0.6,
-                color: link.isTargetLine ? '#f97316' : '#cbd5e1'
+                width: link.isOriginalTargetLine
+                    ? Math.max(link.lineStyle?.width || 0, 2.6)
+                    : (link.isTargetLine ? Math.max(link.lineStyle?.width || 0, 3.2) : (link.lineStyle?.width || baseWidth)),
+                opacity: link.isOriginalTargetLine ? 0.92 : (link.isTargetLine ? 0.92 : 0.6),
+                color: link.isOriginalTargetLine ? '#10b981' : (link.isTargetLine ? '#f97316' : '#cbd5e1')
             };
-            link.lineStyle = touchesMarked ? getMarkedTrailLineStyle(nextBaseStyle) : nextBaseStyle;
+            link.lineStyle = (touchesMarked && !link.isTargetLine && !link.isOriginalTargetLine)
+                ? getMarkedTrailLineStyle(nextBaseStyle)
+                : nextBaseStyle;
         });
     }
 
@@ -14203,7 +15319,7 @@ ${rawText}`;
         if (!currentNetworkGraphState?.baseNodes?.length) return;
         const visibleCenter = currentNetworkViewportFocusKey ? getNetworkVisibleCenterCoordinates() : null;
         currentNetworkGraphState.baseNodes = currentNetworkGraphState.baseNodes.map(node => {
-            if (node.selectionKey === '__TARGET_CENTER__') {
+            if (node.selectionKey === '__TARGET_CENTER__' || node.paperData?.chartFocusCenter) {
                 return node;
             }
             const nextNode = {
@@ -14246,9 +15362,7 @@ ${rawText}`;
         const markedKeys = getMarkedNodeKeySet(currentProject);
         const selectedNode = baseNodes.find(node => node.name === selectedNodeName);
         const isViewportFocusedSelection = !!currentNetworkViewportFocusKey && currentNetworkViewportFocusKey === currentNetworkSelectionKey;
-        const selectedAccentColor = selectedNode?.paperData?.isCenter
-            ? '#eab308'
-            : getPaperColor(selectedNode?.paperData);
+        const selectedAccentColor = getChartNodeBaseColor(selectedNode?.paperData);
         const selectedLinkColor = hexToRgba(selectedAccentColor || '#6366f1', 0.78);
         firstDegree.forEach(nodeName => {
             (adjacency[nodeName] || []).forEach(neighborName => {
@@ -14260,7 +15374,7 @@ ${rawText}`;
 
         const nodes = baseNodes.map(node => {
             const nextNode = cloneBaseNode(node);
-            const baseColor = node.paperData?.isCenter ? '#eab308' : getPaperColor(node.paperData);
+            const baseColor = getChartNodeBaseColor(node.paperData);
             const isRecentImport = isRainbowRecentImport(node.paperData, recentImportHighlightKeys);
 
             if (node.name === selectedNodeName) {
@@ -14314,14 +15428,14 @@ ${rawText}`;
                 (firstDegree.has(link.target) && secondDegree.has(link.source));
 
             if (touchesSelected) {
-                const touchesTargetCenter = link.source === 'TARGET_CENTER' || link.target === 'TARGET_CENTER';
+                const touchesTargetCenter = !!link.isOriginalTargetLine;
                 nextLink.lineStyle = {
                     ...nextLink.lineStyle,
                     width: touchesTargetCenter ? 2.9 : Math.max((nextLink.lineStyle.width || 1) * 1.28, 3.0),
                     opacity: touchesTargetCenter ? 0.88 : 0.84,
-                    color: touchesTargetCenter ? '#f97316' : selectedLinkColor,
+                    color: touchesTargetCenter ? '#10b981' : selectedLinkColor,
                     shadowBlur: touchesTargetCenter ? 10 : 8,
-                    shadowColor: touchesTargetCenter ? 'rgba(249, 115, 22, 0.24)' : hexToRgba(selectedAccentColor || '#6366f1', 0.22),
+                    shadowColor: touchesTargetCenter ? 'rgba(16, 185, 129, 0.24)' : hexToRgba(selectedAccentColor || '#6366f1', 0.22),
                     curveness: touchesTargetCenter ? 0.08 : 0.04
                 };
             } else if ((nodeKeyByName[link.source] && markedKeys.has(nodeKeyByName[link.source])) || (nodeKeyByName[link.target] && markedKeys.has(nodeKeyByName[link.target]))) {
@@ -14349,6 +15463,178 @@ ${rawText}`;
                 links: links
             }]
         });
+    }
+
+    async function renderFocusedNetwork(allPapers, focalPaper, recentImportHighlightKeys = getRecentImportHighlightKeys(currentProject)) {
+        const loadingBox = document.getElementById('chart-loading');
+        loadingBox.classList.remove('hidden');
+        try {
+            setChartLoadingProgress('Re-centering the network StarMap...', 8, 'Building a marked-node-centered bi-directional graph');
+            const context = await buildFocusedStarMapContext(allPapers, focalPaper);
+            if (!context?.focalPaper) return;
+            const papers = context.rankedPapers.slice(0, currentChartRenderLimit);
+
+            setChartLoadingProgress('Computing focused paper relationships...', 82, `Focused target + ${papers.length} visible papers`);
+            let links = [{
+                source: 'FOCUSED_TARGET_CENTER',
+                target: 'TARGET_CENTER',
+                weight: Math.max(Number(context.originalTargetSimilarity || 0), 0.12),
+                isTargetLine: false,
+                isOriginalTargetLine: true
+            }];
+
+            papers.slice(0, Math.min(10, papers.length)).forEach((paper, idx) => {
+                links.push({
+                    source: 'FOCUSED_TARGET_CENTER',
+                    target: `PAPER_${idx}`,
+                    weight: Math.max(Number(paper.__focus_similarity || 0), 0.08),
+                    isTargetLine: true,
+                    isOriginalTargetLine: false
+                });
+            });
+
+            const uniquePairwiseLinks = new Map();
+            for (let i = 0; i < papers.length; i += 1) {
+                const paperLinks = [];
+                for (let j = 0; j < papers.length; j += 1) {
+                    if (i === j) continue;
+                    const sim = cosineSimilarityVectors(papers[i].network_vec, papers[j].network_vec);
+                    if (!Number.isNaN(sim)) {
+                        paperLinks.push({ targetIdx: j, weight: sim });
+                    }
+                }
+                paperLinks.sort((a, b) => b.weight - a.weight);
+                paperLinks.slice(0, 3).forEach(link => {
+                    const id1 = Math.min(i, link.targetIdx);
+                    const id2 = Math.max(i, link.targetIdx);
+                    const edgeKey = `PAPER_${id1}-PAPER_${id2}`;
+                    if (!uniquePairwiseLinks.has(edgeKey)) {
+                        uniquePairwiseLinks.set(edgeKey, {
+                            source: `PAPER_${id1}`,
+                            target: `PAPER_${id2}`,
+                            weight: link.weight,
+                            isTargetLine: false,
+                            isOriginalTargetLine: false
+                        });
+                    }
+                });
+            }
+            links = links.concat(Array.from(uniquePairwiseLinks.values()));
+
+            const maxW = Math.max(...links.map(link => Number(link.weight || 0)), 1);
+            const minW = Math.min(...links.map(link => Number(link.weight || 0)), 0);
+            const nodeDegrees = {};
+            links.forEach(link => {
+                nodeDegrees[link.source] = (nodeDegrees[link.source] || 0) + Number(link.weight || 0);
+                nodeDegrees[link.target] = (nodeDegrees[link.target] || 0) + Number(link.weight || 0);
+            });
+            const relatedDegrees = Object.keys(nodeDegrees)
+                .filter(key => key !== 'TARGET_CENTER' && key !== 'FOCUSED_TARGET_CENTER')
+                .map(key => nodeDegrees[key]);
+            const maxDeg = relatedDegrees.length ? Math.max(...relatedDegrees) : 1;
+            const minDeg = relatedDegrees.length ? Math.min(...relatedDegrees) : 0;
+            const centerX = myChart.getWidth() / 2;
+            const centerY = myChart.getHeight() / 2;
+
+            const nodesData = [{
+                name: 'FOCUSED_TARGET_CENTER',
+                symbolSize: 62,
+                fixed: true,
+                x: centerX,
+                y: centerY,
+                itemStyle: { color: '#4f46e5', shadowBlur: 22, shadowColor: 'rgba(79,70,229,0.28)' },
+                label: { show: true, formatter: 'Focused Target', color: '#312e81', fontWeight: 'bold', position: 'bottom' },
+                paperData: { ...context.focalPaper, chartFocusCenter: true },
+                selectionKey: context.focalKey
+            }, {
+                name: 'TARGET_CENTER',
+                symbolSize: 32,
+                fixed: true,
+                x: centerX,
+                y: centerY - 132,
+                itemStyle: { color: '#10b981', shadowBlur: 18, shadowColor: 'rgba(16,185,129,0.22)' },
+                label: { show: true, formatter: 'Original Thesis', color: '#047857', fontWeight: 'bold', position: 'top' },
+                paperData: getTargetPaperData(currentProject, { isOriginalTargetCenter: true }),
+                selectionKey: '__TARGET_CENTER__'
+            }];
+
+            papers.forEach((paper, idx) => {
+                normalizePaperState(paper);
+                const degree = nodeDegrees[`PAPER_${idx}`] || 0;
+                let size = 10;
+                if (degree > 0 && maxDeg > minDeg) {
+                    size = 10 + ((degree - minDeg) / (maxDeg - minDeg)) * 30;
+                }
+                const color = getPaperColor(paper);
+                nodesData.push({
+                    name: `PAPER_${idx}`,
+                    symbol: getPaperNodeSymbol(paper, recentImportHighlightKeys),
+                    symbolSize: getLatestImportSymbolSize(size, paper, recentImportHighlightKeys),
+                    itemStyle: getPaperNodeStyle(paper, { color, opacity: 0.92, shadowBlur: 10, shadowColor: hexToRgba(color, 0.2) }, recentImportHighlightKeys),
+                    paperData: paper,
+                    selectionKey: getStablePaperGraphKey(paper)
+                });
+            });
+
+            const edgesData = links.map(link => {
+                const thickness = (1 + ((Number(link.weight || 0) - minW) / Math.max(maxW - minW, 0.0001)) * 4) * 1.25;
+                const baseStyle = link.isOriginalTargetLine
+                    ? {
+                        width: 2.6,
+                        opacity: 0.92,
+                        color: '#10b981'
+                    }
+                    : {
+                        width: Number.isNaN(thickness) ? (link.isTargetLine ? 3.2 : 1.25) : (link.isTargetLine ? thickness * 2.15 : thickness),
+                        opacity: link.isTargetLine ? 0.9 : 0.6,
+                        color: link.isTargetLine ? '#6366f1' : '#cbd5e1'
+                    };
+                return {
+                    source: link.source,
+                    target: link.target,
+                    weight: link.weight,
+                    isTargetLine: !!link.isTargetLine,
+                    isOriginalTargetLine: !!link.isOriginalTargetLine,
+                    lineStyle: baseStyle
+                };
+            });
+
+            const adjacency = {};
+            nodesData.forEach(node => {
+                adjacency[node.name] = [];
+            });
+            edgesData.forEach(link => {
+                adjacency[link.source]?.push(link.target);
+                adjacency[link.target]?.push(link.source);
+            });
+
+            currentNetworkGraphState = {
+                baseNodes: nodesData.map(cloneBaseNode),
+                baseLinks: edgesData.map(cloneBaseLink),
+                adjacency,
+                recentImportHighlightKeys,
+                nodeNameByKey: Object.fromEntries(nodesData.map(node => [node.selectionKey, node.name])),
+                nodeKeyByName: Object.fromEntries(nodesData.map(node => [node.name, node.selectionKey]))
+            };
+            syncNetworkViewportFocusBaseNodes();
+            applyMarkedStylesToNetworkBaseLinks();
+
+            myChart.setOption({
+                tooltip: getTooltipFormatter(),
+                series: [{
+                    type: 'graph',
+                    layout: 'force',
+                    roam: getMainGraphRoamMode(currentChartRenderLimit),
+                    animationDurationUpdate: 250,
+                    force: { repulsion: 250, edgeLength: 84, gravity: 0.12 },
+                    data: currentNetworkGraphState.baseNodes.map(cloneBaseNode),
+                    links: currentNetworkGraphState.baseLinks.map(cloneBaseLink)
+                }]
+            });
+            applyNetworkSelection();
+        } finally {
+            loadingBox.classList.add('hidden');
+        }
     }
 
     function setCitationSelection(selectionKey) {

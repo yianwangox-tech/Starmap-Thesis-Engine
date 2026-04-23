@@ -69,6 +69,18 @@ MAX_CLAIM_SECTION_LABEL_LENGTH = 160
 MAX_CLAIM_TYPE_LENGTH = 40
 MAX_CLAIM_STATUS_LENGTH = 40
 MAX_CLAIM_ANALYSIS_VERSION_LENGTH = 40
+MAX_STARDUST_NAME_LENGTH = 180
+MAX_STARDUST_STATUS_LENGTH = 40
+MAX_SUB_TARGET_THESIS_LENGTH = 8000
+MAX_STARDUST_PAPERS = 50
+MAX_STARDUST_HOP1_REFERENCES = 16
+MAX_STARDUST_HOP1_CITED_BY = 16
+MAX_STARDUST_HOP2_SEEDS = 8
+MAX_STARDUST_HOP2_REFERENCES_PER_SEED = 6
+MAX_STARDUST_HOP2_CITED_BY_PER_SEED = 6
+MAX_STARDUST_SEMANTIC_QUERY_COUNT = 5
+MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY = 12
+MAX_STARDUST_CANDIDATE_POOL = 120
 MAX_EVIDENCE_WHY_MATCHED_LENGTH = 1200
 MAX_EVIDENCE_CAVEAT_LENGTH = 800
 MAX_EVIDENCE_SNIPPET_TEXT_LENGTH = 360
@@ -83,6 +95,9 @@ CLAIM_ANALYSIS_BATCH_SIZE = 8
 CLAIM_TYPE_VALUES = {"thesis_claim", "chapter_claim", "research_question"}
 CLAIM_STATUS_VALUES = {"active", "archived"}
 CLAIM_STANCE_VALUES = {"support", "challenge", "setup", "pending"}
+STARDUST_STATUS_VALUES = {"draft", "ready", "building", "failed", "archived"}
+STARDUST_GRAPH_MODE_VALUES = {"directed", "mutual", "full"}
+MAX_STARDUSTS_PER_PROJECT = 5
 CACHE_SOFT_LIMIT_BYTES = 128 * 1024 * 1024
 CACHE_TARGET_LIMIT_BYTES = 96 * 1024 * 1024
 CACHE_HARD_LIMIT_BYTES = 192 * 1024 * 1024
@@ -445,6 +460,88 @@ def _ensure_claims_schema(cursor):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_llm_batch_cache_claim_id ON claim_llm_batch_cache (claim_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_snippet_cache_claim_id ON claim_snippet_cache (claim_id)")
 
+def _ensure_stardust_schema(cursor):
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS challenge_stardusts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            claim_id INTEGER NOT NULL,
+            seed_evidence_id INTEGER NOT NULL,
+            seed_paper_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            sub_target_thesis TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'draft',
+            paper_count INTEGER NOT NULL DEFAULT 0,
+            graph_cache_signature TEXT NOT NULL DEFAULT '',
+            source_summary_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id),
+            FOREIGN KEY (seed_evidence_id) REFERENCES claim_evidence_items (id)
+        )'''
+    )
+    cursor.execute("PRAGMA table_info(challenge_stardusts)")
+    stardust_columns = {row[1] for row in cursor.fetchall()}
+    if "source_summary_json" not in stardust_columns:
+        cursor.execute("ALTER TABLE challenge_stardusts ADD COLUMN source_summary_json TEXT NOT NULL DEFAULT '{}'")
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS challenge_stardust_papers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stardust_id INTEGER NOT NULL,
+            paper_key TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            abstract TEXT NOT NULL DEFAULT '',
+            current_content TEXT NOT NULL DEFAULT '',
+            authors TEXT NOT NULL DEFAULT '',
+            year TEXT NOT NULL DEFAULT '',
+            doi TEXT NOT NULL DEFAULT '',
+            openalex_id TEXT NOT NULL DEFAULT '',
+            paper_url TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            publication_venue TEXT NOT NULL DEFAULT '',
+            citation_count INTEGER,
+            referenced_openalex_ids_json TEXT NOT NULL DEFAULT '[]',
+            relationship_type TEXT NOT NULL DEFAULT '',
+            discovery_source TEXT NOT NULL DEFAULT '',
+            hop_distance INTEGER NOT NULL DEFAULT 0,
+            challenge_score REAL NOT NULL DEFAULT 0,
+            seed_similarity REAL NOT NULL DEFAULT 0,
+            claim_relevance REAL NOT NULL DEFAULT 0,
+            quality_score REAL NOT NULL DEFAULT 0,
+            why_matched TEXT NOT NULL DEFAULT '',
+            caveat TEXT NOT NULL DEFAULT '',
+            selected_for_import INTEGER NOT NULL DEFAULT 0,
+            hidden INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (stardust_id) REFERENCES challenge_stardusts (id),
+            UNIQUE (stardust_id, paper_key)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS challenge_stardust_graph_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stardust_id INTEGER NOT NULL,
+            graph_mode TEXT NOT NULL,
+            graph_signature TEXT NOT NULL DEFAULT '',
+            nodes_json TEXT NOT NULL DEFAULT '[]',
+            edges_json TEXT NOT NULL DEFAULT '[]',
+            meta_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (stardust_id) REFERENCES challenge_stardusts (id),
+            UNIQUE (stardust_id, graph_mode)
+        )'''
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_project_id ON challenge_stardusts (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_claim_id ON challenge_stardusts (claim_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_updated_at ON challenge_stardusts (updated_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_stardust_id ON challenge_stardust_papers (stardust_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_score ON challenge_stardust_papers (stardust_id, challenge_score DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_openalex ON challenge_stardust_papers (openalex_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_graph_cache_stardust_id ON challenge_stardust_graph_cache (stardust_id)")
+
 def init_db():
     conn = sqlite3.connect(str(DB_FILE))
     cursor = conn.cursor()
@@ -482,6 +579,7 @@ def init_db():
     )''')
     _ensure_projects_schema(cursor)
     _ensure_claims_schema(cursor)
+    _ensure_stardust_schema(cursor)
     cursor.execute("UPDATE claim_evidence_items SET stance = 'setup' WHERE LOWER(COALESCE(stance, '')) IN ('method', 'methods', 'methodology')")
     cursor.execute("UPDATE claim_evidence_items SET stance = 'pending' WHERE LOWER(COALESCE(stance, '')) IN ('background', 'context', 'foundation')")
     cursor.execute("SELECT id, top_papers FROM projects")
@@ -2018,6 +2116,411 @@ def _expand_challenge_seed(project_data: dict, claim_row: dict, evidence_row: di
         }
     }
 
+def _search_openalex_works(query: str, api_key: str = "", contact_email: str = "", per_page: int = MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY) -> List[dict]:
+    cleaned_query = _trim_text(_compact_whitespace(query), 240)
+    if not cleaned_query:
+        return []
+    params = {
+        "search": cleaned_query,
+        "per_page": max(1, min(int(per_page or MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY), 25)),
+    }
+    if api_key:
+        params["api_key"] = api_key.strip()
+    url = _build_url("https://api.openalex.org/works", params)
+    response = _http_get_json(url, contact_email) or {}
+    papers: List[dict] = []
+    for work in response.get("results", []) or []:
+        parsed = _parse_openalex_work(work)
+        if not parsed or not parsed.get("title"):
+            continue
+        parsed["matched_query"] = cleaned_query
+        papers.append(parsed)
+    return papers
+
+def _build_stardust_semantic_queries(project_data: dict, claim_row: dict, evidence_row: dict, seed_paper: dict, sub_target_thesis: str) -> List[str]:
+    seed_title = _trim_text(_compact_whitespace(seed_paper.get("title")), 220)
+    thesis_tokens = _claim_tokens(sub_target_thesis)
+    claim_tokens = _claim_tokens((claim_row or {}).get("claim_text"))
+    evidence_tokens = _claim_tokens(
+        f"{_trim_text((evidence_row or {}).get('why_matched'), 600)} {_trim_text((evidence_row or {}).get('caveat'), 400)}"
+    )
+    target_tokens = _claim_tokens(
+        f"{_trim_text((project_data or {}).get('target_title'), 220)} {_trim_text((project_data or {}).get('target_abstract'), 1400)}"
+    )
+    seed_title_tokens = _claim_tokens(seed_title)
+    raw_queries = [
+        seed_title,
+        " ".join(thesis_tokens[:8]),
+        " ".join(dict.fromkeys(seed_title_tokens[:4] + thesis_tokens[:5]).keys()),
+        " ".join(dict.fromkeys(thesis_tokens[:4] + claim_tokens[:4] + evidence_tokens[:3]).keys()),
+        " ".join(dict.fromkeys(seed_title_tokens[:3] + target_tokens[:3] + thesis_tokens[:3]).keys()),
+    ]
+    queries: List[str] = []
+    for raw_query in raw_queries:
+        cleaned = _trim_text(_compact_whitespace(raw_query), 240)
+        if cleaned and cleaned not in queries:
+            queries.append(cleaned)
+        if len(queries) >= MAX_STARDUST_SEMANTIC_QUERY_COUNT:
+            break
+    return queries
+
+def _register_stardust_candidate(
+    candidates_by_key: Dict[str, dict],
+    signature_to_primary: Dict[str, str],
+    project_signature_set: set[str],
+    work: dict,
+    *,
+    discovery_source: str,
+    relationship_type: str,
+    hop_distance: int,
+    skipped: dict,
+) -> bool:
+    candidate_key = _paper_identity_key(work)
+    if not candidate_key or not _trim_text(work.get("title"), MAX_PAPER_TITLE_LENGTH):
+        skipped["invalid_count"] = int(skipped.get("invalid_count") or 0) + 1
+        return False
+    identity_signatures = list(dict.fromkeys(_paper_identity_signatures(work) + [candidate_key]))
+    if any(signature in project_signature_set for signature in identity_signatures):
+        skipped["existing_count"] = int(skipped.get("existing_count") or 0) + 1
+        return False
+    matched_primary = candidates_by_key.get(candidate_key)
+    if not matched_primary:
+        existing_primary_key = next((signature_to_primary.get(signature) for signature in identity_signatures if signature_to_primary.get(signature)), None)
+        matched_primary = candidates_by_key.get(existing_primary_key or "")
+    if matched_primary:
+        candidate = matched_primary
+        skipped["duplicate_count"] = int(skipped.get("duplicate_count") or 0) + 1
+    else:
+        candidate = {
+            "paper_key": candidate_key,
+            "title": _trim_text(work.get("title"), MAX_PAPER_TITLE_LENGTH),
+            "abstract": _trim_text(work.get("abstract"), MAX_PAPER_ABSTRACT_LENGTH),
+            "current_content": _trim_text(work.get("current_content"), MAX_PAPER_CURRENT_CONTENT_LENGTH),
+            "authors": _trim_text(work.get("authors"), MAX_PAPER_AUTHORS_LENGTH),
+            "year": _trim_text(work.get("year"), 40),
+            "doi": _clean_doi(work.get("doi")),
+            "openalex_id": _trim_text(work.get("openalex_id"), 300),
+            "paper_url": _trim_text(work.get("paper_url"), 1000),
+            "source_url": _trim_text(work.get("source_url"), 1000),
+            "publication_venue": _trim_text(work.get("publication_venue"), 300),
+            "citation_count": _safe_int(work.get("citation_count"), 0),
+            "referenced_openalex_ids": list(work.get("referenced_openalex_ids") or []),
+            "_identity_signatures": identity_signatures,
+            "_discovery_sources": [],
+            "_relationship_types": [],
+            "_matched_queries": [],
+            "hop_distance": max(1, _safe_int(hop_distance, 1)),
+        }
+        candidates_by_key[candidate_key] = candidate
+        for signature in identity_signatures:
+            signature_to_primary[signature] = candidate_key
+    for field_name, max_length in (
+        ("title", MAX_PAPER_TITLE_LENGTH),
+        ("abstract", MAX_PAPER_ABSTRACT_LENGTH),
+        ("current_content", MAX_PAPER_CURRENT_CONTENT_LENGTH),
+        ("authors", MAX_PAPER_AUTHORS_LENGTH),
+        ("year", 40),
+        ("doi", 300),
+        ("openalex_id", 300),
+        ("paper_url", 1000),
+        ("source_url", 1000),
+        ("publication_venue", 300),
+    ):
+        incoming = _trim_text(work.get(field_name), max_length)
+        if incoming and (not candidate.get(field_name) or len(incoming) > len(str(candidate.get(field_name) or ""))):
+            candidate[field_name] = incoming
+    candidate["citation_count"] = max(_safe_int(candidate.get("citation_count"), 0), _safe_int(work.get("citation_count"), 0))
+    referenced_ids = list(dict.fromkeys((candidate.get("referenced_openalex_ids") or []) + list(work.get("referenced_openalex_ids") or [])))
+    candidate["referenced_openalex_ids"] = referenced_ids[:120]
+    if discovery_source and discovery_source not in candidate["_discovery_sources"]:
+        candidate["_discovery_sources"].append(discovery_source)
+    if relationship_type and relationship_type not in candidate["_relationship_types"]:
+        candidate["_relationship_types"].append(relationship_type)
+    matched_query = _trim_text(work.get("matched_query"), 240)
+    if matched_query and matched_query not in candidate["_matched_queries"]:
+        candidate["_matched_queries"].append(matched_query)
+    candidate["hop_distance"] = min(max(1, _safe_int(candidate.get("hop_distance"), 1)), max(1, _safe_int(hop_distance, 1)))
+    return True
+
+def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_tokens: List[str], focus_phrases: List[str], seed_tokens: List[str], seed_phrases: List[str]) -> dict:
+    metrics = _build_claim_candidate_metrics(
+        {
+            **candidate,
+            "status": candidate.get("status") or "Unread",
+            "similarity": candidate.get("similarity") or 0,
+        },
+        focus_claim_text,
+        focus_tokens,
+        focus_phrases,
+        False
+    )
+    challenge_hint = float(metrics.get("challenge_hint") or 0)
+    claim_relevance = float(metrics.get("claim_relevance") or 0)
+    quality_score = float(metrics.get("quality_score") or 0)
+    seed_similarity = _challenge_expansion_seed_similarity(candidate, seed_tokens, seed_phrases)
+    discovery_sources = list(candidate.get("_discovery_sources") or [])
+    relationship_types = list(candidate.get("_relationship_types") or [])
+    hop_distance = max(1, _safe_int(candidate.get("hop_distance"), 1))
+    citation_bonus = min((math.log1p(max(_safe_int(candidate.get("citation_count"), 0), 0)) / math.log1p(250)), 1.0) * 0.03
+    hop_bonus = 0.08 if hop_distance == 1 else (0.05 if hop_distance == 2 else 0.02)
+    semantic_bonus = 0.06 if "semantic_supplement" in discovery_sources else 0.0
+    relationship_bonus = 0.03 if "cited_by" in relationship_types else (0.02 if "reference" in relationship_types else 0.0)
+    score = min(
+        (challenge_hint * 0.32) +
+        (claim_relevance * 0.29) +
+        (seed_similarity * 0.20) +
+        (quality_score * 0.10) +
+        hop_bonus +
+        semantic_bonus +
+        relationship_bonus +
+        citation_bonus,
+        1.0
+    )
+    include = bool(
+        score >= 0.28 and (
+            challenge_hint >= 0.14
+            or claim_relevance >= 0.25
+            or seed_similarity >= 0.18
+            or ("semantic_supplement" in discovery_sources and claim_relevance >= 0.34)
+        )
+    )
+    reasons: List[str] = []
+    if hop_distance == 1:
+        reasons.append("it is directly connected to the seed paper in the citation graph")
+    elif hop_distance == 2:
+        reasons.append("it stays within two citation hops of the seed paper")
+    elif "semantic_supplement" in discovery_sources:
+        reasons.append("semantic search surfaced it outside the strict two-hop neighborhood")
+    if claim_relevance >= 0.28:
+        reasons.append("it matches the sub-target thesis closely")
+    if seed_similarity >= 0.18:
+        reasons.append("it overlaps strongly with the seed paper's topic")
+    if challenge_hint >= 0.16:
+        reasons.append("its language suggests limits, null effects, or boundary conditions")
+    if "semantic_supplement" in discovery_sources and hop_distance <= 2:
+        reasons.append("semantic search independently reinforced the citation-based match")
+    if not reasons:
+        reasons.append("it remained one of the strongest challenge-adjacent candidates in this seed trail")
+    why_matched = f"This paper was kept because {'; '.join(reasons[:3])}."
+    caveat = ""
+    if challenge_hint < 0.12:
+        caveat = "The challenge signal is inferred mostly from topical similarity rather than explicit contradictory language."
+    elif hop_distance >= 3 and claim_relevance < 0.30:
+        caveat = "This paper sits outside the direct citation neighborhood, so its fit depends more on semantic overlap."
+    return {
+        **candidate,
+        "relationship_type": "+".join(sorted(relationship_types)) or "semantic_match",
+        "discovery_source": "+".join(sorted(discovery_sources)) or "semantic_supplement",
+        "challenge_score": round(score, 4),
+        "seed_similarity": round(seed_similarity, 4),
+        "claim_relevance": round(claim_relevance, 4),
+        "quality_score": round(quality_score, 4),
+        "why_matched": _trim_text(why_matched, MAX_EVIDENCE_WHY_MATCHED_LENGTH),
+        "caveat": _trim_text(caveat, MAX_EVIDENCE_CAVEAT_LENGTH),
+        "include": include,
+    }
+
+def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_row: dict, payload: ChallengeStardustCreateRequest) -> dict:
+    if _normalize_claim_stance((evidence_row or {}).get("stance")) != "challenge":
+        raise HTTPException(status_code=409, detail="Challenge Stardust can only be created from a paper in the challenge column.")
+
+    seed_paper = _resolve_project_paper_for_evidence(project_data, evidence_row)
+    if not seed_paper:
+        raise HTTPException(status_code=404, detail="Could not match this evidence item back to a project paper.")
+
+    try:
+        enriched_seed = _enrich_paper_for_citation_graph(
+            PaperItem(**seed_paper),
+            payload.openalex_api_key,
+            payload.contact_email
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not resolve the seed paper on OpenAlex: {exc}")
+
+    seed_openalex_id = _trim_text(enriched_seed.get("openalex_id"), 300)
+    if not seed_openalex_id:
+        raise HTTPException(status_code=404, detail="The seed challenge paper could not be resolved on OpenAlex.")
+
+    project_signature_set = set()
+    for paper in _load_project_top_papers(project_data):
+        project_signature_set.update(_paper_identity_signatures(paper))
+
+    candidates_by_key: Dict[str, dict] = {}
+    signature_to_primary: Dict[str, str] = {}
+    skipped = {"existing_count": 0, "duplicate_count": 0, "invalid_count": 0}
+    partial_failures: List[dict] = []
+
+    hop1_references = _fetch_openalex_works_by_ids(
+        enriched_seed.get("referenced_openalex_ids") or [],
+        payload.openalex_api_key,
+        payload.contact_email,
+        MAX_STARDUST_HOP1_REFERENCES
+    )
+    hop1_cited_by = _fetch_openalex_cited_by_works(
+        seed_openalex_id,
+        payload.openalex_api_key,
+        payload.contact_email,
+        MAX_STARDUST_HOP1_CITED_BY
+    )
+    for relationship_type, works in (("reference", hop1_references), ("cited_by", hop1_cited_by)):
+        for work in works:
+            _register_stardust_candidate(
+                candidates_by_key,
+                signature_to_primary,
+                project_signature_set,
+                work,
+                discovery_source="hop_1",
+                relationship_type=relationship_type,
+                hop_distance=1,
+                skipped=skipped,
+            )
+
+    focus_claim_text = "\n".join(
+        part for part in [
+            _trim_text(payload.sub_target_thesis, MAX_SUB_TARGET_THESIS_LENGTH),
+            _trim_text((claim_row or {}).get("claim_text"), MAX_CLAIM_TEXT_LENGTH),
+        ]
+        if part
+    )
+    focus_tokens = _claim_tokens(focus_claim_text)
+    focus_phrases = _claim_phrases(focus_claim_text)
+    seed_text = _challenge_seed_text(enriched_seed)
+    seed_tokens = _claim_tokens(seed_text)
+    seed_phrases = _claim_phrases(seed_text)
+
+    hop1_ranked: List[dict] = []
+    for candidate in candidates_by_key.values():
+        if max(1, _safe_int(candidate.get("hop_distance"), 1)) != 1:
+            continue
+        hop1_ranked.append(_score_stardust_candidate(candidate, focus_claim_text, focus_tokens, focus_phrases, seed_tokens, seed_phrases))
+    hop1_ranked.sort(
+        key=lambda item: (
+            float(item.get("challenge_score") or 0),
+            float(item.get("claim_relevance") or 0),
+            float(item.get("seed_similarity") or 0),
+            _safe_int(item.get("citation_count"), 0)
+        ),
+        reverse=True
+    )
+
+    hop2_seed_candidates = hop1_ranked[:MAX_STARDUST_HOP2_SEEDS]
+    hop2_reference_count = 0
+    hop2_cited_by_count = 0
+    for seed_candidate in hop2_seed_candidates:
+        seed_candidate_openalex_id = _trim_text(seed_candidate.get("openalex_id"), 300)
+        if not seed_candidate_openalex_id:
+            continue
+        try:
+            hop2_references = _fetch_openalex_works_by_ids(
+                seed_candidate.get("referenced_openalex_ids") or [],
+                payload.openalex_api_key,
+                payload.contact_email,
+                MAX_STARDUST_HOP2_REFERENCES_PER_SEED
+            )
+            hop2_cited_by = _fetch_openalex_cited_by_works(
+                seed_candidate_openalex_id,
+                payload.openalex_api_key,
+                payload.contact_email,
+                MAX_STARDUST_HOP2_CITED_BY_PER_SEED
+            )
+        except HTTPException as exc:
+            partial_failures.append({
+                "stage": "hop_2",
+                "seed_title": _trim_text(seed_candidate.get("title"), 160),
+                "detail": _trim_text(str(exc.detail), 200),
+            })
+            continue
+        hop2_reference_count += len(hop2_references)
+        hop2_cited_by_count += len(hop2_cited_by)
+        for relationship_type, works in (("reference", hop2_references), ("cited_by", hop2_cited_by)):
+            for work in works:
+                _register_stardust_candidate(
+                    candidates_by_key,
+                    signature_to_primary,
+                    project_signature_set,
+                    work,
+                    discovery_source="hop_2",
+                    relationship_type=relationship_type,
+                    hop_distance=2,
+                    skipped=skipped,
+                )
+
+    semantic_queries = _build_stardust_semantic_queries(project_data, claim_row, evidence_row, enriched_seed, payload.sub_target_thesis)
+    semantic_result_count = 0
+    for query in semantic_queries:
+        try:
+            semantic_results = _search_openalex_works(
+                query,
+                payload.openalex_api_key,
+                payload.contact_email,
+                MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY
+            )
+        except HTTPException as exc:
+            partial_failures.append({
+                "stage": "semantic_supplement",
+                "query": _trim_text(query, 140),
+                "detail": _trim_text(str(exc.detail), 200),
+            })
+            continue
+        semantic_result_count += len(semantic_results)
+        for work in semantic_results:
+            _register_stardust_candidate(
+                candidates_by_key,
+                signature_to_primary,
+                project_signature_set,
+                work,
+                discovery_source="semantic_supplement",
+                relationship_type="semantic_match",
+                hop_distance=3,
+                skipped=skipped,
+            )
+
+    scored_candidates = [
+        _score_stardust_candidate(candidate, focus_claim_text, focus_tokens, focus_phrases, seed_tokens, seed_phrases)
+        for candidate in candidates_by_key.values()
+    ]
+    scored_candidates.sort(
+        key=lambda item: (
+            float(item.get("challenge_score") or 0),
+            float(item.get("claim_relevance") or 0),
+            float(item.get("seed_similarity") or 0),
+            float(item.get("quality_score") or 0),
+            _safe_int(item.get("citation_count"), 0)
+        ),
+        reverse=True
+    )
+    included_candidates = [item for item in scored_candidates if item.get("include")]
+    if not included_candidates:
+        included_candidates = [item for item in scored_candidates if float(item.get("challenge_score") or 0) >= 0.22]
+    included_candidates = included_candidates[:payload.max_papers]
+    for item in included_candidates:
+        item.pop("include", None)
+        item.pop("_identity_signatures", None)
+        item.pop("_discovery_sources", None)
+        item.pop("_relationship_types", None)
+        item.pop("_matched_queries", None)
+
+    source_summary = {
+        "hop1_reference_count": len(hop1_references),
+        "hop1_cited_by_count": len(hop1_cited_by),
+        "hop2_seed_count": len(hop2_seed_candidates),
+        "hop2_reference_count": hop2_reference_count,
+        "hop2_cited_by_count": hop2_cited_by_count,
+        "semantic_query_count": len(semantic_queries),
+        "semantic_result_count": semantic_result_count,
+        "deduped_candidate_count": len(candidates_by_key),
+        "skipped_existing_count": int(skipped.get("existing_count") or 0),
+        "skipped_duplicate_count": int(skipped.get("duplicate_count") or 0),
+        "skipped_invalid_count": int(skipped.get("invalid_count") or 0),
+        "stored_count": len(included_candidates),
+        "partial_failures": partial_failures[:12],
+    }
+    return {
+        "seed_paper": enriched_seed,
+        "papers": included_candidates,
+        "source_summary": source_summary,
+    }
+
 def _default_claim_summary() -> dict:
     return {stance: 0 for stance in sorted(CLAIM_STANCE_VALUES)}
 
@@ -2384,6 +2887,399 @@ def _get_owned_claim(project_id: int, claim_id: int, user_id: int) -> dict:
         raise HTTPException(status_code=404, detail="Claim not found.")
     return dict(row)
 
+def _normalize_stardust_status(raw_status: Optional[str]) -> str:
+    value = _trim_text(raw_status or "draft", MAX_STARDUST_STATUS_LENGTH).lower() or "draft"
+    return value if value in STARDUST_STATUS_VALUES else "draft"
+
+def _normalize_stardust_graph_mode(raw_mode: Optional[str]) -> str:
+    value = _trim_text(raw_mode or "directed", 40).lower() or "directed"
+    return value if value in STARDUST_GRAPH_MODE_VALUES else "directed"
+
+def _validate_stardust_create_payload(payload: ChallengeStardustCreateRequest) -> ChallengeStardustCreateRequest:
+    payload.claim_id = max(1, int(payload.claim_id or 0))
+    payload.seed_evidence_id = max(1, int(payload.seed_evidence_id or 0))
+    payload.name = _trim_text(payload.name, MAX_STARDUST_NAME_LENGTH)
+    payload.sub_target_thesis = _trim_text(payload.sub_target_thesis, MAX_SUB_TARGET_THESIS_LENGTH)
+    payload.replace_stardust_id = int(payload.replace_stardust_id) if payload.replace_stardust_id else None
+    payload.max_papers = max(10, min(int(payload.max_papers or MAX_STARDUST_PAPERS), MAX_STARDUST_PAPERS))
+    if not payload.name:
+        raise HTTPException(status_code=400, detail="Stardust name cannot be empty.")
+    if not payload.sub_target_thesis:
+        raise HTTPException(status_code=400, detail="Sub target thesis cannot be empty.")
+    return _apply_runtime_defaults_to_lookup(payload)
+
+def _validate_stardust_update_payload(payload: ChallengeStardustUpdateRequest) -> ChallengeStardustUpdateRequest:
+    if payload.name is not None:
+        payload.name = _trim_text(payload.name, MAX_STARDUST_NAME_LENGTH)
+        if not payload.name:
+            raise HTTPException(status_code=400, detail="Stardust name cannot be empty.")
+    if payload.sub_target_thesis is not None:
+        payload.sub_target_thesis = _trim_text(payload.sub_target_thesis, MAX_SUB_TARGET_THESIS_LENGTH)
+        if not payload.sub_target_thesis:
+            raise HTTPException(status_code=400, detail="Sub target thesis cannot be empty.")
+    if payload.status is not None:
+        payload.status = _normalize_stardust_status(payload.status)
+    return payload
+
+def _validate_stardust_graph_build_payload(payload: ChallengeStardustGraphBuildRequest) -> ChallengeStardustGraphBuildRequest:
+    payload.mode = _normalize_stardust_graph_mode(payload.mode)
+    payload.force_rebuild = bool(payload.force_rebuild)
+    return _apply_runtime_defaults_to_lookup(payload)
+
+def _serialize_stardust_seed_summary(conn: sqlite3.Connection, stardust_row: dict) -> Optional[dict]:
+    seed_evidence_id = int(stardust_row.get("seed_evidence_id") or 0)
+    if not seed_evidence_id:
+        return None
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, paper_key, paper_title, paper_year, paper_authors, citation_key, stance, why_matched, caveat FROM claim_evidence_items WHERE id = ?",
+        (seed_evidence_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["stance"] = _normalize_claim_stance(item.get("stance"))
+    return item
+
+def _serialize_stardust_claim_summary(conn: sqlite3.Connection, stardust_row: dict) -> Optional[dict]:
+    claim_id = int(stardust_row.get("claim_id") or 0)
+    if not claim_id:
+        return None
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, claim_text, claim_type, section_label, status, analysis_version, created_at, updated_at FROM project_claims WHERE id = ?",
+        (claim_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    claim = dict(row)
+    claim["claim_type"] = _normalize_claim_type(claim.get("claim_type"))
+    claim["status"] = _normalize_claim_status(claim.get("status"))
+    return claim
+
+def _serialize_stardust_graph_summaries(conn: sqlite3.Connection, stardust_id: int) -> List[dict]:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, graph_mode, graph_signature, created_at, updated_at FROM challenge_stardust_graph_cache WHERE stardust_id = ? ORDER BY updated_at DESC, id DESC",
+        (stardust_id,)
+    )
+    return [
+        {
+            "id": int(row["id"]),
+            "graph_mode": _normalize_stardust_graph_mode(row["graph_mode"]),
+            "graph_signature": row["graph_signature"] or "",
+            "created_at": int(row["created_at"] or 0),
+            "updated_at": int(row["updated_at"] or 0),
+        }
+        for row in cursor.fetchall()
+    ]
+
+def _serialize_stardust_row(conn: sqlite3.Connection, row: dict, include_children: bool = False) -> dict:
+    item = dict(row)
+    item["status"] = _normalize_stardust_status(item.get("status"))
+    item["paper_count"] = int(item.get("paper_count") or 0)
+    try:
+        item["source_summary"] = json.loads(item.get("source_summary_json") or "{}")
+    except Exception:
+        item["source_summary"] = {}
+    item.pop("source_summary_json", None)
+    item["seed"] = _serialize_stardust_seed_summary(conn, item)
+    item["claim"] = _serialize_stardust_claim_summary(conn, item)
+    item["graphs"] = _serialize_stardust_graph_summaries(conn, int(item.get("id") or 0))
+    if include_children:
+        item["papers"] = _load_stardust_papers(conn, int(item.get("id") or 0))
+    return item
+
+def _serialize_stardust_paper_row(row: dict) -> dict:
+    item = dict(row)
+    try:
+        item["referenced_openalex_ids"] = json.loads(item.get("referenced_openalex_ids_json") or "[]")
+    except Exception:
+        item["referenced_openalex_ids"] = []
+    item.pop("referenced_openalex_ids_json", None)
+    item["selected_for_import"] = bool(item.get("selected_for_import"))
+    item["hidden"] = bool(item.get("hidden"))
+    item["hop_distance"] = int(item.get("hop_distance") or 0)
+    return item
+
+def _load_stardust_papers(conn: sqlite3.Connection, stardust_id: int, include_hidden: bool = True) -> List[dict]:
+    cursor = conn.cursor()
+    if include_hidden:
+        cursor.execute(
+            "SELECT * FROM challenge_stardust_papers WHERE stardust_id = ? ORDER BY challenge_score DESC, citation_count DESC, id DESC",
+            (stardust_id,)
+        )
+    else:
+        cursor.execute(
+            "SELECT * FROM challenge_stardust_papers WHERE stardust_id = ? AND hidden = 0 ORDER BY challenge_score DESC, citation_count DESC, id DESC",
+            (stardust_id,)
+        )
+    return [_serialize_stardust_paper_row(dict(row)) for row in cursor.fetchall()]
+
+def _get_owned_stardust(project_id: int, stardust_id: int, user_id: int) -> dict:
+    _get_owned_project(project_id, user_id)
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM challenge_stardusts WHERE id = ? AND project_id = ?",
+        (stardust_id, project_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Challenge Stardust not found.")
+    return dict(row)
+
+def _delete_stardust_records(conn: sqlite3.Connection, stardust_id: int):
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM challenge_stardust_graph_cache WHERE stardust_id = ?", (stardust_id,))
+    cursor.execute("DELETE FROM challenge_stardust_papers WHERE stardust_id = ?", (stardust_id,))
+    cursor.execute("DELETE FROM challenge_stardusts WHERE id = ?", (stardust_id,))
+
+def _insert_stardust_papers(conn: sqlite3.Connection, stardust_id: int, papers: List[dict]):
+    if not papers:
+        return
+    cursor = conn.cursor()
+    now = _now_ts()
+    rows = []
+    for paper in papers:
+        rows.append((
+            stardust_id,
+            _trim_text(paper.get("paper_key"), 300),
+            _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+            _trim_text(paper.get("abstract"), MAX_PAPER_ABSTRACT_LENGTH),
+            _trim_text(paper.get("current_content"), MAX_PAPER_CURRENT_CONTENT_LENGTH),
+            _trim_text(paper.get("authors"), MAX_PAPER_AUTHORS_LENGTH),
+            _trim_text(paper.get("year"), 40),
+            _clean_doi(paper.get("doi")),
+            _trim_text(paper.get("openalex_id"), 300),
+            _trim_text(paper.get("paper_url"), 1000),
+            _trim_text(paper.get("source_url"), 1000),
+            _trim_text(paper.get("publication_venue"), 300),
+            _safe_int(paper.get("citation_count"), 0),
+            json.dumps(paper.get("referenced_openalex_ids") or [], ensure_ascii=False),
+            _trim_text(paper.get("relationship_type"), 120),
+            _trim_text(paper.get("discovery_source"), 120),
+            max(0, min(_safe_int(paper.get("hop_distance"), 0), 9)),
+            round(max(0.0, min(float(paper.get("challenge_score") or 0), 1.0)), 4),
+            round(max(0.0, min(float(paper.get("seed_similarity") or 0), 1.0)), 4),
+            round(max(0.0, min(float(paper.get("claim_relevance") or 0), 1.0)), 4),
+            round(max(0.0, min(float(paper.get("quality_score") or 0), 1.0)), 4),
+            _trim_text(paper.get("why_matched"), MAX_EVIDENCE_WHY_MATCHED_LENGTH),
+            _trim_text(paper.get("caveat"), MAX_EVIDENCE_CAVEAT_LENGTH),
+            0,
+            0,
+            now,
+            now,
+        ))
+    cursor.executemany(
+        '''INSERT INTO challenge_stardust_papers (
+            stardust_id, paper_key, title, abstract, current_content, authors, year, doi,
+            openalex_id, paper_url, source_url, publication_venue, citation_count,
+            referenced_openalex_ids_json, relationship_type, discovery_source, hop_distance,
+            challenge_score, seed_similarity, claim_relevance, quality_score, why_matched,
+            caveat, selected_for_import, hidden, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        rows
+    )
+
+def _stardust_paper_to_paper_item(paper: dict) -> PaperItem:
+    return PaperItem(
+        filename=_trim_text(paper.get("paper_key") or f"stardust-paper-{paper.get('id') or uuid.uuid4().hex}", 300),
+        title=_trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+        abstract=_trim_text(paper.get("abstract"), MAX_PAPER_ABSTRACT_LENGTH),
+        current_content=_trim_text(paper.get("current_content"), MAX_PAPER_CURRENT_CONTENT_LENGTH),
+        authors=_trim_text(paper.get("authors"), MAX_PAPER_AUTHORS_LENGTH) or "Unknown",
+        year=_trim_text(paper.get("year"), 40) or "Unknown",
+        similarity=float(paper.get("challenge_score") or 0),
+        status="Unread",
+        doi=_clean_doi(paper.get("doi")),
+        paper_url=_trim_text(paper.get("paper_url"), 1000),
+        publication_venue=_trim_text(paper.get("publication_venue"), 300),
+        citation_count=_safe_int(paper.get("citation_count"), 0),
+        openalex_id=_trim_text(paper.get("openalex_id"), 300),
+        referenced_openalex_ids=list(paper.get("referenced_openalex_ids") or []),
+        source_url=_trim_text(paper.get("source_url"), 1000),
+        import_source="challenge_stardust",
+    )
+
+def _update_stardust_paper_graph_metadata(conn: sqlite3.Connection, stardust_id: int, paper: dict):
+    paper_id = int(paper.get("id") or 0)
+    if not paper_id:
+        return
+    cursor = conn.cursor()
+    cursor.execute(
+        '''UPDATE challenge_stardust_papers SET
+               doi = ?, openalex_id = ?, paper_url = ?, source_url = ?, publication_venue = ?,
+               citation_count = ?, referenced_openalex_ids_json = ?, updated_at = ?
+           WHERE id = ? AND stardust_id = ?''',
+        (
+            _clean_doi(paper.get("doi")),
+            _trim_text(paper.get("openalex_id"), 300),
+            _trim_text(paper.get("paper_url"), 1000),
+            _trim_text(paper.get("source_url"), 1000),
+            _trim_text(paper.get("publication_venue"), 300),
+            _safe_int(paper.get("citation_count"), 0),
+            json.dumps(paper.get("referenced_openalex_ids") or [], ensure_ascii=False),
+            _now_ts(),
+            paper_id,
+            stardust_id,
+        )
+    )
+
+def _build_stardust_graph_signature(papers: List[dict], mode: str) -> str:
+    payload = [
+        {
+            "paper_key": _trim_text(paper.get("paper_key"), 300),
+            "title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+            "openalex_id": _trim_text(paper.get("openalex_id"), 300),
+            "citation_count": _safe_int(paper.get("citation_count"), 0),
+            "referenced_openalex_ids": sorted([
+                _trim_text(value, 300)
+                for value in (paper.get("referenced_openalex_ids") or [])
+                if _trim_text(value, 300)
+            ]),
+        }
+        for paper in sorted(
+            papers or [],
+            key=lambda item: (
+                _trim_text(item.get("paper_key"), 300),
+                _trim_text(item.get("openalex_id"), 300),
+                _trim_text(item.get("title"), MAX_PAPER_TITLE_LENGTH)
+            )
+        )
+    ]
+    return hashlib.sha1(_stable_json_dumps({"mode": _normalize_stardust_graph_mode(mode), "papers": payload}).encode("utf-8")).hexdigest()
+
+def _load_stardust_graph_cache(conn: sqlite3.Connection, stardust_id: int, mode: str) -> Optional[dict]:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM challenge_stardust_graph_cache WHERE stardust_id = ? AND graph_mode = ?",
+        (stardust_id, _normalize_stardust_graph_mode(mode))
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    try:
+        nodes = json.loads(item.get("nodes_json") or "[]")
+    except Exception:
+        nodes = []
+    try:
+        edges = json.loads(item.get("edges_json") or "[]")
+    except Exception:
+        edges = []
+    try:
+        meta = json.loads(item.get("meta_json") or "{}")
+    except Exception:
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["mode"] = _normalize_stardust_graph_mode(item.get("graph_mode"))
+    meta["graph_signature"] = item.get("graph_signature") or ""
+    return {
+        "id": int(item.get("id") or 0),
+        "graph_mode": meta["mode"],
+        "graph_signature": item.get("graph_signature") or "",
+        "nodes": nodes if isinstance(nodes, list) else [],
+        "edges": edges if isinstance(edges, list) else [],
+        "meta": meta,
+        "created_at": int(item.get("created_at") or 0),
+        "updated_at": int(item.get("updated_at") or 0),
+    }
+
+def _upsert_stardust_graph_cache(conn: sqlite3.Connection, stardust_id: int, mode: str, signature: str, nodes: List[dict], edges: List[dict], meta: dict):
+    normalized_mode = _normalize_stardust_graph_mode(mode)
+    now = _now_ts()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''INSERT INTO challenge_stardust_graph_cache (
+               stardust_id, graph_mode, graph_signature, nodes_json, edges_json, meta_json, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(stardust_id, graph_mode) DO UPDATE SET
+               graph_signature = excluded.graph_signature,
+               nodes_json = excluded.nodes_json,
+               edges_json = excluded.edges_json,
+               meta_json = excluded.meta_json,
+               updated_at = excluded.updated_at''',
+        (
+            stardust_id,
+            normalized_mode,
+            signature,
+            json.dumps(nodes, ensure_ascii=False),
+            json.dumps(edges, ensure_ascii=False),
+            json.dumps(meta, ensure_ascii=False),
+            now,
+            now,
+        )
+    )
+    cursor.execute(
+        "UPDATE challenge_stardusts SET graph_cache_signature = ?, updated_at = ? WHERE id = ?",
+        (signature, now, stardust_id)
+    )
+
+def _build_stardust_graph_result(enriched_papers: List[dict], mode: str, partial_failures: Optional[List[dict]] = None) -> dict:
+    normalized_mode = _normalize_stardust_graph_mode(mode)
+    base_result = _build_citation_graph_result(enriched_papers)
+    full_edges = list(base_result.get("edges") or [])
+    edge_lookup = {
+        (str(edge.get("source") or "").strip(), str(edge.get("target") or "").strip())
+        for edge in full_edges
+        if str(edge.get("source") or "").strip() and str(edge.get("target") or "").strip()
+    }
+    mutual_pairs: Dict[Tuple[str, str], dict] = {}
+    directed_only_edges: List[dict] = []
+    for edge in full_edges:
+        source = str(edge.get("source") or "").strip()
+        target = str(edge.get("target") or "").strip()
+        if not source or not target or source == target:
+            continue
+        reverse_key = (target, source)
+        if reverse_key in edge_lookup:
+            pair_key = tuple(sorted([source, target]))
+            if pair_key not in mutual_pairs:
+                mutual_pairs[pair_key] = {
+                    "source": pair_key[0],
+                    "target": pair_key[1],
+                    "relationship": "mutual",
+                }
+        else:
+            directed_only_edges.append({
+                **edge,
+                "relationship": "directed"
+            })
+
+    if normalized_mode == "mutual":
+        display_edges = list(mutual_pairs.values())
+    elif normalized_mode == "full":
+        display_edges = [
+            {
+                **edge,
+                "relationship": "mutual_member" if tuple(sorted([str(edge.get("source") or "").strip(), str(edge.get("target") or "").strip()])) in mutual_pairs else "directed"
+            }
+            for edge in full_edges
+        ]
+    else:
+        display_edges = directed_only_edges
+
+    stats = {
+        **(base_result.get("stats") or {}),
+        "mode": normalized_mode,
+        "full_edge_count": len(full_edges),
+        "directed_only_edge_count": len(directed_only_edges),
+        "mutual_pair_count": len(mutual_pairs),
+        "edge_count": len(display_edges),
+        "partial_failures": (partial_failures or [])[:12],
+    }
+    return {
+        "mode": normalized_mode,
+        "nodes": enriched_papers,
+        "edges": display_edges,
+        "stats": stats,
+    }
+
 async def _acquire_project_task_lock(project_id: int, task_name: str):
     key = f"{project_id}:{task_name}"
     lock = PROJECT_TASK_LOCKS.setdefault(key, asyncio.Lock())
@@ -2590,6 +3486,31 @@ class ClaimEvidencePatchRequest(BaseModel):
     user_override: Optional[bool] = None
     why_matched: Optional[str] = None
     caveat: Optional[str] = None
+
+class ChallengeStardustCreateRequest(BaseModel):
+    claim_id: int
+    seed_evidence_id: int
+    name: str
+    sub_target_thesis: str
+    replace_stardust_id: Optional[int] = None
+    max_papers: int = MAX_STARDUST_PAPERS
+    openalex_api_key: str = ""
+    contact_email: str = ""
+
+class ChallengeStardustUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    sub_target_thesis: Optional[str] = None
+    status: Optional[str] = None
+
+class ChallengeStardustPaperPatchRequest(BaseModel):
+    selected_for_import: Optional[bool] = None
+    hidden: Optional[bool] = None
+
+class ChallengeStardustGraphBuildRequest(BaseModel):
+    mode: str = "directed"
+    force_rebuild: bool = False
+    openalex_api_key: str = ""
+    contact_email: str = ""
 
 class ChallengeExpansionRequest(BaseModel):
     evidence_id: int
@@ -5814,6 +6735,385 @@ async def list_project_claims(project_id: int, current_user: dict = Depends(_req
             for claim in claims
         ]
     }
+
+@app.post("/api/projects/{project_id}/stardusts")
+async def create_project_stardust(project_id: int, payload: ChallengeStardustCreateRequest, current_user: dict = Depends(_require_session)):
+    project_data = _get_owned_project(project_id, current_user["user_id"])
+    payload = _validate_stardust_create_payload(payload)
+    claim = _get_owned_claim(project_id, payload.claim_id, current_user["user_id"])
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM claim_evidence_items WHERE id = ? AND claim_id = ? AND project_id = ?",
+        (payload.seed_evidence_id, payload.claim_id, project_id)
+    )
+    evidence_row = cursor.fetchone()
+    if not evidence_row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Seed evidence item not found.")
+
+    replaced_stardust_id = None
+    if payload.replace_stardust_id:
+        cursor.execute(
+            "SELECT * FROM challenge_stardusts WHERE id = ? AND project_id = ?",
+            (payload.replace_stardust_id, project_id)
+        )
+        replace_row = cursor.fetchone()
+        if not replace_row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="The Challenge Stardust chosen for replacement was not found.")
+        replaced_stardust_id = int(replace_row["id"])
+
+    cursor.execute(
+        "SELECT COUNT(*) AS item_count FROM challenge_stardusts WHERE project_id = ?",
+        (project_id,)
+    )
+    current_count = int((cursor.fetchone() or {"item_count": 0})["item_count"] or 0)
+    if current_count >= MAX_STARDUSTS_PER_PROJECT and not replaced_stardust_id:
+        conn.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"This project already has {MAX_STARDUSTS_PER_PROJECT} Challenge Stardusts. Replace an existing one before creating a new one."
+        )
+    conn.close()
+
+    generation_result = _generate_challenge_stardust(project_data, claim, dict(evidence_row), payload)
+    papers = generation_result.get("papers") or []
+    source_summary = generation_result.get("source_summary") or {}
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    if replaced_stardust_id:
+        _delete_stardust_records(conn, replaced_stardust_id)
+    now = _now_ts()
+    cursor.execute(
+        '''INSERT INTO challenge_stardusts (
+            project_id, claim_id, seed_evidence_id, seed_paper_key, name, sub_target_thesis,
+            status, paper_count, graph_cache_signature, source_summary_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (
+            project_id,
+            payload.claim_id,
+            payload.seed_evidence_id,
+            _trim_text(evidence_row["paper_key"], 300),
+            payload.name,
+            payload.sub_target_thesis,
+            "ready",
+            len(papers),
+            "",
+            json.dumps(source_summary, ensure_ascii=False),
+            now,
+            now,
+        )
+    )
+    stardust_id = int(cursor.lastrowid)
+    _insert_stardust_papers(conn, stardust_id, papers)
+    conn.commit()
+    cursor.execute("SELECT * FROM challenge_stardusts WHERE id = ?", (stardust_id,))
+    stardust_row = cursor.fetchone()
+    serialized = _serialize_stardust_row(conn, dict(stardust_row), include_children=True)
+    conn.close()
+
+    _write_audit_log(
+        "project_stardust_create",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={
+            "stardust_id": stardust_id,
+            "claim_id": int(claim["id"]),
+            "seed_evidence_id": payload.seed_evidence_id,
+            "replaced_stardust_id": replaced_stardust_id,
+            "stored_count": len(papers),
+        },
+        success=True
+    )
+    return {
+        "stardust": serialized,
+        "seed_paper": generation_result.get("seed_paper") or {},
+        "source_summary": source_summary,
+    }
+
+@app.get("/api/projects/{project_id}/stardusts")
+async def list_project_stardusts(project_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM challenge_stardusts WHERE project_id = ? ORDER BY updated_at DESC, id DESC",
+        (project_id,)
+    )
+    stardusts = [_serialize_stardust_row(conn, dict(row), include_children=False) for row in cursor.fetchall()]
+    conn.close()
+    return {"stardusts": stardusts}
+
+@app.get("/api/projects/{project_id}/stardusts/{stardust_id}")
+async def get_project_stardust(project_id: int, stardust_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM challenge_stardusts WHERE id = ?", (stardust_id,))
+    row = cursor.fetchone()
+    serialized = _serialize_stardust_row(conn, dict(row), include_children=True)
+    conn.close()
+    return {"stardust": serialized}
+
+@app.get("/api/projects/{project_id}/stardusts/{stardust_id}/papers")
+async def list_project_stardust_papers(project_id: int, stardust_id: int, include_hidden: bool = True, current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    papers = _load_stardust_papers(conn, stardust_id, include_hidden=include_hidden)
+    conn.close()
+    return {"papers": papers}
+
+@app.get("/api/projects/{project_id}/stardusts/{stardust_id}/graph")
+async def get_project_stardust_graph(project_id: int, stardust_id: int, mode: str = "directed", current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    normalized_mode = _normalize_stardust_graph_mode(mode)
+    conn = _db_connect(row_factory=True)
+    cached = _load_stardust_graph_cache(conn, stardust_id, normalized_mode)
+    graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
+    conn.close()
+    if not cached:
+        raise HTTPException(status_code=404, detail="No cached Stardust graph exists for this mode yet.")
+    return {
+        "cache_hit": True,
+        "graph": {
+            "mode": normalized_mode,
+            "nodes": cached.get("nodes") or [],
+            "edges": cached.get("edges") or [],
+            "stats": cached.get("meta") or {},
+        },
+        "graphs": graphs,
+    }
+
+@app.post("/api/projects/{project_id}/stardusts/{stardust_id}/graph/build")
+async def build_project_stardust_graph(project_id: int, stardust_id: int, payload: ChallengeStardustGraphBuildRequest, current_user: dict = Depends(_require_session)):
+    stardust_row = _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    project_data = _get_owned_project(project_id, current_user["user_id"])
+    payload = _validate_stardust_graph_build_payload(payload)
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM claim_evidence_items WHERE id = ? AND project_id = ?",
+        (int(stardust_row.get("seed_evidence_id") or 0), project_id)
+    )
+    seed_evidence_row = cursor.fetchone()
+    papers = _load_stardust_papers(conn, stardust_id, include_hidden=False)
+    initial_signature = _build_stardust_graph_signature(papers, payload.mode)
+    cached = _load_stardust_graph_cache(conn, stardust_id, payload.mode)
+    if cached and cached.get("graph_signature") == initial_signature and not payload.force_rebuild:
+        graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
+        conn.close()
+        return {
+            "cache_hit": True,
+            "graph": {
+                "mode": payload.mode,
+                "nodes": cached.get("nodes") or [],
+                "edges": cached.get("edges") or [],
+                "stats": cached.get("meta") or {},
+            },
+            "graphs": graphs,
+        }
+
+    seed_graph_paper = None
+    if seed_evidence_row:
+        try:
+            resolved_seed = _resolve_project_paper_for_evidence(project_data, dict(seed_evidence_row))
+            if resolved_seed:
+                seed_graph_paper = _enrich_paper_for_citation_graph(
+                    PaperItem(**resolved_seed),
+                    payload.openalex_api_key,
+                    payload.contact_email
+                )
+        except Exception:
+            seed_graph_paper = None
+
+    enriched_papers: List[dict] = []
+    partial_failures: List[dict] = []
+    for paper in papers:
+        enriched = dict(paper)
+        needs_enrichment = not _trim_text(enriched.get("openalex_id"), 300) or not (enriched.get("referenced_openalex_ids") or [])
+        if needs_enrichment:
+            try:
+                enriched = {
+                    **enriched,
+                    **_enrich_paper_for_citation_graph(
+                        _stardust_paper_to_paper_item(enriched),
+                        payload.openalex_api_key,
+                        payload.contact_email
+                    )
+                }
+                _update_stardust_paper_graph_metadata(conn, stardust_id, enriched)
+            except Exception as exc:
+                partial_failures.append({
+                    "paper_key": _trim_text(enriched.get("paper_key"), 300),
+                    "title": _trim_text(enriched.get("title"), 180),
+                    "detail": _trim_text(str(exc), 220),
+                })
+        enriched_papers.append(enriched)
+
+    graph_signature = _build_stardust_graph_signature(enriched_papers, payload.mode)
+    cached = _load_stardust_graph_cache(conn, stardust_id, payload.mode)
+    if cached and cached.get("graph_signature") == graph_signature and not payload.force_rebuild:
+        graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
+        conn.commit()
+        conn.close()
+        return {
+            "cache_hit": True,
+            "graph": {
+                "mode": payload.mode,
+                "nodes": cached.get("nodes") or [],
+                "edges": cached.get("edges") or [],
+                "stats": cached.get("meta") or {},
+            },
+            "graphs": graphs,
+        }
+
+    graph = _build_stardust_graph_result(enriched_papers, payload.mode, partial_failures)
+    graph_meta = {
+        **(graph.get("stats") or {}),
+        "mode": payload.mode,
+        "graph_signature": graph_signature,
+        "seed": {
+            "paper_key": _trim_text((seed_evidence_row or {}).get("paper_key"), 300),
+            "paper_title": _trim_text((seed_evidence_row or {}).get("paper_title"), MAX_PAPER_TITLE_LENGTH),
+            "paper_authors": _trim_text((seed_evidence_row or {}).get("paper_authors"), MAX_PAPER_AUTHORS_LENGTH),
+            "paper_year": _trim_text((seed_evidence_row or {}).get("paper_year"), 40),
+            "openalex_id": _trim_text((seed_graph_paper or {}).get("openalex_id"), 300),
+            "doi": _clean_doi((seed_graph_paper or {}).get("doi")),
+            "paper_url": _trim_text((seed_graph_paper or {}).get("paper_url"), 1000),
+            "publication_venue": _trim_text((seed_graph_paper or {}).get("publication_venue"), 300),
+            "citation_count": _safe_int((seed_graph_paper or {}).get("citation_count"), 0),
+            "referenced_openalex_ids": list((seed_graph_paper or {}).get("referenced_openalex_ids") or []),
+        },
+    }
+    _upsert_stardust_graph_cache(
+        conn,
+        stardust_id,
+        payload.mode,
+        graph_signature,
+        graph.get("nodes") or [],
+        graph.get("edges") or [],
+        graph_meta,
+    )
+    conn.commit()
+    graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
+    conn.close()
+
+    _write_audit_log(
+        "project_stardust_graph_build",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"stardust_id": stardust_id, "mode": payload.mode, "edge_count": int((graph.get("stats") or {}).get("edge_count") or 0)},
+        success=True
+    )
+    return {
+        "cache_hit": False,
+        "graph": graph,
+        "graphs": graphs,
+    }
+
+@app.patch("/api/projects/{project_id}/stardusts/{stardust_id}")
+async def update_project_stardust(project_id: int, stardust_id: int, payload: ChallengeStardustUpdateRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    payload = _validate_stardust_update_payload(payload)
+    fields = []
+    params = []
+    if payload.name is not None:
+        fields.append("name = ?")
+        params.append(payload.name)
+    if payload.sub_target_thesis is not None:
+        fields.append("sub_target_thesis = ?")
+        params.append(payload.sub_target_thesis)
+    if payload.status is not None:
+        fields.append("status = ?")
+        params.append(payload.status)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No stardust changes were provided.")
+    fields.append("updated_at = ?")
+    params.append(_now_ts())
+    params.append(stardust_id)
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE challenge_stardusts SET {', '.join(fields)} WHERE id = ?", params)
+    conn.commit()
+    cursor.execute("SELECT * FROM challenge_stardusts WHERE id = ?", (stardust_id,))
+    row = cursor.fetchone()
+    serialized = _serialize_stardust_row(conn, dict(row), include_children=False)
+    conn.close()
+
+    _write_audit_log(
+        "project_stardust_update",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"stardust_id": stardust_id},
+        success=True
+    )
+    return {"stardust": serialized}
+
+@app.patch("/api/projects/{project_id}/stardusts/{stardust_id}/papers/{paper_id}")
+async def patch_project_stardust_paper(project_id: int, stardust_id: int, paper_id: int, payload: ChallengeStardustPaperPatchRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    fields = []
+    params = []
+    if payload.selected_for_import is not None:
+        fields.append("selected_for_import = ?")
+        params.append(1 if payload.selected_for_import else 0)
+    if payload.hidden is not None:
+        fields.append("hidden = ?")
+        params.append(1 if payload.hidden else 0)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No stardust paper changes were provided.")
+    fields.append("updated_at = ?")
+    params.append(_now_ts())
+    params.extend([paper_id, stardust_id])
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM challenge_stardust_papers WHERE id = ? AND stardust_id = ?",
+        (paper_id, stardust_id)
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Challenge Stardust paper not found.")
+
+    cursor.execute(
+        f"UPDATE challenge_stardust_papers SET {', '.join(fields)} WHERE id = ? AND stardust_id = ?",
+        params
+    )
+    conn.commit()
+    cursor.execute("SELECT * FROM challenge_stardust_papers WHERE id = ?", (paper_id,))
+    updated = _serialize_stardust_paper_row(dict(cursor.fetchone()))
+    conn.close()
+
+    _write_audit_log(
+        "project_stardust_patch_paper",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"stardust_id": stardust_id, "paper_id": paper_id},
+        success=True
+    )
+    return {"paper": updated}
+
+@app.delete("/api/projects/{project_id}/stardusts/{stardust_id}")
+async def delete_project_stardust(project_id: int, stardust_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    _delete_stardust_records(conn, stardust_id)
+    conn.commit()
+    conn.close()
+    _write_audit_log(
+        "project_stardust_delete",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"stardust_id": stardust_id},
+        success=True
+    )
+    return {"deleted": True, "stardust_id": stardust_id}
 
 @app.post("/api/projects/{project_id}/claims/{claim_id}/analyze")
 async def analyze_project_claim(project_id: int, claim_id: int, payload: ClaimAnalyzeRequest, current_user: dict = Depends(_require_session)):
