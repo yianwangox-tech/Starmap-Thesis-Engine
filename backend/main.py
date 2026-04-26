@@ -2492,6 +2492,15 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
     included_candidates = [item for item in scored_candidates if item.get("include")]
     if not included_candidates:
         included_candidates = [item for item in scored_candidates if float(item.get("challenge_score") or 0) >= 0.22]
+    if len(included_candidates) < payload.max_papers:
+        seen_candidate_ids = {id(item) for item in included_candidates}
+        for item in scored_candidates:
+            if id(item) in seen_candidate_ids:
+                continue
+            included_candidates.append(item)
+            seen_candidate_ids.add(id(item))
+            if len(included_candidates) >= payload.max_papers:
+                break
     included_candidates = included_candidates[:payload.max_papers]
     for item in included_candidates:
         item.pop("include", None)
