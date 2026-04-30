@@ -18,6 +18,8 @@ import time
 import secrets
 import hashlib
 import hmac
+import base64
+import html
 from pathlib import Path
 from http.client import IncompleteRead
 from urllib import error, parse, request
@@ -85,6 +87,14 @@ MAX_EVIDENCE_WHY_MATCHED_LENGTH = 1200
 MAX_EVIDENCE_CAVEAT_LENGTH = 800
 MAX_EVIDENCE_SNIPPET_TEXT_LENGTH = 360
 MAX_EVIDENCE_SNIPPETS_PER_ITEM = 3
+MAX_READ_PAPER_SELECTION_LABEL_LENGTH = 220
+MAX_READ_PAPER_QUESTION_LENGTH = 2000
+MAX_READ_PAPER_SUMMARY_LENGTH = 2200
+MAX_READ_PAPER_FINDING_LABEL_LENGTH = 220
+MAX_READ_PAPER_FINDING_DETAIL_LENGTH = 1400
+MAX_READ_PAPER_QUESTIONS_TO_PRESS = 6
+READ_PAPER_MAX_PAPERS = 12
+READ_PAPER_MAX_FINDINGS_PER_SECTION = 6
 MAX_CHALLENGE_EXPANSION_REFERENCES = 12
 MAX_CHALLENGE_EXPANSION_CITED_BY = 12
 MAX_CHALLENGE_EXPANSION_CANDIDATES = 18
@@ -95,6 +105,7 @@ CLAIM_ANALYSIS_BATCH_SIZE = 8
 CLAIM_TYPE_VALUES = {"thesis_claim", "chapter_claim", "research_question"}
 CLAIM_STATUS_VALUES = {"active", "archived"}
 CLAIM_STANCE_VALUES = {"support", "challenge", "setup", "pending"}
+READ_PAPER_SELECTION_VALUES = {"paper", "cluster"}
 STARDUST_STATUS_VALUES = {"draft", "ready", "building", "failed", "archived"}
 STARDUST_GRAPH_MODE_VALUES = {"directed", "mutual", "full"}
 MAX_STARDUSTS_PER_PROJECT = 5
@@ -1145,6 +1156,22 @@ def _validate_claim_analyze_payload(payload: ClaimAnalyzeRequest) -> ClaimAnalyz
     payload.reanalyze_overrides = bool(payload.reanalyze_overrides)
     return payload
 
+def _validate_read_paper_payload(payload: ReadPaperAnalyzeRequest) -> ReadPaperAnalyzeRequest:
+    payload.selection_type = _trim_text(payload.selection_type.lower(), 40)
+    if payload.selection_type not in READ_PAPER_SELECTION_VALUES:
+        payload.selection_type = "paper"
+    payload.selection_label = _trim_text(payload.selection_label, MAX_READ_PAPER_SELECTION_LABEL_LENGTH)
+    payload.user_question = _trim_text(payload.user_question, MAX_READ_PAPER_QUESTION_LENGTH)
+    if not payload.papers:
+        raise HTTPException(status_code=422, detail="Select at least one paper for Read A Paper analysis.")
+    if len(payload.papers) > READ_PAPER_MAX_PAPERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Read A Paper currently supports up to {READ_PAPER_MAX_PAPERS} papers at once."
+        )
+    _validate_paper_list(payload.papers)
+    return payload
+
 def _load_project_top_papers(project_data: dict) -> List[dict]:
     raw_value = project_data.get("top_papers")
     if not raw_value:
@@ -1596,6 +1623,322 @@ def _extract_claim_evidence_snippets(paper: dict, claim_tokens: List[str], claim
             if len(snippets) >= limit:
                 return snippets[:limit]
     return snippets[:limit]
+
+def _normalize_read_paper_priority(raw_value: str) -> str:
+    value = _trim_text(str(raw_value or "").lower(), 24)
+    if value in {"high", "medium", "low"}:
+        return value
+    if value in {"severe", "major", "strong"}:
+        return "high"
+    if value in {"moderate", "mid"}:
+        return "medium"
+    return "low"
+
+def _extract_read_paper_snippets(paper: dict, query_text: str, limit: int = 2) -> List[dict]:
+    query_tokens = _claim_tokens(query_text)
+    query_phrases = _claim_phrases(query_text)
+    snippets = []
+    seen_texts = set()
+    for source_field in ("abstract", "current_content", "notes"):
+        raw_text = str((paper or {}).get(source_field) or "")
+        if not raw_text.strip():
+            continue
+        segments = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+        scored = []
+        for segment in segments:
+            compact = _compact_whitespace(segment)
+            if len(compact) < 30:
+                continue
+            signal_bundle = _text_signal_bundle(compact, query_tokens, query_phrases)
+            overlap = signal_bundle["token_overlap"]
+            phrase_overlap = signal_bundle["phrase_overlap"]
+            if overlap <= 0 and phrase_overlap <= 0:
+                continue
+            start = raw_text.find(segment)
+            source_weight = 1.0 if source_field == "abstract" else (0.95 if source_field == "current_content" else 0.92)
+            score = (
+                overlap * 0.4 +
+                phrase_overlap * 0.3 +
+                _length_quality_score(compact) * 0.16 +
+                source_weight * 0.14
+            )
+            scored.append((score, compact, source_field, max(start, 0), max(start, 0) + len(segment)))
+        scored.sort(key=lambda item: (item[0], len(item[1]) <= 260, len(item[1])), reverse=True)
+        for _, text, field, start, end in scored:
+            dedupe_key = text.lower()
+            if dedupe_key in seen_texts:
+                continue
+            seen_texts.add(dedupe_key)
+            snippets.append({
+                "paper_key": _trim_text(paper.get("paper_key"), 160),
+                "paper_title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+                "text": text[:MAX_EVIDENCE_SNIPPET_TEXT_LENGTH],
+                "source_field": field,
+                "char_start": start,
+                "char_end": end,
+            })
+            if len(snippets) >= limit:
+                return snippets[:limit]
+    return snippets[:limit]
+
+def _ground_read_paper_snippet(raw_snippet: str, paper: dict, query_text: str) -> Optional[dict]:
+    snippet = _trim_text(_compact_whitespace(raw_snippet), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+    if not snippet:
+        return None
+    query_tokens = _claim_tokens(query_text)
+    query_phrases = _claim_phrases(query_text)
+    best = None
+    for source_field in ("abstract", "current_content", "notes"):
+        raw_text = str((paper or {}).get(source_field) or "")
+        if not raw_text.strip():
+            continue
+        segments = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+        for segment in segments:
+            compact = _compact_whitespace(segment)
+            if len(compact) < 20:
+                continue
+            overlap = SequenceMatcher(None, snippet.lower(), compact.lower()).ratio()
+            if overlap < 0.42 and snippet.lower() not in compact.lower() and compact.lower() not in snippet.lower():
+                continue
+            signal_bundle = _text_signal_bundle(compact, query_tokens, query_phrases)
+            score = (
+                overlap * 0.62 +
+                signal_bundle["token_overlap"] * 0.16 +
+                signal_bundle["phrase_overlap"] * 0.14 +
+                _length_quality_score(compact) * 0.08
+            )
+            start = raw_text.find(segment)
+            candidate = {
+                "score": score,
+                "paper_key": _trim_text(paper.get("paper_key"), 160),
+                "paper_title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+                "text": compact[:MAX_EVIDENCE_SNIPPET_TEXT_LENGTH],
+                "source_field": source_field,
+                "char_start": max(start, 0),
+                "char_end": max(start, 0) + len(segment),
+            }
+            if best is None or candidate["score"] > best["score"]:
+                best = candidate
+    if not best:
+        return None
+    best.pop("score", None)
+    return best
+
+def _normalize_read_paper_snippet_candidates(raw_candidates) -> List[dict]:
+    normalized = []
+    for item in raw_candidates or []:
+        if isinstance(item, dict):
+            paper_key = _trim_text(item.get("paper_key"), 160)
+            quote = _trim_text(item.get("quote") or item.get("text") or item.get("snippet"), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+            if quote:
+                normalized.append({"paper_key": paper_key, "quote": quote})
+        else:
+            quote = _trim_text(item, MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+            if quote:
+                normalized.append({"paper_key": "", "quote": quote})
+    return normalized
+
+def _normalize_read_paper_findings(raw_items, analyzed_papers: List[dict], fallback_source_keys: Optional[List[str]] = None) -> List[dict]:
+    papers_by_key = {
+        _trim_text(paper.get("paper_key"), 160): paper
+        for paper in analyzed_papers
+        if _trim_text((paper or {}).get("paper_key"), 160)
+    }
+    all_keys = list(papers_by_key.keys())
+    findings = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+        label = _trim_text(item.get("label"), MAX_READ_PAPER_FINDING_LABEL_LENGTH)
+        detail = _trim_text(item.get("detail"), MAX_READ_PAPER_FINDING_DETAIL_LENGTH)
+        if not label and not detail:
+            continue
+        source_keys = []
+        for raw_key in item.get("source_paper_keys") or []:
+            key = _trim_text(raw_key, 160)
+            if key and key in papers_by_key and key not in source_keys:
+                source_keys.append(key)
+        snippet_candidates = _normalize_read_paper_snippet_candidates(item.get("snippet_candidates"))
+        for candidate in snippet_candidates:
+            key = _trim_text(candidate.get("paper_key"), 160)
+            if key and key in papers_by_key and key not in source_keys:
+                source_keys.append(key)
+        if not source_keys and fallback_source_keys:
+            source_keys = [key for key in fallback_source_keys if key in papers_by_key][:2]
+        query_text = f"{label}. {detail}".strip()
+        grounded_snippets = []
+        seen_snippets = set()
+        for candidate in snippet_candidates:
+            quote = _trim_text(candidate.get("quote"), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+            candidate_keys = []
+            key = _trim_text(candidate.get("paper_key"), 160)
+            if key and key in papers_by_key:
+                candidate_keys.append(key)
+            elif source_keys:
+                candidate_keys.extend(source_keys[:2])
+            else:
+                candidate_keys.extend(all_keys[:2])
+            for candidate_key in candidate_keys:
+                grounded = _ground_read_paper_snippet(quote, papers_by_key[candidate_key], query_text)
+                if not grounded:
+                    continue
+                dedupe_key = f"{grounded.get('paper_key')}::{grounded.get('text')}".lower()
+                if dedupe_key in seen_snippets:
+                    break
+                seen_snippets.add(dedupe_key)
+                grounded_snippets.append(grounded)
+                break
+            if len(grounded_snippets) >= MAX_EVIDENCE_SNIPPETS_PER_ITEM:
+                break
+        if not grounded_snippets:
+            candidate_keys = source_keys[:2] if source_keys else all_keys[:2]
+            for candidate_key in candidate_keys:
+                for grounded in _extract_read_paper_snippets(papers_by_key[candidate_key], query_text, limit=1):
+                    dedupe_key = f"{grounded.get('paper_key')}::{grounded.get('text')}".lower()
+                    if dedupe_key in seen_snippets:
+                        continue
+                    seen_snippets.add(dedupe_key)
+                    grounded_snippets.append(grounded)
+                    if len(grounded_snippets) >= MAX_EVIDENCE_SNIPPETS_PER_ITEM:
+                        break
+                if len(grounded_snippets) >= MAX_EVIDENCE_SNIPPETS_PER_ITEM:
+                    break
+        if not source_keys and grounded_snippets:
+            source_keys = []
+            for snippet in grounded_snippets:
+                key = _trim_text(snippet.get("paper_key"), 160)
+                if key and key not in source_keys:
+                    source_keys.append(key)
+        findings.append({
+            "label": label or _trim_text(detail, MAX_READ_PAPER_FINDING_LABEL_LENGTH),
+            "detail": detail,
+            "priority": _normalize_read_paper_priority(item.get("priority") or item.get("severity")),
+            "source_paper_keys": source_keys,
+            "snippets": grounded_snippets[:MAX_EVIDENCE_SNIPPETS_PER_ITEM]
+        })
+        if len(findings) >= READ_PAPER_MAX_FINDINGS_PER_SECTION:
+            break
+    return findings
+
+def _normalize_read_paper_takeaways(raw_items, analyzed_papers: List[dict]) -> List[dict]:
+    papers_by_key = {
+        _trim_text(paper.get("paper_key"), 160): paper
+        for paper in analyzed_papers
+        if _trim_text((paper or {}).get("paper_key"), 160)
+    }
+    takeaways = []
+    for item in raw_items or []:
+        if isinstance(item, dict):
+            paper_key = _trim_text(item.get("paper_key"), 160)
+            takeaway = _trim_text(item.get("takeaway"), 380)
+        else:
+            paper_key = ""
+            takeaway = _trim_text(item, 380)
+        if not takeaway:
+            continue
+        paper = papers_by_key.get(paper_key)
+        takeaways.append({
+            "paper_key": paper_key,
+            "paper_title": _trim_text((paper or {}).get("title"), MAX_PAPER_TITLE_LENGTH),
+            "takeaway": takeaway
+        })
+    return takeaways[:READ_PAPER_MAX_PAPERS]
+
+def _normalize_read_paper_questions(raw_items) -> List[str]:
+    questions = []
+    for item in raw_items or []:
+        question = _trim_text(item, 320)
+        if question:
+            questions.append(question)
+        if len(questions) >= MAX_READ_PAPER_QUESTIONS_TO_PRESS:
+            break
+    return questions
+
+def _build_read_paper_prompt(project_data: dict, payload: ReadPaperAnalyzeRequest, analyzed_papers: List[dict]) -> str:
+    selection_label = payload.selection_label or ("Selected cluster" if payload.selection_type == "cluster" else "Selected paper")
+    return (
+        "You are a rigorous academic reading assistant embedded inside a literature-analysis workspace.\n\n"
+        "Your job is to help the user read critically rather than just summarize politely.\n"
+        "Use only the supplied paper text. If the evidence is thin or missing, say so explicitly.\n\n"
+        "Return ONLY valid JSON with this exact schema:\n"
+        "{"
+        "\"deep_read_summary\":\"2-4 sentence critical synthesis\","
+        "\"user_question_answer\":\"answer the user question directly, or an empty string if no question was supplied\","
+        "\"paper_takeaways\":[{\"paper_key\":\"...\",\"takeaway\":\"one-sentence takeaway\"}],"
+        "\"threats_to_validity\":[{\"label\":\"...\",\"detail\":\"...\",\"severity\":\"high|medium|low\",\"source_paper_keys\":[\"...\"],\"snippet_candidates\":[{\"paper_key\":\"...\",\"quote\":\"...\"}]}],"
+        "\"external_validity_limits\":[{\"label\":\"...\",\"detail\":\"...\",\"severity\":\"high|medium|low\",\"source_paper_keys\":[\"...\"],\"snippet_candidates\":[{\"paper_key\":\"...\",\"quote\":\"...\"}]}],"
+        "\"design_vulnerabilities\":[{\"label\":\"...\",\"detail\":\"...\",\"severity\":\"high|medium|low\",\"source_paper_keys\":[\"...\"],\"snippet_candidates\":[{\"paper_key\":\"...\",\"quote\":\"...\"}]}],"
+        "\"improvement_opportunities\":[{\"label\":\"...\",\"detail\":\"...\",\"priority\":\"high|medium|low\",\"source_paper_keys\":[\"...\"],\"snippet_candidates\":[{\"paper_key\":\"...\",\"quote\":\"...\"}]}],"
+        "\"questions_to_press\":[\"question 1\", \"question 2\"]"
+        "}\n\n"
+        "Rules:\n"
+        "- For a single paper, evaluate that paper directly.\n"
+        "- For a cluster, synthesize recurring patterns and note when a concern applies only to some papers rather than the whole cluster.\n"
+        "- threats_to_validity should capture internal-validity threats, identification threats, measurement threats, confounds, and interpretation risks.\n"
+        "- external_validity_limits should capture sample, geography, time period, institution, domain, or population transfer limits.\n"
+        "- design_vulnerabilities should capture weaknesses in empirical strategy, controls, baselines, datasets, comparison groups, ablations, benchmarks, or reporting.\n"
+        "- improvement_opportunities must be concrete and actionable.\n"
+        "- questions_to_press should sound like the questions a strong advisor or reviewer would ask.\n"
+        "- snippet_candidates should be short verbatim fragments copied from the supplied text when possible.\n"
+        "- Never invent a result, sample, model choice, or limitation that does not appear in the text.\n"
+        "- Keep labels concise and readable.\n\n"
+        f"Project title: {_trim_text(project_data.get('target_title'), 300)}\n"
+        f"Project abstract: {_trim_text(_compact_whitespace(project_data.get('target_abstract')), 1800)}\n"
+        f"Project current content: {_trim_text(_compact_whitespace(project_data.get('target_current_content')), 1800)}\n"
+        f"Selection type: {payload.selection_type}\n"
+        f"Selection label: {selection_label}\n"
+        f"User question: {_trim_text(payload.user_question or '', MAX_READ_PAPER_QUESTION_LENGTH)}\n\n"
+        f"Papers:\n{json.dumps(analyzed_papers, ensure_ascii=False)}"
+    )
+
+def _analyze_read_paper_selection(project_data: dict, payload: ReadPaperAnalyzeRequest) -> dict:
+    normalized_papers = []
+    for paper in payload.papers[:READ_PAPER_MAX_PAPERS]:
+        raw_paper = paper.model_dump() if hasattr(paper, "model_dump") else dict(paper)
+        scrubbed = _scrub_paper_payload(raw_paper)
+        scrubbed["paper_key"] = _make_claim_paper_key(scrubbed)
+        normalized_papers.append({
+            "paper_key": scrubbed["paper_key"],
+            "filename": _trim_text(scrubbed.get("filename"), 300),
+            "title": _trim_text(scrubbed.get("title"), MAX_PAPER_TITLE_LENGTH),
+            "abstract": _trim_text(_compact_whitespace(scrubbed.get("abstract")), 1800),
+            "current_content": _trim_text(_compact_whitespace(scrubbed.get("current_content")), 1600),
+            "notes": _trim_text(_compact_whitespace(scrubbed.get("notes")), 700),
+            "authors": _trim_text(scrubbed.get("authors"), MAX_PAPER_AUTHORS_LENGTH),
+            "year": _trim_text(scrubbed.get("year"), 40),
+            "publication_venue": _trim_text(scrubbed.get("publication_venue"), 300),
+            "citation_count": _safe_int(scrubbed.get("citation_count")),
+            "similarity": round(_project_similarity_score(scrubbed), 4),
+            "status": _trim_text(scrubbed.get("status"), 40),
+        })
+    prompt = _build_read_paper_prompt(project_data, payload, normalized_papers)
+    parsed = _parse_llm_json_payload(_call_llm_from_env(prompt, temperature=0.08, json_mode=True))
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail="Read A Paper analysis returned an unexpected payload.")
+    fallback_keys = [paper.get("paper_key") for paper in normalized_papers if paper.get("paper_key")]
+    takeaways = _normalize_read_paper_takeaways(parsed.get("paper_takeaways"), normalized_papers)
+    takeaway_map = {item.get("paper_key"): item.get("takeaway") for item in takeaways if item.get("paper_key")}
+    papers = []
+    for paper in normalized_papers:
+        papers.append({
+            **paper,
+            "takeaway": takeaway_map.get(paper.get("paper_key"), "")
+        })
+    return {
+        "selection_type": payload.selection_type,
+        "selection_label": payload.selection_label or ("Selected cluster" if payload.selection_type == "cluster" else "Selected paper"),
+        "analyzed_paper_count": len(papers),
+        "papers": papers,
+        "analysis": {
+            "deep_read_summary": _trim_text(parsed.get("deep_read_summary"), MAX_READ_PAPER_SUMMARY_LENGTH),
+            "user_question_answer": _trim_text(parsed.get("user_question_answer"), MAX_READ_PAPER_SUMMARY_LENGTH),
+            "threats_to_validity": _normalize_read_paper_findings(parsed.get("threats_to_validity"), normalized_papers, fallback_keys),
+            "external_validity_limits": _normalize_read_paper_findings(parsed.get("external_validity_limits"), normalized_papers, fallback_keys),
+            "design_vulnerabilities": _normalize_read_paper_findings(parsed.get("design_vulnerabilities"), normalized_papers, fallback_keys),
+            "improvement_opportunities": _normalize_read_paper_findings(parsed.get("improvement_opportunities"), normalized_papers, fallback_keys),
+            "questions_to_press": _normalize_read_paper_questions(parsed.get("questions_to_press"))
+        }
+    }
 
 def _build_claim_classification_prompt(project_data: dict, claim_row: dict, candidates: List[dict]) -> str:
     payload = _build_claim_classification_payload(candidates)
@@ -2242,7 +2585,53 @@ def _register_stardust_candidate(
     candidate["hop_distance"] = min(max(1, _safe_int(candidate.get("hop_distance"), 1)), max(1, _safe_int(hop_distance, 1)))
     return True
 
-def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_tokens: List[str], focus_phrases: List[str], seed_tokens: List[str], seed_phrases: List[str]) -> dict:
+def _annotate_existing_stardust_candidates_with_relationship(
+    candidates_by_key: Dict[str, dict],
+    signature_to_primary: Dict[str, str],
+    works: List[dict],
+    relationship_type: str,
+    *,
+    discovery_source: str = "hop_1_overlap",
+    hop_distance: int = 1,
+) -> int:
+    annotated_count = 0
+    for work in works or []:
+        identity_signatures = list(dict.fromkeys(_paper_identity_signatures(work) + [_paper_identity_key(work)]))
+        matched_primary_key = next((signature_to_primary.get(signature) for signature in identity_signatures if signature_to_primary.get(signature)), None)
+        if not matched_primary_key:
+            continue
+        candidate = candidates_by_key.get(matched_primary_key)
+        if not candidate:
+            continue
+        was_already_linked = relationship_type in list(candidate.get("_relationship_types") or [])
+        for field_name, max_length in (
+            ("title", MAX_PAPER_TITLE_LENGTH),
+            ("abstract", MAX_PAPER_ABSTRACT_LENGTH),
+            ("current_content", MAX_PAPER_CURRENT_CONTENT_LENGTH),
+            ("authors", MAX_PAPER_AUTHORS_LENGTH),
+            ("year", 40),
+            ("doi", 300),
+            ("openalex_id", 300),
+            ("paper_url", 1000),
+            ("source_url", 1000),
+            ("publication_venue", 300),
+        ):
+            incoming = _trim_text(work.get(field_name), max_length)
+            if incoming and (not candidate.get(field_name) or len(incoming) > len(str(candidate.get(field_name) or ""))):
+                candidate[field_name] = incoming
+        candidate["citation_count"] = max(_safe_int(candidate.get("citation_count"), 0), _safe_int(work.get("citation_count"), 0))
+        referenced_ids = list(dict.fromkeys((candidate.get("referenced_openalex_ids") or []) + list(work.get("referenced_openalex_ids") or [])))
+        candidate["referenced_openalex_ids"] = referenced_ids[:120]
+        if discovery_source and discovery_source not in candidate["_discovery_sources"]:
+            candidate["_discovery_sources"].append(discovery_source)
+        if relationship_type and relationship_type not in candidate["_relationship_types"]:
+            candidate["_relationship_types"].append(relationship_type)
+        candidate["hop_distance"] = min(max(1, _safe_int(candidate.get("hop_distance"), 1)), max(1, _safe_int(hop_distance, 1)))
+        if not was_already_linked:
+            annotated_count += 1
+    return annotated_count
+
+def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_tokens: List[str], focus_phrases: List[str], seed_tokens: List[str], seed_phrases: List[str], seed_context_label: str = "seed paper") -> dict:
     metrics = _build_claim_candidate_metrics(
         {
             **candidate,
@@ -2261,57 +2650,71 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
     discovery_sources = list(candidate.get("_discovery_sources") or [])
     relationship_types = list(candidate.get("_relationship_types") or [])
     hop_distance = max(1, _safe_int(candidate.get("hop_distance"), 1))
-    citation_bonus = min((math.log1p(max(_safe_int(candidate.get("citation_count"), 0), 0)) / math.log1p(250)), 1.0) * 0.03
-    hop_bonus = 0.08 if hop_distance == 1 else (0.05 if hop_distance == 2 else 0.02)
-    semantic_bonus = 0.06 if "semantic_supplement" in discovery_sources else 0.0
-    relationship_bonus = 0.03 if "cited_by" in relationship_types else (0.02 if "reference" in relationship_types else 0.0)
+    semantic_overlap = min(
+        (seed_similarity * 0.58) +
+        (claim_relevance * 0.42),
+        1.0
+    )
+    citation_bonus = min((math.log1p(max(_safe_int(candidate.get("citation_count"), 0), 0)) / math.log1p(250)), 1.0) * 0.02
+    semantic_bonus = 0.045 if "semantic_supplement" in discovery_sources else 0.0
+    semantic_linked_bonus = 0.0
+    if semantic_overlap >= 0.24:
+        if "cited_by" in relationship_types and "reference" in relationship_types:
+            semantic_linked_bonus = 0.05
+        elif "cited_by" in relationship_types:
+            semantic_linked_bonus = 0.038
+        elif "reference" in relationship_types:
+            semantic_linked_bonus = 0.03
     score = min(
-        (challenge_hint * 0.32) +
-        (claim_relevance * 0.29) +
-        (seed_similarity * 0.20) +
+        (semantic_overlap * 0.50) +
+        (challenge_hint * 0.20) +
+        (claim_relevance * 0.12) +
         (quality_score * 0.10) +
-        hop_bonus +
         semantic_bonus +
-        relationship_bonus +
+        semantic_linked_bonus +
         citation_bonus,
         1.0
     )
     include = bool(
-        score >= 0.28 and (
-            challenge_hint >= 0.14
-            or claim_relevance >= 0.25
-            or seed_similarity >= 0.18
-            or ("semantic_supplement" in discovery_sources and claim_relevance >= 0.34)
+        score >= 0.27 and (
+            semantic_overlap >= 0.24
+            or claim_relevance >= 0.28
+            or seed_similarity >= 0.22
+            or ("semantic_supplement" in discovery_sources and semantic_overlap >= 0.30)
         )
     )
     reasons: List[str] = []
-    if hop_distance == 1:
-        reasons.append("it is directly connected to the seed paper in the citation graph")
-    elif hop_distance == 2:
-        reasons.append("it stays within two citation hops of the seed paper")
-    elif "semantic_supplement" in discovery_sources:
-        reasons.append("semantic search surfaced it outside the strict two-hop neighborhood")
-    if claim_relevance >= 0.28:
+    seed_context = _trim_text(seed_context_label, 80) or "seed paper"
+    if semantic_overlap >= 0.3:
+        reasons.append(f"its semantic overlap with the {seed_context} and sub-target thesis is strong")
+    elif claim_relevance >= 0.28:
         reasons.append("it matches the sub-target thesis closely")
-    if seed_similarity >= 0.18:
-        reasons.append("it overlaps strongly with the seed paper's topic")
+    elif seed_similarity >= 0.22:
+        reasons.append(f"it overlaps clearly with the {seed_context}")
+    if "semantic_supplement" in discovery_sources:
+        reasons.append("semantic retrieval surfaced it as a challenge-adjacent candidate")
+    if "cited_by" in relationship_types and "reference" in relationship_types:
+        reasons.append(f"it is semantically aligned and also linked to the {seed_context} in both citation directions")
+    elif "cited_by" in relationship_types:
+        reasons.append(f"it is semantically aligned and also cites the {seed_context}")
+    elif "reference" in relationship_types:
+        reasons.append(f"it is semantically aligned and is also referenced by the {seed_context}")
+    elif hop_distance == 1:
+        reasons.append(f"it still sits in the immediate citation neighborhood of the {seed_context}")
     if challenge_hint >= 0.16:
         reasons.append("its language suggests limits, null effects, or boundary conditions")
-    if "semantic_supplement" in discovery_sources and hop_distance <= 2:
-        reasons.append("semantic search independently reinforced the citation-based match")
     if not reasons:
         reasons.append("it remained one of the strongest challenge-adjacent candidates in this seed trail")
     why_matched = f"This paper was kept because {'; '.join(reasons[:3])}."
     caveat = ""
     if challenge_hint < 0.12:
         caveat = "The challenge signal is inferred mostly from topical similarity rather than explicit contradictory language."
-    elif hop_distance >= 3 and claim_relevance < 0.30:
-        caveat = "This paper sits outside the direct citation neighborhood, so its fit depends more on semantic overlap."
     return {
         **candidate,
         "relationship_type": "+".join(sorted(relationship_types)) or "semantic_match",
         "discovery_source": "+".join(sorted(discovery_sources)) or "semantic_supplement",
         "challenge_score": round(score, 4),
+        "semantic_overlap": round(semantic_overlap, 4),
         "seed_similarity": round(seed_similarity, 4),
         "claim_relevance": round(claim_relevance, 4),
         "quality_score": round(quality_score, 4),
@@ -2321,25 +2724,46 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
     }
 
 def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_row: dict, payload: ChallengeStardustCreateRequest) -> dict:
-    if _normalize_claim_stance((evidence_row or {}).get("stance")) != "challenge":
-        raise HTTPException(status_code=409, detail="Challenge Stardust can only be created from a paper in the challenge column.")
+    creation_mode = _normalize_stardust_creation_mode(payload.mode)
+    seed_context_label = "seed paper"
+    if creation_mode == "challenge_paper":
+        if _normalize_claim_stance((evidence_row or {}).get("stance")) != "challenge":
+            raise HTTPException(status_code=409, detail="Challenge Stardust can only be created from a paper in the challenge column.")
 
-    seed_paper = _resolve_project_paper_for_evidence(project_data, evidence_row)
-    if not seed_paper:
-        raise HTTPException(status_code=404, detail="Could not match this evidence item back to a project paper.")
+        seed_paper = _resolve_project_paper_for_evidence(project_data, evidence_row)
+        if not seed_paper:
+            raise HTTPException(status_code=404, detail="Could not match this evidence item back to a project paper.")
 
-    try:
-        enriched_seed = _enrich_paper_for_citation_graph(
-            PaperItem(**seed_paper),
-            payload.openalex_api_key,
-            payload.contact_email
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Could not resolve the seed paper on OpenAlex: {exc}")
+        try:
+            enriched_seed = _enrich_paper_for_citation_graph(
+                PaperItem(**seed_paper),
+                payload.openalex_api_key,
+                payload.contact_email
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Could not resolve the seed paper on OpenAlex: {exc}")
 
-    seed_openalex_id = _trim_text(enriched_seed.get("openalex_id"), 300)
-    if not seed_openalex_id:
-        raise HTTPException(status_code=404, detail="The seed challenge paper could not be resolved on OpenAlex.")
+        seed_openalex_id = _trim_text(enriched_seed.get("openalex_id"), 300)
+        if not seed_openalex_id:
+            raise HTTPException(status_code=404, detail="The seed challenge paper could not be resolved on OpenAlex.")
+    else:
+        seed_claim_text = _trim_text(payload.seed_claim_text, MAX_CLAIM_TEXT_LENGTH)
+        enriched_seed = {
+            "title": seed_claim_text,
+            "abstract": _trim_text(payload.sub_target_thesis or (claim_row or {}).get("claim_text"), MAX_PAPER_ABSTRACT_LENGTH),
+            "current_content": _trim_text((claim_row or {}).get("claim_text"), MAX_CHALLENGE_EXPANSION_SEED_CONTENT_LENGTH),
+            "authors": "Claim seed",
+            "year": "",
+            "doi": "",
+            "openalex_id": "",
+            "paper_url": "",
+            "source_url": "",
+            "publication_venue": "",
+            "citation_count": 0,
+            "referenced_openalex_ids": [],
+        }
+        seed_openalex_id = ""
+        seed_context_label = "seed claim"
 
     project_signature_set = set()
     for paper in _load_project_top_papers(project_data):
@@ -2350,30 +2774,33 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
     skipped = {"existing_count": 0, "duplicate_count": 0, "invalid_count": 0}
     partial_failures: List[dict] = []
 
-    hop1_references = _fetch_openalex_works_by_ids(
-        enriched_seed.get("referenced_openalex_ids") or [],
-        payload.openalex_api_key,
-        payload.contact_email,
-        MAX_STARDUST_HOP1_REFERENCES
-    )
-    hop1_cited_by = _fetch_openalex_cited_by_works(
-        seed_openalex_id,
-        payload.openalex_api_key,
-        payload.contact_email,
-        MAX_STARDUST_HOP1_CITED_BY
-    )
-    for relationship_type, works in (("reference", hop1_references), ("cited_by", hop1_cited_by)):
-        for work in works:
-            _register_stardust_candidate(
-                candidates_by_key,
-                signature_to_primary,
-                project_signature_set,
-                work,
-                discovery_source="hop_1",
-                relationship_type=relationship_type,
-                hop_distance=1,
-                skipped=skipped,
+    hop1_references: List[dict] = []
+    hop1_cited_by: List[dict] = []
+    if creation_mode == "challenge_paper":
+        try:
+            hop1_references = _fetch_openalex_works_by_ids(
+                enriched_seed.get("referenced_openalex_ids") or [],
+                payload.openalex_api_key,
+                payload.contact_email,
+                MAX_STARDUST_HOP1_REFERENCES
             )
+        except HTTPException as exc:
+            partial_failures.append({
+                "stage": "hop_1_references",
+                "detail": _trim_text(str(exc.detail), 200),
+            })
+        try:
+            hop1_cited_by = _fetch_openalex_cited_by_works(
+                seed_openalex_id,
+                payload.openalex_api_key,
+                payload.contact_email,
+                MAX_STARDUST_HOP1_CITED_BY
+            )
+        except HTTPException as exc:
+            partial_failures.append({
+                "stage": "hop_1_cited_by",
+                "detail": _trim_text(str(exc.detail), 200),
+            })
 
     focus_claim_text = "\n".join(
         part for part in [
@@ -2388,64 +2815,7 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
     seed_tokens = _claim_tokens(seed_text)
     seed_phrases = _claim_phrases(seed_text)
 
-    hop1_ranked: List[dict] = []
-    for candidate in candidates_by_key.values():
-        if max(1, _safe_int(candidate.get("hop_distance"), 1)) != 1:
-            continue
-        hop1_ranked.append(_score_stardust_candidate(candidate, focus_claim_text, focus_tokens, focus_phrases, seed_tokens, seed_phrases))
-    hop1_ranked.sort(
-        key=lambda item: (
-            float(item.get("challenge_score") or 0),
-            float(item.get("claim_relevance") or 0),
-            float(item.get("seed_similarity") or 0),
-            _safe_int(item.get("citation_count"), 0)
-        ),
-        reverse=True
-    )
-
-    hop2_seed_candidates = hop1_ranked[:MAX_STARDUST_HOP2_SEEDS]
-    hop2_reference_count = 0
-    hop2_cited_by_count = 0
-    for seed_candidate in hop2_seed_candidates:
-        seed_candidate_openalex_id = _trim_text(seed_candidate.get("openalex_id"), 300)
-        if not seed_candidate_openalex_id:
-            continue
-        try:
-            hop2_references = _fetch_openalex_works_by_ids(
-                seed_candidate.get("referenced_openalex_ids") or [],
-                payload.openalex_api_key,
-                payload.contact_email,
-                MAX_STARDUST_HOP2_REFERENCES_PER_SEED
-            )
-            hop2_cited_by = _fetch_openalex_cited_by_works(
-                seed_candidate_openalex_id,
-                payload.openalex_api_key,
-                payload.contact_email,
-                MAX_STARDUST_HOP2_CITED_BY_PER_SEED
-            )
-        except HTTPException as exc:
-            partial_failures.append({
-                "stage": "hop_2",
-                "seed_title": _trim_text(seed_candidate.get("title"), 160),
-                "detail": _trim_text(str(exc.detail), 200),
-            })
-            continue
-        hop2_reference_count += len(hop2_references)
-        hop2_cited_by_count += len(hop2_cited_by)
-        for relationship_type, works in (("reference", hop2_references), ("cited_by", hop2_cited_by)):
-            for work in works:
-                _register_stardust_candidate(
-                    candidates_by_key,
-                    signature_to_primary,
-                    project_signature_set,
-                    work,
-                    discovery_source="hop_2",
-                    relationship_type=relationship_type,
-                    hop_distance=2,
-                    skipped=skipped,
-                )
-
-    semantic_queries = _build_stardust_semantic_queries(project_data, claim_row, evidence_row, enriched_seed, payload.sub_target_thesis)
+    semantic_queries = _build_stardust_semantic_queries(project_data, claim_row, evidence_row or {}, enriched_seed, payload.sub_target_thesis)
     semantic_result_count = 0
     for query in semantic_queries:
         try:
@@ -2475,13 +2845,43 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
                 skipped=skipped,
             )
 
+    hop1_reference_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
+        candidates_by_key,
+        signature_to_primary,
+        hop1_references,
+        "reference",
+    )
+    hop1_cited_by_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
+        candidates_by_key,
+        signature_to_primary,
+        hop1_cited_by,
+        "cited_by",
+    )
+
+    used_hop1_fallback = False
+    if creation_mode == "challenge_paper" and not candidates_by_key:
+        used_hop1_fallback = True
+        for relationship_type, works in (("reference", hop1_references), ("cited_by", hop1_cited_by)):
+            for work in works:
+                _register_stardust_candidate(
+                    candidates_by_key,
+                    signature_to_primary,
+                    project_signature_set,
+                    work,
+                    discovery_source="hop_1_fallback",
+                    relationship_type=relationship_type,
+                    hop_distance=1,
+                    skipped=skipped,
+                )
+
     scored_candidates = [
-        _score_stardust_candidate(candidate, focus_claim_text, focus_tokens, focus_phrases, seed_tokens, seed_phrases)
+        _score_stardust_candidate(candidate, focus_claim_text, focus_tokens, focus_phrases, seed_tokens, seed_phrases, seed_context_label)
         for candidate in candidates_by_key.values()
     ]
     scored_candidates.sort(
         key=lambda item: (
             float(item.get("challenge_score") or 0),
+            float(item.get("semantic_overlap") or 0),
             float(item.get("claim_relevance") or 0),
             float(item.get("seed_similarity") or 0),
             float(item.get("quality_score") or 0),
@@ -2510,13 +2910,17 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
         item.pop("_matched_queries", None)
 
     source_summary = {
+        "creation_mode": creation_mode,
+        "seed_claim_text": _trim_text(payload.seed_claim_text, MAX_CLAIM_TEXT_LENGTH) if creation_mode == "claim_only" else "",
+        "seed_label": _trim_text(payload.seed_claim_text, 220) if creation_mode == "claim_only" else _trim_text(enriched_seed.get("title"), 220),
         "hop1_reference_count": len(hop1_references),
         "hop1_cited_by_count": len(hop1_cited_by),
-        "hop2_seed_count": len(hop2_seed_candidates),
-        "hop2_reference_count": hop2_reference_count,
-        "hop2_cited_by_count": hop2_cited_by_count,
         "semantic_query_count": len(semantic_queries),
         "semantic_result_count": semantic_result_count,
+        "semantic_candidate_count": len(candidates_by_key),
+        "hop1_reference_overlap_count": hop1_reference_overlap_count,
+        "hop1_cited_by_overlap_count": hop1_cited_by_overlap_count,
+        "used_hop1_fallback": used_hop1_fallback,
         "deduped_candidate_count": len(candidates_by_key),
         "skipped_existing_count": int(skipped.get("existing_count") or 0),
         "skipped_duplicate_count": int(skipped.get("duplicate_count") or 0),
@@ -2904,9 +3308,17 @@ def _normalize_stardust_graph_mode(raw_mode: Optional[str]) -> str:
     value = _trim_text(raw_mode or "directed", 40).lower() or "directed"
     return value if value in STARDUST_GRAPH_MODE_VALUES else "directed"
 
+def _normalize_stardust_creation_mode(raw_mode: Optional[str]) -> str:
+    value = _trim_text(raw_mode or "challenge_paper", 40).lower() or "challenge_paper"
+    return value if value in {"challenge_paper", "claim_only"} else "challenge_paper"
+
 def _validate_stardust_create_payload(payload: ChallengeStardustCreateRequest) -> ChallengeStardustCreateRequest:
     payload.claim_id = max(1, int(payload.claim_id or 0))
-    payload.seed_evidence_id = max(1, int(payload.seed_evidence_id or 0))
+    payload.mode = _normalize_stardust_creation_mode(payload.mode)
+    payload.seed_evidence_id = max(0, int(payload.seed_evidence_id or 0))
+    payload.seed_claim_text = _trim_text(payload.seed_claim_text, MAX_CLAIM_TEXT_LENGTH)
+    if payload.seed_claim_text and payload.seed_evidence_id <= 0:
+        payload.mode = "claim_only"
     payload.name = _trim_text(payload.name, MAX_STARDUST_NAME_LENGTH)
     payload.sub_target_thesis = _trim_text(payload.sub_target_thesis, MAX_SUB_TARGET_THESIS_LENGTH)
     payload.replace_stardust_id = int(payload.replace_stardust_id) if payload.replace_stardust_id else None
@@ -2915,6 +3327,10 @@ def _validate_stardust_create_payload(payload: ChallengeStardustCreateRequest) -
         raise HTTPException(status_code=400, detail="Stardust name cannot be empty.")
     if not payload.sub_target_thesis:
         raise HTTPException(status_code=400, detail="Sub target thesis cannot be empty.")
+    if payload.mode == "challenge_paper" and payload.seed_evidence_id <= 0:
+        raise HTTPException(status_code=400, detail="A seed challenge paper is required for this Stardust mode.")
+    if payload.mode == "claim_only" and not payload.seed_claim_text:
+        raise HTTPException(status_code=400, detail="A seed claim is required for claim-seed Stardust mode.")
     return _apply_runtime_defaults_to_lookup(payload)
 
 def _validate_stardust_update_payload(payload: ChallengeStardustUpdateRequest) -> ChallengeStardustUpdateRequest:
@@ -2994,6 +3410,9 @@ def _serialize_stardust_row(conn: sqlite3.Connection, row: dict, include_childre
     except Exception:
         item["source_summary"] = {}
     item.pop("source_summary_json", None)
+    item["creation_mode"] = _normalize_stardust_creation_mode(
+        item.get("source_summary", {}).get("creation_mode") or ("challenge_paper" if int(item.get("seed_evidence_id") or 0) > 0 else "claim_only")
+    )
     item["seed"] = _serialize_stardust_seed_summary(conn, item)
     item["claim"] = _serialize_stardust_claim_summary(conn, item)
     item["graphs"] = _serialize_stardust_graph_summaries(conn, int(item.get("id") or 0))
@@ -3435,6 +3854,40 @@ class ZoteroHydrateRequest(BaseModel):
     zotero_user_id: str = ""
     zotero_api_key: str = ""
 
+class ReadPaperMarkedPassage(BaseModel):
+    page: int = 1
+    excerpt: str = ""
+    context: str = ""
+    mark_type: str = "default"
+    mark_color: str = "yellow"
+    user_note: str = ""
+    user_question: str = ""
+    interpretation: str = ""
+    critique: str = ""
+    next_check: str = ""
+    question_answer: str = ""
+    area: Dict[str, Any] = Field(default_factory=dict)
+
+class ReadPaperPaperLevelExport(BaseModel):
+    user_question: str = ""
+    deep_read_summary: str = ""
+    user_question_answer: str = ""
+    threats_to_validity: List[Dict[str, Any]] = Field(default_factory=list)
+    external_validity_limits: List[Dict[str, Any]] = Field(default_factory=list)
+    design_vulnerabilities: List[Dict[str, Any]] = Field(default_factory=list)
+    improvement_opportunities: List[Dict[str, Any]] = Field(default_factory=list)
+    questions_to_press: List[str] = Field(default_factory=list)
+
+class ReadPaperZoteroExportRequest(BaseModel):
+    paper: PaperItem
+    pdf_base64: str
+    pdf_filename: str = ""
+    zotero_user_id: str = ""
+    zotero_api_key: str = ""
+    collection_key: str = ""
+    marked_passages: List[ReadPaperMarkedPassage] = Field(default_factory=list)
+    paper_level: Optional[ReadPaperPaperLevelExport] = None
+
 class BibtexExportRequest(BaseModel):
     title: str = ""
     authors: str = ""
@@ -3456,6 +3909,12 @@ class SettingsPayload(BaseModel):
 
 class LlmProxyRequest(BaseModel):
     prompt: str
+    temperature: float = 0.2
+    json_mode: bool = False
+
+class LlmVisionRequest(BaseModel):
+    prompt: str
+    image_data_url: str
     temperature: float = 0.2
     json_mode: bool = False
 
@@ -3498,7 +3957,9 @@ class ClaimEvidencePatchRequest(BaseModel):
 
 class ChallengeStardustCreateRequest(BaseModel):
     claim_id: int
-    seed_evidence_id: int
+    mode: str = "challenge_paper"
+    seed_evidence_id: int = 0
+    seed_claim_text: str = ""
     name: str
     sub_target_thesis: str
     replace_stardust_id: Optional[int] = None
@@ -3528,6 +3989,12 @@ class ChallengeExpansionRequest(BaseModel):
     max_results: int = MAX_CHALLENGE_EXPANSION_RESULTS
     openalex_api_key: str = ""
     contact_email: str = ""
+
+class ReadPaperAnalyzeRequest(BaseModel):
+    selection_type: str = "paper"
+    selection_label: str = ""
+    papers: List[PaperItem]
+    user_question: str = ""
 
 def _clean_doi(raw_value: Optional[str]) -> str:
     if not raw_value:
@@ -4853,6 +5320,84 @@ def _http_post_json(url: str, body: dict, headers: Optional[dict] = None, timeou
     except TimeoutError:
         raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
 
+def _http_post_form(url: str, body: dict, headers: Optional[dict] = None, timeout: int = 90):
+    encoded = parse.urlencode({key: value for key, value in (body or {}).items() if value is not None}).encode("utf-8")
+    req = request.Request(url, data=encoded, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    for key, value in (headers or {}).items():
+        if value:
+            req.add_header(key, value)
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw.strip() else {}
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+    except error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
+
+def _http_post_bytes(url: str, body: bytes, headers: Optional[dict] = None, timeout: int = 120):
+    req = request.Request(url, data=body, method="POST")
+    for key, value in (headers or {}).items():
+        if value:
+            req.add_header(key, value)
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            return {
+                "body": resp.read(),
+                "headers": {key.lower(): value for key, value in resp.headers.items()},
+                "status": getattr(resp, "status", 200)
+            }
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+    except error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
+
+def _http_patch_json(url: str, body: dict, headers: Optional[dict] = None, timeout: int = 90):
+    encoded = json.dumps(body).encode("utf-8")
+    req = request.Request(url, data=encoded, method="PATCH")
+    req.add_header("Content-Type", "application/json")
+    for key, value in (headers or {}).items():
+        if value:
+            req.add_header(key, value)
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw.strip() else {}
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+    except error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
+
+def _http_delete(url: str, headers: Optional[dict] = None, timeout: int = 90):
+    req = request.Request(url, method="DELETE")
+    for key, value in (headers or {}).items():
+        if value:
+            req.add_header(key, value)
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            return {
+                "body": resp.read().decode("utf-8", errors="ignore"),
+                "headers": {key.lower(): value for key, value in resp.headers.items()},
+                "status": getattr(resp, "status", 200)
+            }
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+    except error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
+
 def _call_llm_from_env(prompt: str, temperature: float = 0.2, json_mode: bool = False) -> str:
     provider = (_env_value("STARMAP_LLM_PROVIDER", "groq") or "groq").lower()
     api_key = _env_value("STARMAP_LLM_API_KEY")
@@ -4893,6 +5438,77 @@ def _call_llm_from_env(prompt: str, temperature: float = 0.2, json_mode: bool = 
         return ((((response.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text") or "").strip()
 
     raise HTTPException(status_code=400, detail="Unsupported LLM provider configured in .env")
+
+def _parse_data_url_image(data_url: str) -> Tuple[str, bytes]:
+    raw = str(data_url or "").strip()
+    match = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", raw, re.DOTALL)
+    if not match:
+        raise HTTPException(status_code=400, detail="A valid base64 image data URL is required.")
+    mime_type = match.group(1)
+    try:
+        image_bytes = base64.b64decode(match.group(2), validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode the image payload: {exc}")
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="The supplied image payload was empty.")
+    return mime_type, image_bytes
+
+def _call_vision_llm_from_env(prompt: str, image_data_url: str, temperature: float = 0.2, json_mode: bool = False) -> str:
+    provider = (_env_value("STARMAP_LLM_PROVIDER", "groq") or "groq").lower()
+    api_key = _env_value("STARMAP_LLM_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="LLM API key is not configured in .env")
+
+    mime_type, image_bytes = _parse_data_url_image(image_data_url)
+
+    if provider == "openai":
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_url}}
+                ]
+            }],
+            "temperature": temperature,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        response = _http_post_json(
+            "https://api.openai.com/v1/chat/completions",
+            payload,
+            {"Authorization": f"Bearer {api_key}"},
+            timeout=90
+        )
+        return (((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+
+    if provider == "gemini":
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": base64.b64encode(image_bytes).decode("ascii")
+                        }
+                    }
+                ]
+            }],
+            "generationConfig": {
+                "temperature": temperature,
+                **({"response_mime_type": "application/json"} if json_mode else {}),
+            }
+        }
+        response = _http_post_json(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={parse.quote(api_key, safe='')}",
+            payload,
+            timeout=90
+        )
+        return ((((response.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text") or "").strip()
+
+    raise HTTPException(status_code=400, detail=f"The configured provider '{provider}' does not currently support screenshot-based passage analysis in StarMap. Switch to OpenAI or Gemini for vision.")
 
 def _status_result(name: str, state: str, detail: str, configured: bool) -> dict:
     return {
@@ -6138,6 +6754,83 @@ def _get_zotero_child_items(user_id: str, parent_key: str, api_key: str = "") ->
     url = f"https://api.zotero.org/users/{encoded_user}/items/{encoded_parent}/children?v=3&format=json"
     return _http_get_json(url, extra_headers=_build_zotero_headers(api_key))
 
+def _get_zotero_child_items_with_meta(user_id: str, parent_key: str, api_key: str = "") -> Tuple[List[dict], Dict[str, str]]:
+    if not user_id or not parent_key:
+        return [], {}
+    encoded_user = parse.quote(user_id, safe="")
+    encoded_parent = parse.quote(parent_key, safe="")
+    url = f"https://api.zotero.org/users/{encoded_user}/items/{encoded_parent}/children?v=3&format=json"
+    payload, headers = _http_get_json_with_meta(url, extra_headers=_build_zotero_headers(api_key))
+    return (payload if isinstance(payload, list) else []), headers
+
+def _get_zotero_item(user_id: str, item_key: str, api_key: str = "") -> Tuple[dict, Dict[str, str]]:
+    if not user_id or not item_key:
+        return {}, {}
+    encoded_user = parse.quote(user_id, safe="")
+    encoded_item = parse.quote(item_key, safe="")
+    url = f"https://api.zotero.org/users/{encoded_user}/items/{encoded_item}?v=3&format=json"
+    payload, headers = _http_get_json_with_meta(url, extra_headers=_build_zotero_headers(api_key))
+    return (payload if isinstance(payload, dict) else {}), headers
+
+def _zotero_item_has_tag(item: dict, tag_text: str) -> bool:
+    normalized = _normalize_zotero_match_key(tag_text)
+    tags = ((item.get("data") or {}).get("tags") or [])
+    for entry in tags:
+        if _normalize_zotero_match_key((entry or {}).get("tag") or "") == normalized:
+            return True
+    return False
+
+def _is_starmap_read_paper_export_child(item: dict) -> bool:
+    data = item.get("data") or {}
+    item_type = str(data.get("itemType") or "")
+    title = _normalize_zotero_match_key(data.get("title") or "")
+    note_html = _normalize_zotero_match_key(data.get("note") or "")
+    if _zotero_item_has_tag(item, "StarMap Read A Paper Export"):
+        return True
+    if item_type == "attachment" and title == _normalize_zotero_match_key("StarMap Marked PDF"):
+        return True
+    if item_type == "note" and ("starmap marked passage" in note_html or "starmap paper-level critique" in note_html):
+        return True
+    return False
+
+def _delete_zotero_items(user_id: str, api_key: str, item_keys: List[str], library_version: int) -> int:
+    normalized_keys = [str(key or "").strip() for key in item_keys if str(key or "").strip()]
+    if not normalized_keys:
+        return 0
+    encoded_user = parse.quote(user_id, safe="")
+    query = "&".join(f"itemKey={parse.quote(key, safe='')}" for key in normalized_keys)
+    url = f"https://api.zotero.org/users/{encoded_user}/items?{query}"
+    headers = {
+        **_build_zotero_headers(api_key),
+        "If-Unmodified-Since-Version": str(max(0, int(library_version or 0)))
+    }
+    _http_delete(url, headers=headers, timeout=60)
+    return len(normalized_keys)
+
+def _ensure_parent_in_zotero_collection(item: dict, user_id: str, api_key: str, collection_key: str = ""):
+    collection_key = _trim_text(collection_key, 120)
+    if not collection_key:
+        return
+    item_key = item.get("key") or (item.get("data") or {}).get("key") or ""
+    if not item_key:
+        return
+    data = item.get("data") or {}
+    current_collections = list(data.get("collections") or [])
+    if collection_key in current_collections:
+        return
+    _, headers = _get_zotero_item(user_id, item_key, api_key)
+    item_version = int(headers.get("last-modified-version") or data.get("version") or item.get("version") or 0)
+    url = f"https://api.zotero.org/users/{parse.quote(user_id, safe='')}/items/{parse.quote(item_key, safe='')}"
+    _http_patch_json(
+        url,
+        {"collections": [*current_collections, collection_key]},
+        headers={
+            **_build_zotero_headers(api_key),
+            "If-Unmodified-Since-Version": str(max(0, item_version))
+        },
+        timeout=45
+    )
+
 def _get_zotero_attachment_fulltext(user_id: str, attachment_key: str, api_key: str = "") -> str:
     if not user_id or not attachment_key:
         return ""
@@ -6427,6 +7120,295 @@ def _paper_to_zotero_item(paper: PaperItem, collection_key: str = "") -> dict:
         payload["extra"] = _trim_text(paper.notes, 2000)
     return payload
 
+def _extract_zotero_successful_entries(response: dict) -> List[dict]:
+    successful = response.get("successful") or {}
+    rows = []
+    for index_key, entry in successful.items():
+        entry_data = entry.get("data") if isinstance(entry, dict) else {}
+        rows.append({
+            "index": int(index_key) if str(index_key).isdigit() else len(rows),
+            "key": (entry.get("key") if isinstance(entry, dict) else "") or entry_data.get("key") or "",
+            "version": (entry.get("version") if isinstance(entry, dict) else None) or entry_data.get("version"),
+            "data": entry_data or (entry if isinstance(entry, dict) else {})
+        })
+    rows.sort(key=lambda item: item["index"])
+    return rows
+
+def _create_zotero_items(items: List[dict], user_id: str, api_key: str) -> List[dict]:
+    if not items:
+        return []
+    base_path = f"https://api.zotero.org/users/{parse.quote(user_id, safe='')}/items"
+    headers = _build_zotero_headers(api_key)
+    headers["Zotero-Write-Token"] = uuid.uuid4().hex
+    response = _http_post_json(base_path, items, headers=headers, timeout=45)
+    created = _extract_zotero_successful_entries(response)
+    if not created:
+        failed = response.get("failed") or {}
+        failed_detail = json.dumps(failed, ensure_ascii=False)[:500] if failed else "No items were accepted by Zotero."
+        raise HTTPException(status_code=502, detail=f"Zotero did not create the requested items. {failed_detail}")
+    return created
+
+def _find_existing_zotero_item_for_paper(paper: PaperItem, payload: ZoteroSyncRequest) -> Optional[dict]:
+    doi_key = _normalize_zotero_match_key(_clean_doi(paper.doi))
+    title_key = _normalize_zotero_match_key(paper.title)
+    if not doi_key and not title_key:
+        return None
+    try:
+        existing_items = _fetch_zotero_items(payload, collection_key="")
+    except HTTPException:
+        return None
+    for item in existing_items or []:
+        data = item.get("data") or {}
+        if doi_key and doi_key == _normalize_zotero_match_key(_clean_doi(data.get("DOI") or "")):
+            return item
+        if title_key and title_key == _normalize_zotero_match_key(data.get("title") or ""):
+            return item
+    return None
+
+def _sanitize_zotero_filename(filename: str) -> str:
+    cleaned = re.sub(r"[^\w.\- ()]+", "_", str(filename or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    if not cleaned:
+        cleaned = f"starmap_read_paper_{uuid.uuid4().hex[:8]}.pdf"
+    if not cleaned.lower().endswith(".pdf"):
+        cleaned = f"{cleaned}.pdf"
+    return cleaned[:180]
+
+def _html_blockquote(text: str) -> str:
+    cleaned = _trim_text(_compact_whitespace(text), 4000)
+    if not cleaned:
+        return ""
+    return f"<blockquote><p>{html.escape(cleaned)}</p></blockquote>"
+
+def _html_paragraph(label: str, value: str, limit: int = 2400) -> str:
+    cleaned = _trim_text(_compact_whitespace(value), limit)
+    if not cleaned:
+        return ""
+    safe_label = html.escape(label)
+    safe_value = html.escape(cleaned).replace("\n", "<br>")
+    return f"<p><strong>{safe_label}:</strong> {safe_value}</p>"
+
+def _html_list_section(title: str, items: List[Any], limit: int = 5) -> str:
+    normalized = []
+    for item in items or []:
+        if isinstance(item, str):
+            text = _trim_text(_compact_whitespace(item), 600)
+            if text:
+                normalized.append(text)
+            continue
+        if isinstance(item, dict):
+            label = _trim_text(_compact_whitespace(item.get("label")), MAX_READ_PAPER_FINDING_LABEL_LENGTH)
+            detail = _trim_text(_compact_whitespace(item.get("detail")), 700)
+            severity = _trim_text(item.get("severity") or item.get("priority") or "", 20)
+            combined = label or detail
+            if not combined:
+                continue
+            if severity:
+                combined = f"[{severity}] {combined}"
+            if detail and detail != label:
+                combined = f"{combined}: {detail}"
+            normalized.append(combined)
+    if not normalized:
+        return ""
+    items_html = "".join(f"<li>{html.escape(entry)}</li>" for entry in normalized[:limit])
+    return f"<p><strong>{html.escape(title)}:</strong></p><ul>{items_html}</ul>"
+
+def _format_read_paper_mark_type(mark_type: str) -> str:
+    normalized = _trim_text(mark_type, 60).lower() or "default"
+    labels = {
+        "default": "Default",
+        "claim": "Claim",
+        "evidence": "Evidence",
+        "method": "Method",
+        "threat": "Threat",
+        "limitation": "Limitation",
+        "question": "Question",
+        "to_cite": "To Cite",
+    }
+    return labels.get(normalized, normalized.replace("_", " ").title())
+
+def _build_read_paper_passage_note_html(passage: ReadPaperMarkedPassage, sequence: int = 1) -> str:
+    blocks = [
+        f"<h1>StarMap Marked Passage {sequence}</h1>",
+        _html_paragraph("Mark Type", _format_read_paper_mark_type(passage.mark_type), 120),
+        _html_paragraph("Highlight Color", _trim_text(passage.mark_color, 60), 60),
+        _html_paragraph("Question", passage.user_question, MAX_READ_PAPER_QUESTION_LENGTH),
+        _html_paragraph("User Note", passage.user_note, 2400),
+        _html_paragraph("Captured Context", passage.context, 2200),
+        _html_blockquote(passage.excerpt),
+        _html_paragraph("Interpretation", passage.interpretation, 2200),
+        _html_paragraph("Critical Reading Note", passage.critique, 2200),
+        _html_paragraph("Best Next Check", passage.next_check, 1600),
+        _html_paragraph("Answer to User Question", passage.question_answer, 2200),
+    ]
+    return "".join(block for block in blocks if block)
+
+def _build_read_paper_paper_note_html(paper_level: ReadPaperPaperLevelExport) -> str:
+    if not paper_level:
+        return ""
+    blocks = [
+        "<h1>StarMap Paper-level Critique</h1>",
+        _html_paragraph("Paper-level Question", paper_level.user_question, MAX_READ_PAPER_QUESTION_LENGTH),
+        _html_paragraph("Deep Read Summary", paper_level.deep_read_summary, MAX_READ_PAPER_SUMMARY_LENGTH),
+        _html_paragraph("Answer to Paper-level Question", paper_level.user_question_answer, MAX_READ_PAPER_SUMMARY_LENGTH),
+        _html_list_section("Threats to Validity", paper_level.threats_to_validity),
+        _html_list_section("External Validity Limits", paper_level.external_validity_limits),
+        _html_list_section("Design Vulnerabilities", paper_level.design_vulnerabilities),
+        _html_list_section("Improvement Opportunities", paper_level.improvement_opportunities),
+        _html_list_section("Questions to Press", paper_level.questions_to_press, limit=MAX_READ_PAPER_QUESTIONS_TO_PRESS),
+    ]
+    return "".join(block for block in blocks if block)
+
+def _upload_zotero_attachment_file(user_id: str, api_key: str, attachment_key: str, filename: str, file_bytes: bytes, content_type: str = "application/pdf") -> dict:
+    if not user_id or not attachment_key:
+        raise HTTPException(status_code=400, detail="Zotero attachment upload requires a user ID and attachment key.")
+    upload_url = f"https://api.zotero.org/users/{parse.quote(user_id, safe='')}/items/{parse.quote(attachment_key, safe='')}/file"
+    auth_payload = {
+        "md5": hashlib.md5(file_bytes).hexdigest(),
+        "filename": _sanitize_zotero_filename(filename),
+        "filesize": len(file_bytes),
+        "mtime": int(time.time() * 1000),
+        "contentType": content_type
+    }
+    write_headers = {
+        **_build_zotero_headers(api_key),
+        "If-None-Match": "*"
+    }
+    auth_response = _http_post_form(upload_url, auth_payload, headers=write_headers, timeout=60)
+    if auth_response.get("exists"):
+        return {"uploaded": False, "reused_existing_binary": True}
+    upstream_url = str(auth_response.get("url") or "").strip()
+    upload_key = str(auth_response.get("uploadKey") or "").strip()
+    prefix = auth_response.get("prefix") or ""
+    suffix = auth_response.get("suffix") or ""
+    if not upstream_url or not upload_key:
+        raise HTTPException(status_code=502, detail="Zotero attachment upload did not return a usable upload URL.")
+    body = prefix.encode("utf-8") + file_bytes + suffix.encode("utf-8")
+    _http_post_bytes(
+        upstream_url,
+        body,
+        headers={"Content-Type": str(auth_response.get("contentType") or "application/octet-stream")},
+        timeout=180
+    )
+    _http_post_form(
+        upload_url,
+        {"upload": upload_key},
+        headers=write_headers,
+        timeout=60
+    )
+    return {"uploaded": True, "reused_existing_binary": False}
+
+def _export_read_paper_to_zotero(payload: ReadPaperZoteroExportRequest) -> dict:
+    sync_payload = _apply_runtime_defaults_to_zotero(ZoteroSyncRequest(
+        zotero_user_id=payload.zotero_user_id,
+        zotero_api_key=payload.zotero_api_key,
+        collection_key=payload.collection_key
+    ))
+    if not sync_payload.zotero_user_id or not sync_payload.zotero_api_key:
+        raise HTTPException(status_code=400, detail="Please configure the Zotero User ID and API key in backend settings first.")
+    if not payload.pdf_base64.strip():
+        raise HTTPException(status_code=422, detail="A PDF payload is required for Zotero export.")
+    try:
+        pdf_bytes = base64.b64decode(payload.pdf_base64, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not decode the PDF payload for Zotero export: {exc}")
+    if not pdf_bytes:
+        raise HTTPException(status_code=422, detail="The supplied PDF payload was empty.")
+
+    existing_item = _find_existing_zotero_item_for_paper(payload.paper, sync_payload)
+    created_parent = False
+    if existing_item:
+        _ensure_parent_in_zotero_collection(existing_item, sync_payload.zotero_user_id, sync_payload.zotero_api_key, sync_payload.collection_key)
+        parent_key = existing_item.get("key") or (existing_item.get("data") or {}).get("key") or ""
+    else:
+        parent_item = _paper_to_zotero_item(payload.paper, sync_payload.collection_key)
+        parent_item["tags"] = [
+            {"tag": "StarMap Export"},
+            {"tag": "Read A Paper PDF"}
+        ]
+        created_items = _create_zotero_items([parent_item], sync_payload.zotero_user_id, sync_payload.zotero_api_key)
+        parent_key = created_items[0].get("key") or ""
+        created_parent = True
+    if not parent_key:
+        raise HTTPException(status_code=502, detail="Could not determine the Zotero parent item key for this export.")
+
+    existing_children, child_headers = _get_zotero_child_items_with_meta(parent_key=parent_key, user_id=sync_payload.zotero_user_id, api_key=sync_payload.zotero_api_key)
+    export_child_keys = [
+        child.get("key") or (child.get("data") or {}).get("key") or ""
+        for child in existing_children
+        if _is_starmap_read_paper_export_child(child)
+    ]
+    deleted_export_children = 0
+    if export_child_keys:
+        deleted_export_children = _delete_zotero_items(
+            sync_payload.zotero_user_id,
+            sync_payload.zotero_api_key,
+            export_child_keys,
+            int(child_headers.get("last-modified-version") or 0)
+        )
+
+    attachment_filename = _sanitize_zotero_filename(payload.pdf_filename or payload.paper.filename or f"{payload.paper.title or 'starmap_marked'}.pdf")
+    attachment_item = {
+        "itemType": "attachment",
+        "parentItem": parent_key,
+        "linkMode": "imported_file",
+        "title": "StarMap Marked PDF",
+        "filename": attachment_filename,
+        "contentType": "application/pdf",
+        "note": "<p>Uploaded from StarMap Read A Paper PDF.</p>",
+        "tags": [{"tag": "StarMap Read A Paper Export"}]
+    }
+    attachment_created = _create_zotero_items([attachment_item], sync_payload.zotero_user_id, sync_payload.zotero_api_key)
+    attachment_key = attachment_created[0].get("key") or ""
+    if not attachment_key:
+        raise HTTPException(status_code=502, detail="Zotero accepted the attachment item but did not return its key.")
+    upload_result = _upload_zotero_attachment_file(
+        sync_payload.zotero_user_id,
+        sync_payload.zotero_api_key,
+        attachment_key,
+        attachment_filename,
+        pdf_bytes,
+        "application/pdf"
+    )
+
+    note_items = []
+    for index, passage in enumerate(payload.marked_passages or [], start=1):
+        note_html = _build_read_paper_passage_note_html(passage, sequence=index)
+        if not note_html:
+            continue
+        note_items.append({
+            "itemType": "note",
+            "parentItem": parent_key,
+            "note": note_html,
+            "tags": [{"tag": "StarMap Read A Paper Export"}]
+        })
+    paper_note_html = _build_read_paper_paper_note_html(payload.paper_level) if payload.paper_level else ""
+    if paper_note_html:
+        note_items.append({
+            "itemType": "note",
+            "parentItem": parent_key,
+            "note": paper_note_html,
+            "tags": [{"tag": "StarMap Read A Paper Export"}]
+        })
+    created_note_keys = []
+    if note_items:
+        created_note_keys = [item.get("key") or "" for item in _create_zotero_items(note_items, sync_payload.zotero_user_id, sync_payload.zotero_api_key)]
+
+    return {
+        "parent_item_key": parent_key,
+        "created_parent_item": created_parent,
+        "attachment_item_key": attachment_key,
+        "attachment_filename": attachment_filename,
+        "pdf_uploaded": bool(upload_result.get("uploaded") or upload_result.get("reused_existing_binary")),
+        "highlighted_passage_count": len(payload.marked_passages or []),
+        "note_keys": [key for key in created_note_keys if key],
+        "note_count": len([key for key in created_note_keys if key]),
+        "deleted_previous_export_children": deleted_export_children,
+        "notes_preserve_passage_mapping": True,
+        "passage_mapping_mode": "Each Zotero child note stores the quoted passage, page number, and normalized highlight coordinates.",
+        "native_zotero_annotation_objects_created": False
+    }
+
 def _map_zotero_item_to_paper(item: dict) -> Optional[dict]:
     data = item.get("data") or {}
     item_type = data.get("itemType", "")
@@ -6564,6 +7546,30 @@ async def get_project(project_id: int, current_user: dict = Depends(_require_ses
     project_data["top_papers"] = json.loads(_scrub_top_papers_json(project_data["top_papers"])) if project_data["top_papers"] else []
     project_data.pop("target_keywords", None)
     return project_data
+
+@app.post("/api/projects/{project_id}/read-paper/analyze")
+async def analyze_project_read_paper_selection(project_id: int, payload: ReadPaperAnalyzeRequest, current_user: dict = Depends(_require_session)):
+    project_data = _get_owned_project(project_id, current_user["user_id"])
+    payload = _validate_read_paper_payload(payload)
+    try:
+        result = _analyze_read_paper_selection(project_data, payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Read A Paper analysis failed: {exc}")
+    _write_audit_log(
+        "read_paper_analyze",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={
+            "selection_type": payload.selection_type,
+            "selection_label": payload.selection_label,
+            "paper_count": len(payload.papers),
+            "has_question": bool(payload.user_question)
+        },
+        success=True
+    )
+    return result
 
 @app.put("/api/projects/{project_id}")
 async def update_project(project_id: int, req: ProjectUpdate, current_user: dict = Depends(_require_session)):
@@ -6750,17 +7756,23 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
     project_data = _get_owned_project(project_id, current_user["user_id"])
     payload = _validate_stardust_create_payload(payload)
     claim = _get_owned_claim(project_id, payload.claim_id, current_user["user_id"])
+    creation_mode = _normalize_stardust_creation_mode(payload.mode)
+    if payload.seed_claim_text and int(payload.seed_evidence_id or 0) <= 0:
+        creation_mode = "claim_only"
+        payload.mode = "claim_only"
 
     conn = _db_connect(row_factory=True)
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM claim_evidence_items WHERE id = ? AND claim_id = ? AND project_id = ?",
-        (payload.seed_evidence_id, payload.claim_id, project_id)
-    )
-    evidence_row = cursor.fetchone()
-    if not evidence_row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Seed evidence item not found.")
+    evidence_row = None
+    if creation_mode == "challenge_paper":
+        cursor.execute(
+            "SELECT * FROM claim_evidence_items WHERE id = ? AND claim_id = ? AND project_id = ?",
+            (payload.seed_evidence_id, payload.claim_id, project_id)
+        )
+        evidence_row = cursor.fetchone()
+        if not evidence_row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Seed evidence item not found.")
 
     replaced_stardust_id = None
     if payload.replace_stardust_id:
@@ -6787,7 +7799,7 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         )
     conn.close()
 
-    generation_result = _generate_challenge_stardust(project_data, claim, dict(evidence_row), payload)
+    generation_result = _generate_challenge_stardust(project_data, claim, dict(evidence_row) if evidence_row else {}, payload)
     papers = generation_result.get("papers") or []
     source_summary = generation_result.get("source_summary") or {}
 
@@ -6804,8 +7816,8 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         (
             project_id,
             payload.claim_id,
-            payload.seed_evidence_id,
-            _trim_text(evidence_row["paper_key"], 300),
+            payload.seed_evidence_id if creation_mode == "challenge_paper" else 0,
+            _trim_text(evidence_row["paper_key"], 300) if evidence_row else "__claim_seed__",
             payload.name,
             payload.sub_target_thesis,
             "ready",
@@ -6831,7 +7843,8 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         detail={
             "stardust_id": stardust_id,
             "claim_id": int(claim["id"]),
-            "seed_evidence_id": payload.seed_evidence_id,
+            "creation_mode": creation_mode,
+            "seed_evidence_id": payload.seed_evidence_id if creation_mode == "challenge_paper" else 0,
             "replaced_stardust_id": replaced_stardust_id,
             "stored_count": len(papers),
         },
@@ -7485,6 +8498,16 @@ async def llm_text(payload: LlmProxyRequest, current_user: dict = Depends(_requi
         raise HTTPException(status_code=400, detail="Prompt is required")
     return {"text": _call_llm_from_env(prompt, temperature=payload.temperature, json_mode=payload.json_mode)}
 
+@app.post("/api/llm/vision")
+async def llm_vision(payload: LlmVisionRequest, current_user: dict = Depends(_require_session)):
+    prompt = _trim_text(payload.prompt, 120000)
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+    image_data_url = _trim_text(payload.image_data_url, 8_000_000)
+    if not image_data_url:
+        raise HTTPException(status_code=400, detail="Image data is required")
+    return {"text": _call_vision_llm_from_env(prompt, image_data_url=image_data_url, temperature=payload.temperature, json_mode=payload.json_mode)}
+
 @app.get("/api/zotero/collections")
 async def zotero_collections(current_user: dict = Depends(_require_session)):
     payload = _apply_runtime_defaults_to_zotero(ZoteroSyncRequest(zotero_user_id=""))
@@ -7559,6 +8582,28 @@ async def zotero_upload(payload: ZoteroUploadRequest, current_user: dict = Depen
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Zotero upload failed: {exc}")
     _write_audit_log("zotero_upload", user_id=current_user["user_id"], detail=result, success=True)
+    return result
+
+@app.post("/api/zotero/read-paper/export")
+async def zotero_read_paper_export(payload: ReadPaperZoteroExportRequest, current_user: dict = Depends(_require_session)):
+    try:
+        result = _export_read_paper_to_zotero(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Read A Paper Zotero export failed: {exc}")
+    _write_audit_log(
+        "zotero_read_paper_export",
+        user_id=current_user["user_id"],
+        detail={
+            "paper_title": _trim_text(payload.paper.title, MAX_PAPER_TITLE_LENGTH),
+            "parent_item_key": result.get("parent_item_key", ""),
+            "attachment_item_key": result.get("attachment_item_key", ""),
+            "highlighted_passage_count": result.get("highlighted_passage_count", 0),
+            "note_count": result.get("note_count", 0),
+        },
+        success=True
+    )
     return result
 
 @app.post("/api/papers/citations")
