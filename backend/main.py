@@ -2707,8 +2707,6 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
         reasons.append("it remained one of the strongest challenge-adjacent candidates in this seed trail")
     why_matched = f"This paper was kept because {'; '.join(reasons[:3])}."
     caveat = ""
-    if challenge_hint < 0.12:
-        caveat = "The challenge signal is inferred mostly from topical similarity rather than explicit contradictory language."
     return {
         **candidate,
         "relationship_type": "+".join(sorted(relationship_types)) or "semantic_match",

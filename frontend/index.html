@@ -2748,7 +2748,6 @@
                         <div>
                             <div class="dashboard-section-kicker">Launch Pad</div>
                             <h3 class="dashboard-section-title">Create a New Project</h3>
-                            <div class="dashboard-section-copy">Start a fresh thesis workspace with a clear target paper, abstract, and working draft context, then move straight into StarMap.</div>
                         </div>
                     </div>
                     <div class="dashboard-form-grid">
@@ -2767,7 +2766,6 @@
                         <div class="form-group" style="margin-bottom:0;">
                             <label>Current Content</label>
                             <textarea id="new-proj-current-content" style="height:180px;" placeholder="Store drafted sections, outlines, chapter fragments, or half-finished paragraphs here..."></textarea>
-                            <div class="dashboard-inline-note" style="margin-top:8px;">This gives the workspace more context before you start importing and ranking papers.</div>
                         </div>
                         <button class="btn btn-primary" style="width:100%;" onclick="createNewProject()">+ Initialize Project Workspace</button>
                     </div>
@@ -2778,7 +2776,6 @@
                     <div>
                         <div class="dashboard-section-kicker">Project Library</div>
                         <h3 class="dashboard-section-title">My Projects</h3>
-                        <div class="dashboard-section-copy">Reopen an active thesis workspace, fix stale similarity scores, edit framing text, or retire projects you no longer need.</div>
                     </div>
                 </div>
                 <div id="project-list-container" class="dashboard-project-list"></div>
@@ -3387,7 +3384,7 @@
                     </div>
                 </div>
                 <label class="switch" aria-label="Toggle citation-count quality assist">
-                    <input type="checkbox" id="project-use-fwci-filter" onchange="updateFwciSettingsUi()">
+                    <input type="checkbox" id="project-use-citation-count-filter" onchange="updateCitationCountSettingsUi()">
                     <span class="slider"></span>
                 </label>
             </div>
@@ -3403,13 +3400,13 @@
                     <span class="slider"></span>
                 </label>
             </div>
-            <div id="project-fwci-weight-row" style="margin-top:14px;">
+            <div id="project-citation-count-weight-row" style="margin-top:14px;">
                 <div style="font-weight:700; color:var(--text-main); margin-bottom:8px;">Citation Weight Strength</div>
-                <input type="hidden" id="project-fwci-weight-tier" value="medium">
+                <input type="hidden" id="project-citation-count-weight-tier" value="medium">
                 <div class="toggle-group" style="margin-bottom:0;">
-                    <button id="project-fwci-tier-low" class="btn-toggle" onclick="setProjectFwciWeightTier('low')">Low 10%</button>
-                    <button id="project-fwci-tier-medium" class="btn-toggle" onclick="setProjectFwciWeightTier('medium')">Medium 12%</button>
-                    <button id="project-fwci-tier-high" class="btn-toggle" onclick="setProjectFwciWeightTier('high')">High 15%</button>
+                    <button id="project-citation-count-tier-low" class="btn-toggle" onclick="setProjectCitationCountWeightTier('low')">Low 10%</button>
+                    <button id="project-citation-count-tier-medium" class="btn-toggle" onclick="setProjectCitationCountWeightTier('medium')">Medium 12%</button>
+                    <button id="project-citation-count-tier-high" class="btn-toggle" onclick="setProjectCitationCountWeightTier('high')">High 15%</button>
                 </div>
                 <div class="search-helper-note" style="margin-top:8px;">
                     Citation count is compressed with <code>min(log(1 + citations) / log(1 + 200), 1)</code> before blending into similarity.
@@ -3650,7 +3647,7 @@
         <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:18px;">
             <div>
                 <h2 style="margin:0; color:var(--primary);">StarMap System Introduction</h2>
-                <div style="font-size:13px; color:var(--text-muted); margin-top:6px;">A practical guide to the current StarMap workflow for building, checking, and updating a thesis-centered literature system.</div>
+                <div style="font-size:13px; color:var(--text-muted); margin-top:6px;">Start here if you are new to StarMap. This guide explains what the system is for, what each workspace does, and the smoothest way to get useful results without getting lost.</div>
             </div>
         </div>
         <div class="secondary-panel" style="max-height:70vh; overflow:auto; line-height:1.7; font-size:14px; background:linear-gradient(180deg, rgba(255,255,255,0.99), rgba(248,250,252,0.98)); border-radius:22px; padding:20px;">
@@ -3660,12 +3657,12 @@
                 linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98));
                 box-shadow:0 14px 30px rgba(15,23,42,0.06);">
                 <div style="display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; background:rgba(79,70,229,0.08); color:#4f46e5; font-size:11px; font-weight:800; margin-bottom:10px;">System Overview</div>
-                <div style="font-size:28px; line-height:1.02; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px;">Use StarMap as a Live Research Workspace, Not a Static Paper Folder</div>
-                <div style="font-size:13px; line-height:1.6; color:#475569; margin-bottom:14px;">Each project in StarMap is designed around one thesis direction. You define the target argument, import a focused seed library, inspect similarity and citation structure, cluster the repository into themes, and then keep the library current through watch workflows. The goal is not to collect everything. The goal is to keep the most decision-relevant papers visible, organized, and ready for writing.</div>
+                <div style="font-size:28px; line-height:1.02; letter-spacing:-0.04em; font-weight:900; color:#1f2a69; margin-bottom:8px;">Use StarMap as a Thesis-Guided Research Operating System</div>
+                <div style="font-size:13px; line-height:1.6; color:#475569; margin-bottom:14px;">StarMap works best when one project represents one real research direction: a thesis, chapter argument, dissertation section, or tightly framed question. You build a focused repository, inspect how papers relate semantically and by citation, test claims against evidence and counter-evidence, deep-read the most important PDFs, and keep discovery running through watch workflows. The point is not to accumulate the largest library. The point is to keep the most decision-relevant papers visible, explainable, and ready to support writing.</div>
                 <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                    <div style="padding:7px 11px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:11px; font-weight:800;">1 project = 1 thesis direction</div>
-                    <div style="padding:7px 11px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:800;">Similarity + citation views work together</div>
-                    <div style="padding:7px 11px; border-radius:999px; background:#fff7ed; color:#c2410c; font-size:11px; font-weight:800;">Watch, cluster, and review in one place</div>
+                    <div style="padding:7px 11px; border-radius:999px; background:#eef2ff; color:#4338ca; font-size:11px; font-weight:800;">1 project = 1 focused research question</div>
+                    <div style="padding:7px 11px; border-radius:999px; background:#f8fafc; color:#475569; font-size:11px; font-weight:800;">Map, read, argue, and monitor in one workspace</div>
+                    <div style="padding:7px 11px; border-radius:999px; background:#fff7ed; color:#c2410c; font-size:11px; font-weight:800;">Main repository and counter-evidence lab stay separate</div>
                 </div>
             </div>
 
@@ -3673,71 +3670,71 @@
                 <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); box-shadow:0 10px 24px rgba(15,23,42,0.05);">
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
                         <div style="width:30px; height:30px; border-radius:999px; background:#eef2ff; color:#4338ca; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900;">1</div>
-                        <div style="font-size:16px; font-weight:800; color:#24307b;">Start With a Clear Target Project</div>
+                        <div style="font-size:16px; font-weight:800; color:#24307b;">Set Up One Clear Project</div>
                     </div>
-                    <div style="font-size:13px; color:#475569; line-height:1.65;">Create a project with a thesis title, abstract, and any draft content you already have. StarMap uses this target text as the anchor for ranking, watch generation, and theme interpretation, so sharper project framing leads to much better downstream results.</div>
+                    <div style="font-size:13px; color:#475569; line-height:1.65;">Begin with one target title, one abstract, and any draft writing you already have. StarMap uses that framing text to rank papers, interpret clusters, guide watches, and explain relevance, so better project framing improves almost every later result.</div>
                 </div>
 
                 <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); box-shadow:0 10px 24px rgba(15,23,42,0.05);">
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
                         <div style="width:30px; height:30px; border-radius:999px; background:#eef2ff; color:#4338ca; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900;">2</div>
-                        <div style="font-size:16px; font-weight:800; color:#24307b;">Build a Focused Seed Library</div>
+                        <div style="font-size:16px; font-weight:800; color:#24307b;">Import a Focused Seed Library</div>
                     </div>
-                    <div style="font-size:13px; color:#475569; line-height:1.65;">Import a strong initial set of papers instead of a giant mixed dump. StarMap performs best when the first repository already contains papers that are genuinely close to the thesis direction, because those papers become the basis for similarity ranking, citation expansion, and later cluster overviews.</div>
+                    <div style="font-size:13px; color:#475569; line-height:1.65;">Use local PDFs or Zotero to bring in a small but strong starting set. StarMap performs better with a clean seed library than with a huge mixed dump, because these first papers become the basis for similarity ranking, citation structure, and later theme discovery.</div>
                 </div>
 
                 <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); box-shadow:0 10px 24px rgba(15,23,42,0.05);">
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
                         <div style="width:30px; height:30px; border-radius:999px; background:#eef2ff; color:#4338ca; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900;">3</div>
-                        <div style="font-size:16px; font-weight:800; color:#24307b;">Use Top Related Papers as the Review Queue</div>
+                        <div style="font-size:16px; font-weight:800; color:#24307b;">Curate Before You Expand</div>
                     </div>
-                    <div style="font-size:13px; color:#475569; line-height:1.65;">Treat <strong>Top Related Papers</strong> as the working queue for curation. Search, sort, and inspect papers there first, then use status labels like <strong>Core</strong>, <strong>Pending</strong>, and <strong>Underweight</strong> to tell StarMap which papers should carry the project and which ones are peripheral.</div>
+                    <div style="font-size:13px; color:#475569; line-height:1.65;">Treat <strong>Top Related Papers</strong> and <strong>All Papers</strong> as your main curation surfaces. Review titles, abstracts, notes, and statuses such as <strong>Core</strong>, <strong>Pending</strong>, <strong>Unread</strong>, and <strong>Underweight</strong> before you start importing broadly.</div>
                 </div>
 
                 <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); box-shadow:0 10px 24px rgba(15,23,42,0.05);">
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
                         <div style="width:30px; height:30px; border-radius:999px; background:#eef2ff; color:#4338ca; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900;">4</div>
-                        <div style="font-size:16px; font-weight:800; color:#24307b;">Navigate the Repository With Workspace Atlas</div>
+                        <div style="font-size:16px; font-weight:800; color:#24307b;">Learn the Structure of the Repository</div>
                     </div>
-                    <div style="font-size:13px; color:#475569; line-height:1.65;"><strong>Workspace Atlas</strong> lets you move between <strong>Orbital</strong>, <strong>Network</strong>, and <strong>Citation Graph</strong> views of the same repository. Use Orbital for fast broad orientation, Network for bidirectional neighborhood structure, and Citation Graph when you care more about explicit reference flow. Density controls help trade off completeness against rendering performance.</div>
+                    <div style="font-size:13px; color:#475569; line-height:1.65;"><strong>Workspace Atlas</strong> lets you view the same repository in <strong>Orbital</strong>, <strong>Network</strong>, and <strong>Citation Graph</strong> form. Use it to spot clusters, bridge papers, citation neighborhoods, and gaps in coverage before you make decisions about what to read or import next.</div>
                 </div>
 
                 <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); box-shadow:0 10px 24px rgba(15,23,42,0.05);">
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
                         <div style="width:30px; height:30px; border-radius:999px; background:#eef2ff; color:#4338ca; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900;">5</div>
-                        <div style="font-size:16px; font-weight:800; color:#24307b;">Cluster the Repository in Two Different Ways</div>
+                        <div style="font-size:16px; font-weight:800; color:#24307b;">Use the Analysis Workspaces Intentionally</div>
                     </div>
-                    <div style="font-size:13px; color:#475569; line-height:1.65;">Use <strong>Auto Cluster Themes</strong> when you want a higher-level map of the repository. <strong>Semantic Cluster</strong> groups papers by topic similarity. <strong>Citation Cluster</strong> groups them by actual citation topology. In citation mode, selecting a cluster now shows its local citation relationship map, and failed LLM naming can be rerun directly from the cluster view.</div>
+                    <div style="font-size:13px; color:#475569; line-height:1.65;"><strong>Read A Paper PDF</strong> is for deep critique of one paper or one cluster. <strong>Evidence Board</strong> is for testing a claim against supporting and limiting evidence. <strong>Challenge Stardusts</strong> are for building separate counter-evidence side networks without polluting the main repository too early.</div>
                 </div>
 
                 <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); box-shadow:0 10px 24px rgba(15,23,42,0.05);">
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
                         <div style="width:30px; height:30px; border-radius:999px; background:#eef2ff; color:#4338ca; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900;">6</div>
-                        <div style="font-size:16px; font-weight:800; color:#24307b;">Use Project Literature Watch to Stay Current</div>
+                        <div style="font-size:16px; font-weight:800; color:#24307b;">Then Scale Out With Clusters and Watch</div>
                     </div>
-                    <div style="font-size:13px; color:#475569; line-height:1.65;"><strong>Project Literature Watch</strong> now supports three modes. <strong>Target Watch</strong> scans new literature against your thesis direction. <strong>Scholar Watch</strong> tracks selected authors. <strong>Journal Watch</strong> tracks selected journals. If a watched journal should matter more in Target Watch, you can tune it in <strong>Adjust Journal Weightings</strong> with per-journal lifts instead of giving every watched journal the same influence.</div>
+                    <div style="font-size:13px; color:#475569; line-height:1.65;">Once the repository is reasonably clean, use <strong>Semantic Cluster</strong> to group papers by topic, <strong>Citation Cluster</strong> to detect citation communities, and <strong>Project Literature Watch</strong> to monitor recent target papers, scholars, and journals without leaving the project workflow.</div>
                 </div>
+            </div>
 
-                <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); box-shadow:0 10px 24px rgba(15,23,42,0.05);">
-                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
-                        <div style="width:30px; height:30px; border-radius:999px; background:#eef2ff; color:#4338ca; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900;">7</div>
-                        <div style="font-size:16px; font-weight:800; color:#24307b;">Audit Repository Readiness Before Expanding Further</div>
-                    </div>
-                    <div style="font-size:13px; color:#475569; line-height:1.65;">Open <strong>Repository Analytics</strong> to check whether your library is actually ready for analysis. Repository Health shows abstract and metadata completeness, while the new metadata chart separates missing <strong>author</strong>, <strong>venue</strong>, and <strong>year</strong> problems. This is useful before reranking, clustering, or generating overviews because missing metadata can weaken results.</div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(250px, 1fr)); gap:14px; margin-top:16px;">
+                <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:#fff;">
+                    <div style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px;">What Each Major Workspace Is For</div>
+                    <div style="font-size:13px; line-height:1.72; color:#475569;"><strong>StarMap Visualization</strong> helps you understand structure. <strong>All Papers</strong> is the project-wide search and filtering hub. <strong>Read A Paper PDF</strong> helps you interrogate one important paper in depth rather than skimming blindly.</div>
                 </div>
-
-                <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96)); box-shadow:0 10px 24px rgba(15,23,42,0.05);">
-                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
-                        <div style="width:30px; height:30px; border-radius:999px; background:#eef2ff; color:#4338ca; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900;">8</div>
-                        <div style="font-size:16px; font-weight:800; color:#24307b;">Expand Carefully, Then Feed Writing Work</div>
-                    </div>
-                    <div style="font-size:13px; color:#475569; line-height:1.65;">After the repository stabilizes, expand through <strong>Cited By</strong>, <strong>References</strong>, and <strong>Zotero Sync</strong>, not by bulk importing unrelated papers. From there, use paper status filters, core-paper lists, and literature watch recommendations to decide what should feed review writing, note-taking, and later citation export.</div>
+                <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:#fff;">
+                    <div style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px;">Argument and Counter-Argument</div>
+                    <div style="font-size:13px; line-height:1.72; color:#475569;"><strong>Evidence Board</strong> is where a claim meets supporting and limiting evidence from your repository. <strong>Challenge Stardusts</strong> let you isolate rebuttal trails and import only the counter-evidence that survives inspection.</div>
+                </div>
+                <div style="border:1px solid rgba(148,163,184,0.18); border-radius:18px; padding:16px; background:#fff;">
+                    <div style="font-size:12px; font-weight:900; color:#24307b; margin-bottom:8px;">Maintenance and Growth</div>
+                    <div style="font-size:13px; line-height:1.72; color:#475569;"><strong>Repository Analytics</strong> shows whether your library is clean enough for good ranking and clustering. <strong>Zotero Sync</strong>, <strong>Cited By</strong>, <strong>References</strong>, and <strong>Literature Watch</strong> help you expand only after the current repository is under control.</div>
                 </div>
             </div>
 
             <div style="margin-top:16px; border:1px solid rgba(250,204,21,0.34); border-radius:18px; padding:16px; background:linear-gradient(180deg, rgba(255,251,235,0.98), rgba(255,255,255,0.96));">
-                <div style="display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; background:rgba(245,158,11,0.1); color:#b45309; font-size:11px; font-weight:800; margin-bottom:10px;">Recommended Workflow</div>
-                <div style="font-size:14px; line-height:1.7; color:#475569;">A good default sequence is: <strong>define the project clearly → import a focused seed set → curate Top Related Papers → inspect the library in Workspace Atlas → run Semantic or Citation Cluster when you need theme structure → check Repository Analytics for missing metadata → use Literature Watch to keep the frontier current</strong>. This usually leads to a cleaner and more thesis-relevant library than importing broadly first and trying to clean the mess later.</div>
+                <div style="display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; background:rgba(245,158,11,0.1); color:#b45309; font-size:11px; font-weight:800; margin-bottom:10px;">Recommended First-Pass Workflow</div>
+                <div style="font-size:14px; line-height:1.7; color:#475569; margin-bottom:10px;">If you are using StarMap for the first time, a reliable sequence is: <strong>set up the project clearly → import a focused seed set → clean and label papers in Top Related Papers and All Papers → inspect the structure in StarMap Visualization → deep-read a few key papers → create claims in Evidence Board → build Challenge Stardusts only when you need structured counter-evidence → run clustering when the repository is stable → use Literature Watch to keep the frontier current</strong>.</div>
+                <div style="font-size:13px; line-height:1.7; color:#475569;">The practical rule is simple: <strong>curate first, expand second</strong>. StarMap becomes much more useful when the main repository stays tight, your claims are explicit, and counter-evidence is tested in its own workspace before you merge it into the project.</div>
             </div>
         </div>
         <div style="display:flex; justify-content:flex-end; margin-top:16px;">
@@ -7370,7 +7367,7 @@ Rules:
             localStorage.setItem('starmap_user', JSON.stringify(data));
             await loadServerSettings();
             await refreshIntegrationStatus();
-            document.getElementById('welcome-text').innerText = `Welcome back, ${data.username}. Shape new research workspaces, manage parser settings, and reopen active StarMaps from one calmer control surface.`;
+            document.getElementById('welcome-text').innerText = `Welcome back, ${data.username}.`;
             switchView('dashboard');
             return true;
         } catch {
@@ -7687,7 +7684,7 @@ Rules:
                 use_background_precompute: parsed.use_background_precompute !== false,
                 use_llm_theme_naming: parsed.use_llm_theme_naming !== false,
                 use_zotero_sync_preload: parsed.use_zotero_sync_preload !== false,
-                use_fwci_filter: parsed.use_citation_count_filter === true || parsed.use_fwci_filter === true,
+                use_citation_count_filter: parsed.use_citation_count_filter === true || parsed.use_fwci_filter === true,
                 show_network_target_link_rainbow: parsed.show_network_target_link_rainbow === true,
                 literature_watch_discipline: typeof parsed.literature_watch_discipline === 'string' ? parsed.literature_watch_discipline : '',
                 literature_watch_disciplines: disciplineList
@@ -7745,12 +7742,12 @@ Rules:
                 chart_render_limit: [150, 300, 500].includes(Number(parsed.chart_render_limit))
                     ? Number(parsed.chart_render_limit)
                     : 500,
-                fwci_weight_tier: Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, parsed.citation_count_weight_tier)
+                citation_count_weight_tier: Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, parsed.citation_count_weight_tier)
                     ? parsed.citation_count_weight_tier
                     : (Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, parsed.fwci_weight_tier) ? parsed.fwci_weight_tier : 'medium')
             };
         } catch {
-            return { use_background_precompute: true, use_llm_theme_naming: true, use_zotero_sync_preload: true, use_fwci_filter: false, show_network_target_link_rainbow: false, literature_watch_discipline: '', literature_watch_disciplines: [], literature_watch_range: '3m', literature_watch_scholars: [], literature_watch_journals: [], marked_node_keys: [], marked_node_entries: [], marked_node_panel_collapsed: false, marked_node_panel_position: { x: 18, y: 18 }, manual_path_panel_collapsed: false, manual_path_panel_position: { x: 18, y: 182 }, manual_path_links: [], breadcrumb_paths: [], breadcrumb_draft: normalizeBreadcrumbDraft({}), custom_citation_clusters: [], cluster_name_overrides: {}, chart_render_limit: 500, fwci_weight_tier: 'medium' };
+            return { use_background_precompute: true, use_llm_theme_naming: true, use_zotero_sync_preload: true, use_citation_count_filter: false, show_network_target_link_rainbow: false, literature_watch_discipline: '', literature_watch_disciplines: [], literature_watch_range: '3m', literature_watch_scholars: [], literature_watch_journals: [], marked_node_keys: [], marked_node_entries: [], marked_node_panel_collapsed: false, marked_node_panel_position: { x: 18, y: 18 }, manual_path_panel_collapsed: false, manual_path_panel_position: { x: 18, y: 182 }, manual_path_links: [], breadcrumb_paths: [], breadcrumb_draft: normalizeBreadcrumbDraft({}), custom_citation_clusters: [], cluster_name_overrides: {}, chart_render_limit: 500, citation_count_weight_tier: 'medium' };
         }
     }
 
@@ -7759,8 +7756,12 @@ Rules:
             ...getProjectSearchSettings(projectId),
             ...settings
         };
-        nextSettings.use_citation_count_filter = nextSettings.use_fwci_filter;
-        nextSettings.citation_count_weight_tier = nextSettings.fwci_weight_tier;
+        nextSettings.use_citation_count_filter = nextSettings.use_citation_count_filter === true;
+        nextSettings.citation_count_weight_tier = Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, nextSettings.citation_count_weight_tier)
+            ? nextSettings.citation_count_weight_tier
+            : (Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, nextSettings.fwci_weight_tier) ? nextSettings.fwci_weight_tier : 'medium');
+        delete nextSettings.use_fwci_filter;
+        delete nextSettings.fwci_weight_tier;
         localStorage.setItem(getProjectSettingsStorageKey(projectId), JSON.stringify(nextSettings));
         return nextSettings;
     }
@@ -9648,32 +9649,32 @@ Rules:
         return Math.min(Math.log(1 + rawValue) / Math.log(1 + CITATION_SCORE_LOG_CAP), 1);
     }
 
-    function isFwciFilterEnabled(projectId = currentProject?.id) {
-        return getProjectSearchSettings(projectId).use_fwci_filter;
+    function isCitationCountFilterEnabled(projectId = currentProject?.id) {
+        return getProjectSearchSettings(projectId).use_citation_count_filter;
     }
 
-    function getFwciBlendWeight(projectId = currentProject?.id) {
+    function getCitationCountBlendWeight(projectId = currentProject?.id) {
         const settings = getProjectSearchSettings(projectId);
-        return settings.use_fwci_filter ? (CITATION_WEIGHT_TIERS[settings.fwci_weight_tier] || CITATION_WEIGHT_TIERS.medium) : 0;
+        return settings.use_citation_count_filter ? (CITATION_WEIGHT_TIERS[settings.citation_count_weight_tier] || CITATION_WEIGHT_TIERS.medium) : 0;
     }
 
-    function getMissingFwciPaperCount(project = currentProject) {
+    function getMissingCitationCountPaperCount(project = currentProject) {
         if (!project?.top_papers?.length) return 0;
         return project.top_papers.filter(paper => !hasNumericFwci(paper)).length;
     }
 
-    function updateFwciSettingsUi() {
-        const enabled = !!document.getElementById('project-use-fwci-filter')?.checked;
-        const weightRow = document.getElementById('project-fwci-weight-row');
+    function updateCitationCountSettingsUi() {
+        const enabled = !!document.getElementById('project-use-citation-count-filter')?.checked;
+        const weightRow = document.getElementById('project-citation-count-weight-row');
         if (weightRow) weightRow.classList.toggle('hidden', !enabled);
     }
 
-    window.setProjectFwciWeightTier = (tier) => {
+    window.setProjectCitationCountWeightTier = (tier) => {
         const safeTier = Object.prototype.hasOwnProperty.call(CITATION_WEIGHT_TIERS, tier) ? tier : 'medium';
-        const input = document.getElementById('project-fwci-weight-tier');
+        const input = document.getElementById('project-citation-count-weight-tier');
         if (input) input.value = safeTier;
         ['low', 'medium', 'high'].forEach(key => {
-            document.getElementById(`project-fwci-tier-${key}`)?.classList.toggle('active', key === safeTier);
+            document.getElementById(`project-citation-count-tier-${key}`)?.classList.toggle('active', key === safeTier);
         });
     }
 
@@ -9814,19 +9815,19 @@ Rules:
         const recalcButton = document.getElementById('project-recalc-btn');
         const recalcCopy = document.getElementById('project-recalc-copy');
         if (recalcPanel && currentProject) {
-            const missingFwciCount = getMissingFwciPaperCount(currentProject);
-            const shouldShow = needsProjectSimilarityRefresh(currentProject.id) || missingFwciCount > 0;
+            const missingCitationCount = getMissingCitationCountPaperCount(currentProject);
+            const shouldShow = needsProjectSimilarityRefresh(currentProject.id) || missingCitationCount > 0;
             recalcPanel.classList.toggle('hidden', !shouldShow);
             if (recalcCopy) {
-                recalcCopy.innerText = missingFwciCount > 0
-                    ? `Citation-count assist is enabled and ${missingFwciCount} saved paper${missingFwciCount === 1 ? '' : 's'} still need citation metadata. Re-run similarity scoring to backfill citation counts and refresh the ranking.`
+                recalcCopy.innerText = missingCitationCount > 0
+                    ? `Citation-count assist is enabled and ${missingCitationCount} saved paper${missingCitationCount === 1 ? '' : 's'} still need citation metadata. Re-run similarity scoring to backfill citation counts and refresh the ranking.`
                     : 'Abstract, current content, or citation-count settings changed. Re-run similarity scoring to refresh the project ranking.';
             }
             if (recalcButton) {
                 recalcButton.disabled = similarityRecalcInProgress;
                 recalcButton.innerText = similarityRecalcInProgress && similarityRecalcProjectId === currentProject.id
                     ? 'Recalculating...'
-                    : (missingFwciCount > 0 ? 'Refresh Citations + Similarity' : 'Recalculate Similarity');
+                    : (missingCitationCount > 0 ? 'Refresh Citations + Similarity' : 'Recalculate Similarity');
             }
         }
     }
@@ -17642,10 +17643,10 @@ Return ONLY a JSON object matching this exact schema:
         document.getElementById('project-use-background-precompute').checked = settings.use_background_precompute !== false;
         document.getElementById('project-use-llm-theme-naming').checked = settings.use_llm_theme_naming !== false;
         document.getElementById('project-use-zotero-sync-preload').checked = settings.use_zotero_sync_preload !== false;
-        document.getElementById('project-use-fwci-filter').checked = settings.use_fwci_filter;
+        document.getElementById('project-use-citation-count-filter').checked = settings.use_citation_count_filter;
         document.getElementById('project-show-network-target-link-rainbow').checked = settings.show_network_target_link_rainbow === true;
-        setProjectFwciWeightTier(settings.fwci_weight_tier);
-        updateFwciSettingsUi();
+        setProjectCitationCountWeightTier(settings.citation_count_weight_tier);
+        updateCitationCountSettingsUi();
         updateSimilarityRefreshUi();
         updateClearAllPapersButtonVisibility();
         document.getElementById('project-settings-modal').classList.remove('hidden');
@@ -18477,17 +18478,17 @@ Return ONLY a JSON object matching this exact schema:
             use_background_precompute: document.getElementById('project-use-background-precompute').checked,
             use_llm_theme_naming: document.getElementById('project-use-llm-theme-naming').checked,
             use_zotero_sync_preload: document.getElementById('project-use-zotero-sync-preload').checked,
-            use_fwci_filter: document.getElementById('project-use-fwci-filter').checked,
+            use_citation_count_filter: document.getElementById('project-use-citation-count-filter').checked,
             show_network_target_link_rainbow: document.getElementById('project-show-network-target-link-rainbow').checked,
-            fwci_weight_tier: document.getElementById('project-fwci-weight-tier').value || 'medium'
+            citation_count_weight_tier: document.getElementById('project-citation-count-weight-tier').value || 'medium'
         }, currentProject?.id);
 
-        const fwciConfigChanged =
-            previousSettings.use_fwci_filter !== nextSettings.use_fwci_filter ||
-            previousSettings.fwci_weight_tier !== nextSettings.fwci_weight_tier;
+        const citationCountConfigChanged =
+            previousSettings.use_citation_count_filter !== nextSettings.use_citation_count_filter ||
+            previousSettings.citation_count_weight_tier !== nextSettings.citation_count_weight_tier;
         const networkTargetLinkRainbowChanged =
             previousSettings.show_network_target_link_rainbow !== nextSettings.show_network_target_link_rainbow;
-        if (fwciConfigChanged && currentProject?.id && currentProject?.top_papers?.length) {
+        if (citationCountConfigChanged && currentProject?.id && currentProject?.top_papers?.length) {
             setProjectSimilarityRefreshRequired(currentProject.id, true);
         }
         if (previousSettings.use_llm_theme_naming !== nextSettings.use_llm_theme_naming) {
@@ -18666,7 +18667,7 @@ Return ONLY a JSON object matching this exact schema:
                 currentUser = data; 
                 localStorage.setItem('starmap_user', JSON.stringify(data));
                 await loadServerSettings();
-                document.getElementById('welcome-text').innerText = `Welcome back, ${data.username}. Shape new research workspaces, manage parser settings, and reopen active StarMaps from one calmer control surface.`; 
+                document.getElementById('welcome-text').innerText = `Welcome back, ${data.username}.`; 
                 switchView('dashboard'); 
             } else {
                 const actionLabel = action === 'register' ? 'create your account' : 'sign in';
@@ -23867,7 +23868,7 @@ About 500 words of literature review draft in markdown.`;
         };
     }
 
-    async function backfillMissingFwciForPapers(papers, { onProgress = null } = {}) {
+    async function backfillMissingCitationCountForPapers(papers, { onProgress = null } = {}) {
         const candidates = (papers || []).filter(paper => paper && !hasNumericFwci(paper) && String(paper.title || '').trim());
         let updated = 0;
         let failed = 0;
@@ -23906,8 +23907,8 @@ About 500 words of literature review draft in markdown.`;
     }
 
     function buildSimilarityBreakdownFromVectors(project, paper, targetVectors, paperVectors) {
-        const fwciBlendWeight = getFwciBlendWeight(project?.id);
-        const textMultiplier = 1 - fwciBlendWeight;
+        const citationCountBlendWeight = getCitationCountBlendWeight(project?.id);
+        const textMultiplier = 1 - citationCountBlendWeight;
         const rawBreakdown = [
             {
                 key: 'title',
@@ -23932,8 +23933,8 @@ About 500 words of literature review draft in markdown.`;
             {
                 key: 'fwci',
                 label: 'Citation Count',
-                active: fwciBlendWeight > 0 && hasNumericFwci(paper),
-                rawContribution: getCompressedFwciScore(paper) * fwciBlendWeight
+                active: citationCountBlendWeight > 0 && hasNumericFwci(paper),
+                rawContribution: getCompressedFwciScore(paper) * citationCountBlendWeight
             }
         ];
 
@@ -23968,11 +23969,11 @@ About 500 words of literature review draft in markdown.`;
         }
 
         const normalizedTextScore = textScore / weight;
-        const fwciBlendWeight = getFwciBlendWeight(project?.id);
-        if (fwciBlendWeight <= 0) return normalizedTextScore;
+        const citationCountBlendWeight = getCitationCountBlendWeight(project?.id);
+        if (citationCountBlendWeight <= 0) return normalizedTextScore;
         if (!hasNumericFwci(paper)) return normalizedTextScore;
         const fwciScore = getCompressedFwciScore(paper);
-        return (normalizedTextScore * (1 - fwciBlendWeight)) + (fwciScore * fwciBlendWeight);
+        return (normalizedTextScore * (1 - citationCountBlendWeight)) + (fwciScore * citationCountBlendWeight);
     }
 
     function resolveScoringProgressHandlers(onProgress) {
@@ -23994,7 +23995,7 @@ About 500 words of literature review draft in markdown.`;
         const ext = await getSimilarityExtractor();
         const targetVectors = await getCachedProjectSimilarityVectors(project, ext);
 
-        await backfillMissingFwciForPapers(papers, {
+        await backfillMissingCitationCountForPapers(papers, {
             onProgress: onCitationProgress
         });
 
@@ -24055,24 +24056,24 @@ About 500 words of literature review draft in markdown.`;
                 return;
             }
 
-            const useFwci = isFwciFilterEnabled(projectId);
-            const missingFwciCount = useFwci
+            const useCitationCountFilter = isCitationCountFilterEnabled(projectId);
+            const missingCitationCount = useCitationCountFilter
                 ? papers.filter(paper => !hasNumericFwci(paper) && String(paper.title || '').trim()).length
                 : 0;
 
-            if (useFwci && missingFwciCount > 0) {
+            if (useCitationCountFilter && missingCitationCount > 0) {
                 setSimilarityRecalcProgress({
                     title: 'Refreshing citation metadata...',
-                    subtitle: `Backfilling citation counts for ${missingFwciCount} saved papers before rescoring.`,
+                    subtitle: `Backfilling citation counts for ${missingCitationCount} saved papers before rescoring.`,
                     detail: 'Querying OpenAlex metadata...',
                     percent: 4,
-                    countText: `0 / ${missingFwciCount} papers`,
+                    countText: `0 / ${missingCitationCount} papers`,
                     etaText: 'ETA --',
                     footer: 'Citation counts are fetched once and then stored with the project papers.'
                 });
 
                 const fwciStartedAt = performance.now();
-                await backfillMissingFwciForPapers(papers, {
+                await backfillMissingCitationCountForPapers(papers, {
                     onProgress: async ({ index, total, paper }) => {
                         const completed = index + 1;
                         const elapsed = performance.now() - fwciStartedAt;
@@ -24080,7 +24081,7 @@ About 500 words of literature review draft in markdown.`;
                         const remainingMs = averagePerPaper * (total - completed);
                         setSimilarityRecalcProgress({
                             title: 'Refreshing citation metadata...',
-                            subtitle: `Backfilling citation counts for ${missingFwciCount} saved papers before rescoring.`,
+                            subtitle: `Backfilling citation counts for ${missingCitationCount} saved papers before rescoring.`,
                             detail: `Fetching citations for ${paper.title || `paper ${completed}`}`.slice(0, 120),
                             percent: 4 + (completed / Math.max(total, 1)) * 26,
                             countText: `${completed} / ${total} papers`,
@@ -24096,7 +24097,7 @@ About 500 words of literature review draft in markdown.`;
                 title: 'Loading similarity model...',
                 subtitle: `Refreshing ${papers.length} saved papers for this project.`,
                 detail: 'Preparing target vectors...',
-                percent: useFwci && missingFwciCount > 0 ? 34 : 5,
+                percent: useCitationCountFilter && missingCitationCount > 0 ? 34 : 5,
                 countText: `0 / ${papers.length} papers`,
                 etaText: 'ETA --'
             });
@@ -24108,7 +24109,7 @@ About 500 words of literature review draft in markdown.`;
             for (let i = 0; i < papers.length; i++) {
                 papers[i].similarity = await computePaperSimilarity(project, papers[i], extractor, targetVectors);
                 const completed = i + 1;
-                const basePercent = useFwci && missingFwciCount > 0 ? 34 : 5;
+                const basePercent = useCitationCountFilter && missingCitationCount > 0 ? 34 : 5;
                 const percent = basePercent + (completed / papers.length) * (95 - basePercent);
                 const elapsed = performance.now() - startedAt;
                 const averagePerPaper = elapsed / completed;
