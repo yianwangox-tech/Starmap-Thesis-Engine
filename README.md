@@ -210,6 +210,57 @@ Then open:
 
 The frontend automatically probes common local API origins and will try the backend on port `8001`.
 
+### Auto-start on macOS
+
+If you want both services to come back automatically after a reboot, this repo now includes helper scripts for `launchd`:
+
+```bash
+chmod +x scripts/start_backend.sh scripts/start_frontend.sh scripts/install_launch_agents.sh
+./scripts/install_launch_agents.sh
+```
+
+This installs two user LaunchAgents:
+
+- `com.ianwang.starmap.backend`
+- `com.ianwang.starmap.frontend`
+
+They start automatically when you log in and restart themselves if they exit unexpectedly. Logs are written to:
+
+- `logs/backend.stdout.log`
+- `logs/backend.stderr.log`
+- `logs/frontend.stdout.log`
+- `logs/frontend.stderr.log`
+
+These scripts are macOS-only and do not affect Windows users.
+
+### Auto-start on Windows
+
+Windows users can install equivalent per-user startup tasks with Task Scheduler:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_windows_startup.ps1
+```
+
+This registers two Scheduled Tasks for the current Windows user:
+
+- `StarMap Backend`
+- `StarMap Frontend`
+
+They start automatically the next time that user logs in to Windows, and the installer also starts them immediately once. Windows startup uses dedicated PowerShell scripts and does not interfere with the macOS `launchd` setup.
+
+Windows startup scripts prefer these Python locations in order:
+
+1. `backend\.venv\Scripts\python.exe`
+2. `py -3`
+3. `python`
+
+Logs are written to the same repo-local files:
+
+- `logs/backend.stdout.log`
+- `logs/backend.stderr.log`
+- `logs/frontend.stdout.log`
+- `logs/frontend.stderr.log`
+
 ## Configuration
 
 Runtime configuration is read from the project-level `.env` file. Common variables include:

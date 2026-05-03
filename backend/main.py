@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
@@ -9,12 +11,15 @@ import json
 import os
 import re
 import math
+import random
 import unicodedata
 import uuid
 import time
 import secrets
 import hashlib
 import hmac
+import base64
+import html
 from pathlib import Path
 from http.client import IncompleteRead
 from urllib import error, parse, request
@@ -38,7 +43,9 @@ LEGACY_DB_FILE = Path(__file__).resolve().parent / "database.db"
 ENV_FILE = PROJECT_ROOT / ".env"
 GEMINI_MODEL = "gemini-2.5-flash"
 CITATION_GRAPH_JOBS: Dict[str, dict] = {}
+SEMANTIC_CLUSTER_JOBS: Dict[str, dict] = {}
 PROJECT_TASK_LOCKS: Dict[str, asyncio.Lock] = {}
+CLAIM_CACHE_MAINTENANCE = {"last_checked_at": 0}
 ZOTERO_CACHE_TTL_SECONDS = 60 * 5
 ZOTERO_FULL_SYNC_INTERVAL_SECONDS = 60 * 60
 ZOTERO_ITEM_PAGE_SIZE = 100
@@ -59,6 +66,61 @@ MAX_LOOKUP_TITLE_LENGTH = 500
 MAX_LOOKUP_AUTHORS_LENGTH = 800
 MAX_LOOKUP_YEAR_LENGTH = 20
 MAX_LOOKUP_EMAIL_LENGTH = 200
+MAX_CLAIM_TEXT_LENGTH = 4000
+MAX_CLAIM_SECTION_LABEL_LENGTH = 160
+MAX_CLAIM_TYPE_LENGTH = 40
+MAX_CLAIM_STATUS_LENGTH = 40
+MAX_CLAIM_ANALYSIS_VERSION_LENGTH = 40
+MAX_STARDUST_NAME_LENGTH = 180
+MAX_STARDUST_STATUS_LENGTH = 40
+MAX_SUB_TARGET_THESIS_LENGTH = 8000
+MAX_STARDUST_PAPERS = 50
+MAX_STARDUST_HOP1_REFERENCES = 16
+MAX_STARDUST_HOP1_CITED_BY = 16
+MAX_STARDUST_HOP2_SEEDS = 8
+MAX_STARDUST_HOP2_REFERENCES_PER_SEED = 6
+MAX_STARDUST_HOP2_CITED_BY_PER_SEED = 6
+MAX_STARDUST_SEMANTIC_QUERY_COUNT = 5
+MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY = 12
+MAX_STARDUST_CANDIDATE_POOL = 120
+MAX_EVIDENCE_WHY_MATCHED_LENGTH = 1200
+MAX_EVIDENCE_CAVEAT_LENGTH = 800
+MAX_EVIDENCE_SNIPPET_TEXT_LENGTH = 360
+MAX_EVIDENCE_SNIPPETS_PER_ITEM = 3
+MAX_READ_PAPER_SELECTION_LABEL_LENGTH = 220
+MAX_READ_PAPER_QUESTION_LENGTH = 2000
+MAX_READ_PAPER_SUMMARY_LENGTH = 2200
+MAX_READ_PAPER_FINDING_LABEL_LENGTH = 220
+MAX_READ_PAPER_FINDING_DETAIL_LENGTH = 1400
+MAX_READ_PAPER_QUESTIONS_TO_PRESS = 6
+READ_PAPER_MAX_PAPERS = 12
+READ_PAPER_MAX_FINDINGS_PER_SECTION = 6
+MAX_CHALLENGE_EXPANSION_REFERENCES = 12
+MAX_CHALLENGE_EXPANSION_CITED_BY = 12
+MAX_CHALLENGE_EXPANSION_CANDIDATES = 18
+MAX_CHALLENGE_EXPANSION_RESULTS = 12
+MAX_CHALLENGE_EXPANSION_SEED_CONTENT_LENGTH = 1800
+MAX_CLAIM_CANDIDATES = 96
+CLAIM_ANALYSIS_BATCH_SIZE = 8
+CLAIM_TYPE_VALUES = {"thesis_claim", "chapter_claim", "research_question"}
+CLAIM_STATUS_VALUES = {"active", "archived"}
+CLAIM_STANCE_VALUES = {"support", "challenge", "setup", "pending"}
+READ_PAPER_SELECTION_VALUES = {"paper", "cluster"}
+STARDUST_STATUS_VALUES = {"draft", "ready", "building", "failed", "archived"}
+STARDUST_GRAPH_MODE_VALUES = {"directed", "mutual", "full"}
+MAX_STARDUSTS_PER_PROJECT = 5
+CACHE_SOFT_LIMIT_BYTES = 128 * 1024 * 1024
+CACHE_TARGET_LIMIT_BYTES = 96 * 1024 * 1024
+CACHE_HARD_LIMIT_BYTES = 192 * 1024 * 1024
+CACHE_ROW_LIMIT = 80_000
+CACHE_TARGET_ROW_LIMIT = 60_000
+CACHE_CLEANUP_BATCH_SIZE = 500
+CACHE_CLEANUP_MIN_INTERVAL_SECONDS = 45
+CACHE_PRIORITY_ORDER = [
+    ("claim_snippet_cache", "snippet_json"),
+    ("claim_candidate_cache", "candidate_json"),
+    ("claim_llm_batch_cache", "response_json"),
+]
 CITATION_KEY_STOPWORDS = {
     "a", "an", "the", "on", "in", "of", "for", "to", "and", "or", "by", "with",
     "at", "from", "into", "over", "under", "about", "between", "after", "before"
@@ -186,6 +248,38 @@ LITERATURE_WATCH_DISCIPLINE_ALIASES: Dict[str, str] = {
     "general_social_science": "y_miscellaneous",
 }
 DEFAULT_LITERATURE_WATCH_DISCIPLINE = "e_macroeconomics_monetary"
+SEMANTIC_CLUSTER_ALGORITHM_VERSION = "backend-v1"
+SEMANTIC_CLUSTER_SEED_LIMIT = 60
+SEMANTIC_CLUSTER_TEXT_VECTOR_DIM = 384
+SEMANTIC_CLUSTER_MAX_DISPLAY_PAPERS = 10
+SEMANTIC_CLUSTER_MIN_SIZE = 4
+SEMANTIC_CLUSTER_COUNT_OPTIONS = (3, 4, 5)
+SEMANTIC_CLUSTER_BASE_ATTEMPTS = 1
+SEMANTIC_CLUSTER_QUALITY_RETRY_THRESHOLD = 0.055
+SEMANTIC_CLUSTER_CURRENT_CONTENT_LIMIT = 1000
+SEMANTIC_CLUSTER_STOPWORDS = {
+    "a", "an", "the", "and", "or", "for", "with", "from", "that", "this", "these", "those",
+    "into", "over", "under", "between", "among", "through", "using", "used", "their", "there",
+    "which", "while", "where", "when", "about", "after", "before", "study", "studies", "paper",
+    "papers", "evidence", "analysis", "analyses", "approach", "approaches", "effect", "effects",
+    "impact", "impacts", "role", "new", "recent", "latest", "across", "within", "such", "based",
+    "because", "than", "also", "been", "being", "into", "onto", "your", "ours", "theirs"
+}
+CLAIM_CHALLENGE_MARKERS = {
+    "however", "but", "limited", "limit", "limits", "conditional", "only", "except",
+    "fails", "fail", "not", "contrary", "mixed", "heterogeneous", "weak", "weaker",
+    "insignificant", "inconsistent", "depends", "depending"
+}
+CLAIM_SUPPORT_MARKERS = {
+    "increase", "increases", "decrease", "decreases", "raise", "raises", "reduce",
+    "reduces", "improve", "improves", "worsen", "worsens", "associated", "predicts",
+    "drives", "causes", "effect", "evidence", "supports", "find", "finds", "shows"
+}
+CLAIM_SETUP_MARKERS = {
+    "method", "methods", "identification", "specification", "estimation", "dataset",
+    "measure", "measurement", "instrument", "regression", "model", "framework",
+    "strategy", "empirical", "approach", "sampling", "design"
+}
 
 def _scrub_paper_payload(paper: dict) -> dict:
     if not isinstance(paper, dict):
@@ -265,6 +359,200 @@ def _ensure_projects_schema(cursor):
         )
     cursor.execute("DROP TABLE projects_legacy")
 
+def _ensure_claims_schema(cursor):
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS project_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            claim_text TEXT NOT NULL,
+            claim_type TEXT NOT NULL DEFAULT 'thesis_claim',
+            section_label TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            analysis_version TEXT NOT NULL DEFAULT 'v1',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS claim_evidence_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            claim_id INTEGER NOT NULL,
+            project_id INTEGER NOT NULL,
+            paper_key TEXT NOT NULL,
+            paper_title TEXT NOT NULL DEFAULT '',
+            paper_year TEXT NOT NULL DEFAULT '',
+            paper_authors TEXT NOT NULL DEFAULT '',
+            citation_key TEXT NOT NULL DEFAULT '',
+            stance TEXT NOT NULL DEFAULT 'pending',
+            strength_score REAL NOT NULL DEFAULT 0,
+            relevance_score REAL NOT NULL DEFAULT 0,
+            confidence_score REAL NOT NULL DEFAULT 0,
+            quality_score REAL NOT NULL DEFAULT 0,
+            why_matched TEXT NOT NULL DEFAULT '',
+            caveat TEXT NOT NULL DEFAULT '',
+            evidence_snippets_json TEXT NOT NULL DEFAULT '[]',
+            source_pass TEXT NOT NULL DEFAULT 'auto',
+            user_override INTEGER NOT NULL DEFAULT 0,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            hidden INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id),
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            UNIQUE (claim_id, paper_key)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS claim_analysis_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            claim_id INTEGER NOT NULL,
+            project_id INTEGER NOT NULL,
+            candidate_count INTEGER NOT NULL DEFAULT 0,
+            analyzed_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'queued',
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            error_text TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id),
+            FOREIGN KEY (project_id) REFERENCES projects (id)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS claim_candidate_cache (
+            cache_key TEXT PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            claim_id INTEGER NOT NULL,
+            analysis_version TEXT NOT NULL DEFAULT 'v1',
+            payload_hash TEXT NOT NULL,
+            candidate_json TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            last_hit_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS claim_llm_batch_cache (
+            cache_key TEXT PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            claim_id INTEGER NOT NULL,
+            analysis_version TEXT NOT NULL DEFAULT 'v1',
+            model_name TEXT NOT NULL DEFAULT '',
+            payload_hash TEXT NOT NULL,
+            response_json TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            last_hit_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS claim_snippet_cache (
+            cache_key TEXT PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            claim_id INTEGER NOT NULL,
+            analysis_version TEXT NOT NULL DEFAULT 'v1',
+            paper_key TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            snippet_json TEXT NOT NULL DEFAULT 'null',
+            created_at INTEGER NOT NULL,
+            last_hit_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id)
+        )'''
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_project_claims_project_id ON project_claims (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_evidence_claim_id ON claim_evidence_items (claim_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_evidence_project_id ON claim_evidence_items (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_analysis_runs_claim_id ON claim_analysis_runs (claim_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_candidate_cache_claim_id ON claim_candidate_cache (claim_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_llm_batch_cache_claim_id ON claim_llm_batch_cache (claim_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_snippet_cache_claim_id ON claim_snippet_cache (claim_id)")
+
+def _ensure_stardust_schema(cursor):
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS challenge_stardusts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            claim_id INTEGER NOT NULL,
+            seed_evidence_id INTEGER NOT NULL,
+            seed_paper_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            sub_target_thesis TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'draft',
+            paper_count INTEGER NOT NULL DEFAULT 0,
+            graph_cache_signature TEXT NOT NULL DEFAULT '',
+            source_summary_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (claim_id) REFERENCES project_claims (id),
+            FOREIGN KEY (seed_evidence_id) REFERENCES claim_evidence_items (id)
+        )'''
+    )
+    cursor.execute("PRAGMA table_info(challenge_stardusts)")
+    stardust_columns = {row[1] for row in cursor.fetchall()}
+    if "source_summary_json" not in stardust_columns:
+        cursor.execute("ALTER TABLE challenge_stardusts ADD COLUMN source_summary_json TEXT NOT NULL DEFAULT '{}'")
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS challenge_stardust_papers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stardust_id INTEGER NOT NULL,
+            paper_key TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            abstract TEXT NOT NULL DEFAULT '',
+            current_content TEXT NOT NULL DEFAULT '',
+            authors TEXT NOT NULL DEFAULT '',
+            year TEXT NOT NULL DEFAULT '',
+            doi TEXT NOT NULL DEFAULT '',
+            openalex_id TEXT NOT NULL DEFAULT '',
+            paper_url TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            publication_venue TEXT NOT NULL DEFAULT '',
+            citation_count INTEGER,
+            referenced_openalex_ids_json TEXT NOT NULL DEFAULT '[]',
+            relationship_type TEXT NOT NULL DEFAULT '',
+            discovery_source TEXT NOT NULL DEFAULT '',
+            hop_distance INTEGER NOT NULL DEFAULT 0,
+            challenge_score REAL NOT NULL DEFAULT 0,
+            seed_similarity REAL NOT NULL DEFAULT 0,
+            claim_relevance REAL NOT NULL DEFAULT 0,
+            quality_score REAL NOT NULL DEFAULT 0,
+            why_matched TEXT NOT NULL DEFAULT '',
+            caveat TEXT NOT NULL DEFAULT '',
+            selected_for_import INTEGER NOT NULL DEFAULT 0,
+            hidden INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (stardust_id) REFERENCES challenge_stardusts (id),
+            UNIQUE (stardust_id, paper_key)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS challenge_stardust_graph_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stardust_id INTEGER NOT NULL,
+            graph_mode TEXT NOT NULL,
+            graph_signature TEXT NOT NULL DEFAULT '',
+            nodes_json TEXT NOT NULL DEFAULT '[]',
+            edges_json TEXT NOT NULL DEFAULT '[]',
+            meta_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (stardust_id) REFERENCES challenge_stardusts (id),
+            UNIQUE (stardust_id, graph_mode)
+        )'''
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_project_id ON challenge_stardusts (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_claim_id ON challenge_stardusts (claim_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_updated_at ON challenge_stardusts (updated_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_stardust_id ON challenge_stardust_papers (stardust_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_score ON challenge_stardust_papers (stardust_id, challenge_score DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_openalex ON challenge_stardust_papers (openalex_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_graph_cache_stardust_id ON challenge_stardust_graph_cache (stardust_id)")
+
 def init_db():
     conn = sqlite3.connect(str(DB_FILE))
     cursor = conn.cursor()
@@ -301,6 +589,10 @@ def init_db():
         refreshed_at INTEGER NOT NULL DEFAULT 0
     )''')
     _ensure_projects_schema(cursor)
+    _ensure_claims_schema(cursor)
+    _ensure_stardust_schema(cursor)
+    cursor.execute("UPDATE claim_evidence_items SET stance = 'setup' WHERE LOWER(COALESCE(stance, '')) IN ('method', 'methods', 'methodology')")
+    cursor.execute("UPDATE claim_evidence_items SET stance = 'pending' WHERE LOWER(COALESCE(stance, '')) IN ('background', 'context', 'foundation')")
     cursor.execute("SELECT id, top_papers FROM projects")
     for project_id, top_papers in cursor.fetchall():
         scrubbed = _scrub_top_papers_json(top_papers)
@@ -809,6 +1101,2156 @@ def _validate_paper_list(papers: List["PaperItem"]):
         if not paper.filename or not paper.title:
             raise HTTPException(status_code=422, detail="Every paper must include a filename and title.")
 
+def _normalize_claim_type(raw_value: str) -> str:
+    value = _trim_text(str(raw_value or "").lower(), MAX_CLAIM_TYPE_LENGTH)
+    return value if value in CLAIM_TYPE_VALUES else "thesis_claim"
+
+def _normalize_claim_status(raw_value: str) -> str:
+    value = _trim_text(str(raw_value or "").lower(), MAX_CLAIM_STATUS_LENGTH)
+    return value if value in CLAIM_STATUS_VALUES else "active"
+
+def _normalize_claim_stance(raw_value: str) -> str:
+    value = _trim_text(str(raw_value or "").lower(), 40)
+    aliases = {
+        "supports": "support",
+        "supported": "support",
+        "contradict": "challenge",
+        "contradicts": "challenge",
+        "contradiction": "challenge",
+        "oppose": "challenge",
+        "opposes": "challenge",
+        "limit": "challenge",
+        "limits": "challenge",
+        "method": "setup",
+        "methods": "setup",
+        "methodology": "setup",
+        "setups": "setup",
+        "design": "setup",
+        "approach": "setup",
+        "context": "pending",
+        "foundation": "pending",
+        "background": "pending",
+        "uncertain": "pending",
+        "unclear": "pending",
+    }
+    normalized = aliases.get(value, value)
+    return normalized if normalized in CLAIM_STANCE_VALUES else "pending"
+
+def _validate_claim_create_payload(payload: ClaimCreateRequest) -> ClaimCreateRequest:
+    payload.claim_text = _trim_text(payload.claim_text, MAX_CLAIM_TEXT_LENGTH)
+    payload.claim_type = _normalize_claim_type(payload.claim_type)
+    payload.section_label = _trim_text(payload.section_label, MAX_CLAIM_SECTION_LABEL_LENGTH)
+    if not payload.claim_text:
+        raise HTTPException(status_code=422, detail="Claim text is required.")
+    return payload
+
+def _validate_claim_analyze_payload(payload: ClaimAnalyzeRequest) -> ClaimAnalyzeRequest:
+    payload.max_candidates = max(8, min(int(payload.max_candidates or 36), MAX_CLAIM_CANDIDATES))
+    cleaned_statuses = []
+    for raw_status in payload.include_statuses or []:
+        value = _trim_text(raw_status, 40)
+        if value and value not in cleaned_statuses:
+            cleaned_statuses.append(value)
+    payload.include_statuses = cleaned_statuses or ["Core", "Pending", "Underweight", "Unread"]
+    payload.prefer_fulltext = bool(payload.prefer_fulltext)
+    payload.reanalyze_overrides = bool(payload.reanalyze_overrides)
+    return payload
+
+def _validate_read_paper_payload(payload: ReadPaperAnalyzeRequest) -> ReadPaperAnalyzeRequest:
+    payload.selection_type = _trim_text(payload.selection_type.lower(), 40)
+    if payload.selection_type not in READ_PAPER_SELECTION_VALUES:
+        payload.selection_type = "paper"
+    payload.selection_label = _trim_text(payload.selection_label, MAX_READ_PAPER_SELECTION_LABEL_LENGTH)
+    payload.user_question = _trim_text(payload.user_question, MAX_READ_PAPER_QUESTION_LENGTH)
+    if not payload.papers:
+        raise HTTPException(status_code=422, detail="Select at least one paper for Read A Paper analysis.")
+    if len(payload.papers) > READ_PAPER_MAX_PAPERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Read A Paper currently supports up to {READ_PAPER_MAX_PAPERS} papers at once."
+        )
+    _validate_paper_list(payload.papers)
+    return payload
+
+def _load_project_top_papers(project_data: dict) -> List[dict]:
+    raw_value = project_data.get("top_papers")
+    if not raw_value:
+        return []
+    if isinstance(raw_value, list):
+        papers = raw_value
+    else:
+        papers = json.loads(_scrub_top_papers_json(raw_value))
+    return [_scrub_paper_payload(paper) for paper in papers if isinstance(paper, dict)]
+
+def _make_claim_paper_key(paper: dict) -> str:
+    openalex_id = _trim_text((paper or {}).get("openalex_id"), 300)
+    if openalex_id:
+        return f"openalex:{openalex_id.lower()}"
+    zotero_key = _trim_text((paper or {}).get("zotero_item_key"), 120)
+    if zotero_key:
+        return f"zotero:{zotero_key.lower()}"
+    doi = _clean_doi((paper or {}).get("doi"))
+    if doi:
+        return f"doi:{doi.lower()}"
+    title = _collapse_whitespace(str((paper or {}).get("title") or "")).lower()
+    year = _extract_citation_year((paper or {}).get("year", ""))
+    authors = _collapse_whitespace(str((paper or {}).get("authors") or "")).lower()
+    digest = hashlib.sha1(f"{title}|{year}|{authors}".encode("utf-8")).hexdigest()[:20]
+    return f"paper:{digest}"
+
+def _claim_tokens(value: str) -> List[str]:
+    return [
+        token for token in re.findall(r"[A-Za-z0-9]+", str(value or "").lower())
+        if len(token) >= 3 and token not in LITERATURE_WATCH_STOPWORDS
+    ]
+
+def _claim_phrases(value: str, min_size: int = 2, max_size: int = 3) -> List[str]:
+    tokens = _claim_tokens(value)
+    phrases = []
+    for size in range(min_size, max_size + 1):
+        for index in range(0, max(len(tokens) - size + 1, 0)):
+            phrase = " ".join(tokens[index:index + size]).strip()
+            if phrase:
+                phrases.append(phrase)
+    deduped = []
+    for phrase in phrases:
+        if phrase not in deduped:
+            deduped.append(phrase)
+    return deduped
+
+def _token_overlap_score(text: str, tokens: List[str]) -> float:
+    if not tokens:
+        return 0.0
+    text_tokens = set(_claim_tokens(text))
+    if not text_tokens:
+        return 0.0
+    overlap = sum(1 for token in tokens if token in text_tokens)
+    return min(overlap / max(len(set(tokens)), 1), 1.0)
+
+def _phrase_overlap_score(text: str, phrases: List[str]) -> float:
+    lowered = str(text or "").lower()
+    if not lowered.strip() or not phrases:
+        return 0.0
+    hits = sum(1 for phrase in phrases if phrase in lowered)
+    return min(hits / max(len(phrases), 1), 1.0)
+
+def _marker_score(text: str, markers: set) -> float:
+    lowered = str(text or "").lower()
+    if not lowered.strip():
+        return 0.0
+    hits = sum(1 for marker in markers if marker in lowered)
+    return min(hits / 3.0, 1.0)
+
+def _length_quality_score(text: str, ideal_min: int = 70, ideal_max: int = 280) -> float:
+    length = len(_compact_whitespace(text))
+    if length <= 0:
+        return 0.0
+    if ideal_min <= length <= ideal_max:
+        return 1.0
+    if length < ideal_min:
+        return max(length / max(ideal_min, 1), 0.25)
+    overflow = min((length - ideal_max) / max(ideal_max, 1), 1.0)
+    return max(1.0 - overflow, 0.35)
+
+def _text_signal_bundle(text: str, claim_tokens: List[str], claim_phrases: List[str]) -> dict:
+    return {
+        "token_overlap": _token_overlap_score(text, claim_tokens),
+        "phrase_overlap": _phrase_overlap_score(text, claim_phrases),
+        "support_marker": _marker_score(text, CLAIM_SUPPORT_MARKERS),
+        "challenge_marker": _marker_score(text, CLAIM_CHALLENGE_MARKERS),
+        "setup_marker": _marker_score(text, CLAIM_SETUP_MARKERS),
+    }
+
+def _stance_alignment_bonus(signal_bundle: dict, preferred_stance: str) -> float:
+    stance = _normalize_claim_stance(preferred_stance)
+    if stance == "challenge":
+        return float(signal_bundle.get("challenge_marker") or 0)
+    if stance == "setup":
+        return float(signal_bundle.get("setup_marker") or 0)
+    return float(signal_bundle.get("support_marker") or 0)
+
+def _project_similarity_score(paper: dict) -> float:
+    try:
+        return max(0.0, min(float((paper or {}).get("similarity") or 0.0), 1.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+def _paper_status_weight(status: str) -> float:
+    normalized = str(status or "").strip().lower()
+    if normalized == "core":
+        return 1.0
+    if normalized == "pending":
+        return 0.72
+    if normalized == "underweight":
+        return 0.62
+    if normalized == "unread":
+        return 0.48
+    return 0.52
+
+def _paper_recency_score(paper: dict) -> float:
+    year = _extract_citation_year((paper or {}).get("year", ""))
+    if year == "Unknown":
+        return 0.35
+    try:
+        delta = max(date.today().year - int(year), 0)
+    except ValueError:
+        return 0.35
+    if delta <= 2:
+        return 1.0
+    if delta <= 5:
+        return 0.82
+    if delta <= 10:
+        return 0.62
+    if delta <= 20:
+        return 0.46
+    return 0.32
+
+def _paper_quality_score(paper: dict) -> float:
+    citation_count = _safe_int((paper or {}).get("citation_count"), 0)
+    citation_score = min((math.log1p(max(citation_count, 0)) / math.log1p(500)), 1.0) if citation_count else 0.0
+    completeness_parts = [
+        bool(_trim_text((paper or {}).get("title"), MAX_PAPER_TITLE_LENGTH)),
+        bool(_trim_text((paper or {}).get("authors"), MAX_PAPER_AUTHORS_LENGTH) and str((paper or {}).get("authors") or "").strip().lower() != "unknown"),
+        _extract_citation_year((paper or {}).get("year", "")) != "Unknown",
+        bool(_trim_text((paper or {}).get("abstract"), MAX_PAPER_ABSTRACT_LENGTH) and str((paper or {}).get("abstract") or "").strip().lower() != "unknown"),
+        bool(_trim_text((paper or {}).get("publication_venue"), 300)),
+    ]
+    completeness_score = sum(1 for item in completeness_parts if item) / len(completeness_parts)
+    core_bonus = 0.12 if str((paper or {}).get("status") or "").strip().lower() == "core" else 0.0
+    fulltext_bonus = 0.08 if _trim_text((paper or {}).get("current_content"), MAX_PAPER_CURRENT_CONTENT_LENGTH) else 0.0
+    return min((citation_score * 0.45) + (completeness_score * 0.35) + core_bonus + fulltext_bonus, 1.0)
+
+def _claim_cluster_key(paper: dict) -> str:
+    for key in ("citation_cluster_id", "citation_cluster_theme_name", "publication_venue"):
+        value = _collapse_whitespace(str((paper or {}).get(key) or "")).lower()
+        if value:
+            return value
+    return "uncategorized"
+
+def _build_claim_candidate_metrics(paper: dict, claim_text: str, claim_tokens: List[str], claim_phrases: List[str], prefer_fulltext: bool) -> dict:
+    title = str((paper or {}).get("title") or "")
+    abstract = str((paper or {}).get("abstract") or "")
+    notes = str((paper or {}).get("notes") or "")
+    body = str((paper or {}).get("current_content") or "")
+    title_signal = _text_signal_bundle(title, claim_tokens, claim_phrases)
+    abstract_signal = _text_signal_bundle(abstract, claim_tokens, claim_phrases)
+    notes_signal = _text_signal_bundle(notes, claim_tokens, claim_phrases)
+    body_signal = _text_signal_bundle(body, claim_tokens, claim_phrases) if body else _text_signal_bundle("", claim_tokens, claim_phrases)
+    title_score = (title_signal["token_overlap"] * 0.65) + (title_signal["phrase_overlap"] * 0.35)
+    abstract_score = (abstract_signal["token_overlap"] * 0.58) + (abstract_signal["phrase_overlap"] * 0.42)
+    notes_score = (notes_signal["token_overlap"] * 0.5) + (notes_signal["phrase_overlap"] * 0.5)
+    body_score = ((body_signal["token_overlap"] * 0.55) + (body_signal["phrase_overlap"] * 0.45)) if body else 0.0
+    exact_phrase_bonus = 0.08 if claim_text and claim_text.lower() in f"{title}\n{abstract}\n{notes}\n{body}".lower() else 0.0
+    claim_relevance = min(
+        (title_score * 0.29) +
+        (abstract_score * 0.31) +
+        (notes_score * 0.20) +
+        (body_score * 0.20) +
+        exact_phrase_bonus,
+        1.0
+    )
+    challenge_score = min(
+        (max(title_signal["challenge_marker"], abstract_signal["challenge_marker"], notes_signal["challenge_marker"], body_signal["challenge_marker"]) * 0.55) +
+        (max(abstract_signal["phrase_overlap"], body_signal["phrase_overlap"], notes_signal["phrase_overlap"]) * 0.30) +
+        (max(notes_signal["token_overlap"], body_signal["token_overlap"]) * 0.15),
+        1.0
+    )
+    setup_score = min(
+        (max(title_signal["setup_marker"], abstract_signal["setup_marker"], notes_signal["setup_marker"], body_signal["setup_marker"]) * 0.58) +
+        (max(title_signal["phrase_overlap"], abstract_signal["phrase_overlap"], notes_signal["phrase_overlap"]) * 0.22) +
+        (max(notes_signal["token_overlap"], body_signal["token_overlap"]) * 0.20),
+        1.0
+    )
+    support_score = min(
+        (max(title_signal["support_marker"], abstract_signal["support_marker"], body_signal["support_marker"]) * 0.34) +
+        (claim_relevance * 0.46) +
+        (max(abstract_signal["phrase_overlap"], body_signal["phrase_overlap"]) * 0.20),
+        1.0
+    )
+    fulltext_bonus = 1.0 if (prefer_fulltext and body) or bool((paper or {}).get("zotero_has_fulltext")) else 0.0
+    project_similarity = _project_similarity_score(paper)
+    quality_score = _paper_quality_score(paper)
+    recency_score = _paper_recency_score(paper)
+    notes_relevance = notes_score
+    candidate_score = min(
+        (claim_relevance * 0.32) +
+        (project_similarity * 0.14) +
+        (_paper_status_weight((paper or {}).get("status")) * 0.11) +
+        (notes_relevance * 0.12) +
+        (quality_score * 0.13) +
+        (fulltext_bonus * 0.08) +
+        (recency_score * 0.05) +
+        (support_score * 0.05),
+        1.0
+    )
+    return {
+        "paper_key": _make_claim_paper_key(paper),
+        "claim_relevance": round(claim_relevance, 4),
+        "project_similarity": round(project_similarity, 4),
+        "status_weight": round(_paper_status_weight((paper or {}).get("status")), 4),
+        "notes_relevance": round(notes_relevance, 4),
+        "quality_score": round(quality_score, 4),
+        "fulltext_bonus": round(fulltext_bonus, 4),
+        "recency_score": round(recency_score, 4),
+        "support_hint": round(support_score, 4),
+        "challenge_hint": round(challenge_score, 4),
+        "setup_hint": round(setup_score, 4),
+        "candidate_score": round(candidate_score, 4),
+        "cluster_key": _claim_cluster_key(paper),
+    }
+
+def _diversify_claim_candidates(candidates: List[dict], max_candidates: int) -> List[dict]:
+    selected: List[dict] = []
+    cluster_counts: Dict[str, int] = {}
+    max_per_cluster = max(2, min(5, math.ceil(max_candidates / 4)))
+    leftovers: List[dict] = []
+    for candidate in candidates:
+        cluster_key = candidate.get("cluster_key", "uncategorized")
+        count = cluster_counts.get(cluster_key, 0)
+        if count < max_per_cluster:
+            selected.append(candidate)
+            cluster_counts[cluster_key] = count + 1
+        else:
+            leftovers.append(candidate)
+        if len(selected) >= max_candidates:
+            return selected[:max_candidates]
+    for candidate in leftovers:
+        selected.append(candidate)
+        if len(selected) >= max_candidates:
+            break
+    return selected[:max_candidates]
+
+def _build_claim_candidate_pool(project_data: dict, claim_row: dict, include_statuses: List[str], max_candidates: int, prefer_fulltext: bool) -> List[dict]:
+    cache_input = _build_claim_candidate_cache_input(project_data, claim_row, include_statuses, max_candidates, prefer_fulltext)
+    payload_hash = _hash_cache_payload(cache_input)
+    cache_key = f"claim-candidates:{payload_hash}"
+    cached_payload = _read_claim_cache_payload("claim_candidate_cache", cache_key, "candidate_json")
+    if cached_payload:
+        try:
+            cached_candidates = json.loads(cached_payload)
+        except Exception:
+            cached_candidates = None
+        if isinstance(cached_candidates, list):
+            return [item for item in cached_candidates if isinstance(item, dict)]
+
+    claim_text = claim_row.get("claim_text", "")
+    papers = _load_project_top_papers(project_data)
+    allowed_statuses = {str(status or "").strip().lower() for status in include_statuses if str(status or "").strip()}
+    claim_tokens = _claim_tokens(claim_text)
+    claim_phrases = _claim_phrases(claim_text)
+    enriched = []
+    for paper in papers:
+        if allowed_statuses and str((paper or {}).get("status") or "").strip().lower() not in allowed_statuses:
+            continue
+        metrics = _build_claim_candidate_metrics(paper, claim_text, claim_tokens, claim_phrases, prefer_fulltext)
+        enriched.append({**paper, **metrics})
+    if not enriched:
+        return []
+
+    claim_ranked = sorted(enriched, key=lambda item: (float(item.get("claim_relevance") or 0), float(item.get("candidate_score") or 0)), reverse=True)
+    score_ranked = sorted(enriched, key=lambda item: (float(item.get("candidate_score") or 0), float(item.get("quality_score") or 0)), reverse=True)
+    similarity_ranked = sorted(enriched, key=lambda item: (float(item.get("project_similarity") or 0), float(item.get("candidate_score") or 0)), reverse=True)
+    support_ranked = sorted(enriched, key=lambda item: (float(item.get("support_hint") or 0), float(item.get("claim_relevance") or 0), float(item.get("candidate_score") or 0)), reverse=True)
+    challenge_ranked = sorted(enriched, key=lambda item: (float(item.get("challenge_hint") or 0), float(item.get("claim_relevance") or 0)), reverse=True)
+    setup_ranked = sorted(enriched, key=lambda item: (float(item.get("setup_hint") or 0), float(item.get("claim_relevance") or 0), float(item.get("quality_score") or 0)), reverse=True)
+    quality_ranked = sorted(enriched, key=lambda item: (float(item.get("quality_score") or 0), float(item.get("citation_count") or 0)), reverse=True)
+    core_ranked = sorted(
+        [item for item in enriched if str(item.get("status") or "").strip().lower() == "core"],
+        key=lambda item: (float(item.get("candidate_score") or 0), float(item.get("claim_relevance") or 0)),
+        reverse=True
+    )
+    cluster_leaders = {}
+    for item in score_ranked:
+        cluster_key = item.get("cluster_key", "uncategorized")
+        if cluster_key not in cluster_leaders:
+            cluster_leaders[cluster_key] = item
+
+    selected_by_key: Dict[str, dict] = {}
+    def seed(candidates: List[dict], limit: int):
+        for item in candidates[:limit]:
+            selected_by_key.setdefault(item.get("paper_key"), item)
+
+    seed(claim_ranked, max(10, math.ceil(max_candidates * 0.45)))
+    seed(support_ranked, max(8, math.ceil(max_candidates * 0.35)))
+    seed(challenge_ranked, max(6, math.ceil(max_candidates * 0.22)))
+    seed(setup_ranked, max(6, math.ceil(max_candidates * 0.22)))
+    seed(score_ranked, max(8, math.ceil(max_candidates * 0.35)))
+    seed(similarity_ranked, max(5, math.ceil(max_candidates * 0.22)))
+    seed(quality_ranked, max(4, math.ceil(max_candidates * 0.18)))
+    seed(core_ranked, max(4, math.ceil(max_candidates * 0.18)))
+    seed(list(cluster_leaders.values()), max(4, math.ceil(max_candidates * 0.25)))
+
+    merged = list(selected_by_key.values())
+    merged.sort(
+        key=lambda item: (
+            float(item.get("candidate_score") or 0),
+            float(item.get("claim_relevance") or 0),
+            float(item.get("support_hint") or 0),
+            float(item.get("quality_score") or 0),
+            float(item.get("project_similarity") or 0)
+        ),
+        reverse=True
+    )
+    selected_candidates = _diversify_claim_candidates(merged, max_candidates)
+    _write_claim_candidate_cache(
+        cache_key,
+        int(project_data.get("id") or 0),
+        int((claim_row or {}).get("id") or 0),
+        _claim_analysis_version(claim_row),
+        payload_hash,
+        _stable_json_dumps(selected_candidates)
+    )
+    return selected_candidates
+
+def _compact_whitespace(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+def _ground_claim_snippet(project_id: int, claim_row: dict, raw_snippet: str, paper: dict, claim_tokens: List[str], claim_phrases: List[str], preferred_stance: str = "support") -> Optional[dict]:
+    snippet = _trim_text(_compact_whitespace(raw_snippet), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+    if not snippet:
+        return None
+    cache_input = _build_claim_snippet_cache_input(project_id, claim_row, paper, snippet, preferred_stance)
+    payload_hash = _hash_cache_payload(cache_input)
+    cache_key = f"claim-snippet:{payload_hash}"
+    cached_payload = _read_claim_cache_payload("claim_snippet_cache", cache_key, "snippet_json")
+    if cached_payload is not None:
+        try:
+            cached_snippet = json.loads(cached_payload)
+        except Exception:
+            cached_snippet = None
+        if cached_snippet is None or isinstance(cached_snippet, dict):
+            return cached_snippet
+
+    best = None
+    for source_field in ("abstract", "current_content", "notes"):
+        raw_text = str((paper or {}).get(source_field) or "")
+        if not raw_text.strip():
+            continue
+        segments = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+        for segment in segments:
+            compact = _compact_whitespace(segment)
+            if len(compact) < 20:
+                continue
+            overlap = SequenceMatcher(None, snippet.lower(), compact.lower()).ratio()
+            if overlap < 0.42 and snippet.lower() not in compact.lower() and compact.lower() not in snippet.lower():
+                continue
+            signal_bundle = _text_signal_bundle(compact, claim_tokens, claim_phrases)
+            score = (
+                overlap * 0.55 +
+                signal_bundle["token_overlap"] * 0.18 +
+                signal_bundle["phrase_overlap"] * 0.17 +
+                _stance_alignment_bonus(signal_bundle, preferred_stance) * 0.10
+            )
+            start = raw_text.find(segment)
+            candidate = {
+                "score": score,
+                "text": compact[:MAX_EVIDENCE_SNIPPET_TEXT_LENGTH],
+                "source_field": source_field,
+                "char_start": max(start, 0),
+                "char_end": max(start, 0) + len(segment),
+            }
+            if best is None or candidate["score"] > best["score"]:
+                best = candidate
+    if not best:
+        _write_claim_snippet_cache(
+            cache_key,
+            int(project_id or 0),
+            int((claim_row or {}).get("id") or 0),
+            _claim_analysis_version(claim_row),
+            _trim_text(paper.get("paper_key"), 160),
+            payload_hash,
+            "null"
+        )
+        return None
+    best.pop("score", None)
+    _write_claim_snippet_cache(
+        cache_key,
+        int(project_id or 0),
+        int((claim_row or {}).get("id") or 0),
+        _claim_analysis_version(claim_row),
+        _trim_text(paper.get("paper_key"), 160),
+        payload_hash,
+        _stable_json_dumps(best)
+    )
+    return best
+
+def _extract_claim_evidence_snippets(paper: dict, claim_tokens: List[str], claim_phrases: List[str], limit: int = 2, preferred_stance: str = "support") -> List[dict]:
+    snippets = []
+    seen_texts = set()
+    for source_field in ("abstract", "current_content", "notes"):
+        raw_text = str((paper or {}).get(source_field) or "")
+        if not raw_text.strip():
+            continue
+        segments = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+        scored = []
+        for segment in segments:
+            compact = _compact_whitespace(segment)
+            if len(compact) < 30:
+                continue
+            signal_bundle = _text_signal_bundle(compact, claim_tokens, claim_phrases)
+            overlap = signal_bundle["token_overlap"]
+            phrase_overlap = signal_bundle["phrase_overlap"]
+            if overlap <= 0 and phrase_overlap <= 0:
+                continue
+            start = raw_text.find(segment)
+            source_weight = 1.0 if source_field == "abstract" else (0.94 if source_field == "notes" else 0.9)
+            score = (
+                overlap * 0.34 +
+                phrase_overlap * 0.28 +
+                _stance_alignment_bonus(signal_bundle, preferred_stance) * 0.18 +
+                _length_quality_score(compact) * 0.08 +
+                source_weight * 0.12
+            )
+            scored.append((score, compact, source_field, max(start, 0), max(start, 0) + len(segment)))
+        scored.sort(key=lambda item: (item[0], len(item[1]) <= 240, len(item[1])), reverse=True)
+        for _, text, field, start, end in scored:
+            dedupe_key = text.lower()
+            if dedupe_key in seen_texts:
+                continue
+            seen_texts.add(dedupe_key)
+            snippets.append({
+                "text": text[:MAX_EVIDENCE_SNIPPET_TEXT_LENGTH],
+                "source_field": field,
+                "char_start": start,
+                "char_end": end,
+            })
+            if len(snippets) >= limit:
+                return snippets[:limit]
+    return snippets[:limit]
+
+def _normalize_read_paper_priority(raw_value: str) -> str:
+    value = _trim_text(str(raw_value or "").lower(), 24)
+    if value in {"high", "medium", "low"}:
+        return value
+    if value in {"severe", "major", "strong"}:
+        return "high"
+    if value in {"moderate", "mid"}:
+        return "medium"
+    return "low"
+
+def _extract_read_paper_snippets(paper: dict, query_text: str, limit: int = 2) -> List[dict]:
+    query_tokens = _claim_tokens(query_text)
+    query_phrases = _claim_phrases(query_text)
+    snippets = []
+    seen_texts = set()
+    for source_field in ("abstract", "current_content", "notes"):
+        raw_text = str((paper or {}).get(source_field) or "")
+        if not raw_text.strip():
+            continue
+        segments = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+        scored = []
+        for segment in segments:
+            compact = _compact_whitespace(segment)
+            if len(compact) < 30:
+                continue
+            signal_bundle = _text_signal_bundle(compact, query_tokens, query_phrases)
+            overlap = signal_bundle["token_overlap"]
+            phrase_overlap = signal_bundle["phrase_overlap"]
+            if overlap <= 0 and phrase_overlap <= 0:
+                continue
+            start = raw_text.find(segment)
+            source_weight = 1.0 if source_field == "abstract" else (0.95 if source_field == "current_content" else 0.92)
+            score = (
+                overlap * 0.4 +
+                phrase_overlap * 0.3 +
+                _length_quality_score(compact) * 0.16 +
+                source_weight * 0.14
+            )
+            scored.append((score, compact, source_field, max(start, 0), max(start, 0) + len(segment)))
+        scored.sort(key=lambda item: (item[0], len(item[1]) <= 260, len(item[1])), reverse=True)
+        for _, text, field, start, end in scored:
+            dedupe_key = text.lower()
+            if dedupe_key in seen_texts:
+                continue
+            seen_texts.add(dedupe_key)
+            snippets.append({
+                "paper_key": _trim_text(paper.get("paper_key"), 160),
+                "paper_title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+                "text": text[:MAX_EVIDENCE_SNIPPET_TEXT_LENGTH],
+                "source_field": field,
+                "char_start": start,
+                "char_end": end,
+            })
+            if len(snippets) >= limit:
+                return snippets[:limit]
+    return snippets[:limit]
+
+def _ground_read_paper_snippet(raw_snippet: str, paper: dict, query_text: str) -> Optional[dict]:
+    snippet = _trim_text(_compact_whitespace(raw_snippet), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+    if not snippet:
+        return None
+    query_tokens = _claim_tokens(query_text)
+    query_phrases = _claim_phrases(query_text)
+    best = None
+    for source_field in ("abstract", "current_content", "notes"):
+        raw_text = str((paper or {}).get(source_field) or "")
+        if not raw_text.strip():
+            continue
+        segments = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+        for segment in segments:
+            compact = _compact_whitespace(segment)
+            if len(compact) < 20:
+                continue
+            overlap = SequenceMatcher(None, snippet.lower(), compact.lower()).ratio()
+            if overlap < 0.42 and snippet.lower() not in compact.lower() and compact.lower() not in snippet.lower():
+                continue
+            signal_bundle = _text_signal_bundle(compact, query_tokens, query_phrases)
+            score = (
+                overlap * 0.62 +
+                signal_bundle["token_overlap"] * 0.16 +
+                signal_bundle["phrase_overlap"] * 0.14 +
+                _length_quality_score(compact) * 0.08
+            )
+            start = raw_text.find(segment)
+            candidate = {
+                "score": score,
+                "paper_key": _trim_text(paper.get("paper_key"), 160),
+                "paper_title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+                "text": compact[:MAX_EVIDENCE_SNIPPET_TEXT_LENGTH],
+                "source_field": source_field,
+                "char_start": max(start, 0),
+                "char_end": max(start, 0) + len(segment),
+            }
+            if best is None or candidate["score"] > best["score"]:
+                best = candidate
+    if not best:
+        return None
+    best.pop("score", None)
+    return best
+
+def _normalize_read_paper_snippet_candidates(raw_candidates) -> List[dict]:
+    normalized = []
+    for item in raw_candidates or []:
+        if isinstance(item, dict):
+            paper_key = _trim_text(item.get("paper_key"), 160)
+            quote = _trim_text(item.get("quote") or item.get("text") or item.get("snippet"), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+            if quote:
+                normalized.append({"paper_key": paper_key, "quote": quote})
+        else:
+            quote = _trim_text(item, MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+            if quote:
+                normalized.append({"paper_key": "", "quote": quote})
+    return normalized
+
+def _normalize_read_paper_findings(raw_items, analyzed_papers: List[dict], fallback_source_keys: Optional[List[str]] = None) -> List[dict]:
+    papers_by_key = {
+        _trim_text(paper.get("paper_key"), 160): paper
+        for paper in analyzed_papers
+        if _trim_text((paper or {}).get("paper_key"), 160)
+    }
+    all_keys = list(papers_by_key.keys())
+    findings = []
+    for item in raw_items or []:
+        if not isinstance(item, dict):
+            continue
+        label = _trim_text(item.get("label"), MAX_READ_PAPER_FINDING_LABEL_LENGTH)
+        detail = _trim_text(item.get("detail"), MAX_READ_PAPER_FINDING_DETAIL_LENGTH)
+        if not label and not detail:
+            continue
+        source_keys = []
+        for raw_key in item.get("source_paper_keys") or []:
+            key = _trim_text(raw_key, 160)
+            if key and key in papers_by_key and key not in source_keys:
+                source_keys.append(key)
+        snippet_candidates = _normalize_read_paper_snippet_candidates(item.get("snippet_candidates"))
+        for candidate in snippet_candidates:
+            key = _trim_text(candidate.get("paper_key"), 160)
+            if key and key in papers_by_key and key not in source_keys:
+                source_keys.append(key)
+        if not source_keys and fallback_source_keys:
+            source_keys = [key for key in fallback_source_keys if key in papers_by_key][:2]
+        query_text = f"{label}. {detail}".strip()
+        grounded_snippets = []
+        seen_snippets = set()
+        for candidate in snippet_candidates:
+            quote = _trim_text(candidate.get("quote"), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+            candidate_keys = []
+            key = _trim_text(candidate.get("paper_key"), 160)
+            if key and key in papers_by_key:
+                candidate_keys.append(key)
+            elif source_keys:
+                candidate_keys.extend(source_keys[:2])
+            else:
+                candidate_keys.extend(all_keys[:2])
+            for candidate_key in candidate_keys:
+                grounded = _ground_read_paper_snippet(quote, papers_by_key[candidate_key], query_text)
+                if not grounded:
+                    continue
+                dedupe_key = f"{grounded.get('paper_key')}::{grounded.get('text')}".lower()
+                if dedupe_key in seen_snippets:
+                    break
+                seen_snippets.add(dedupe_key)
+                grounded_snippets.append(grounded)
+                break
+            if len(grounded_snippets) >= MAX_EVIDENCE_SNIPPETS_PER_ITEM:
+                break
+        if not grounded_snippets:
+            candidate_keys = source_keys[:2] if source_keys else all_keys[:2]
+            for candidate_key in candidate_keys:
+                for grounded in _extract_read_paper_snippets(papers_by_key[candidate_key], query_text, limit=1):
+                    dedupe_key = f"{grounded.get('paper_key')}::{grounded.get('text')}".lower()
+                    if dedupe_key in seen_snippets:
+                        continue
+                    seen_snippets.add(dedupe_key)
+                    grounded_snippets.append(grounded)
+                    if len(grounded_snippets) >= MAX_EVIDENCE_SNIPPETS_PER_ITEM:
+                        break
+                if len(grounded_snippets) >= MAX_EVIDENCE_SNIPPETS_PER_ITEM:
+                    break
+        if not source_keys and grounded_snippets:
+            source_keys = []
+            for snippet in grounded_snippets:
+                key = _trim_text(snippet.get("paper_key"), 160)
+                if key and key not in source_keys:
+                    source_keys.append(key)
+        findings.append({
+            "label": label or _trim_text(detail, MAX_READ_PAPER_FINDING_LABEL_LENGTH),
+            "detail": detail,
+            "priority": _normalize_read_paper_priority(item.get("priority") or item.get("severity")),
+            "source_paper_keys": source_keys,
+            "snippets": grounded_snippets[:MAX_EVIDENCE_SNIPPETS_PER_ITEM]
+        })
+        if len(findings) >= READ_PAPER_MAX_FINDINGS_PER_SECTION:
+            break
+    return findings
+
+def _normalize_read_paper_takeaways(raw_items, analyzed_papers: List[dict]) -> List[dict]:
+    papers_by_key = {
+        _trim_text(paper.get("paper_key"), 160): paper
+        for paper in analyzed_papers
+        if _trim_text((paper or {}).get("paper_key"), 160)
+    }
+    takeaways = []
+    for item in raw_items or []:
+        if isinstance(item, dict):
+            paper_key = _trim_text(item.get("paper_key"), 160)
+            takeaway = _trim_text(item.get("takeaway"), 380)
+        else:
+            paper_key = ""
+            takeaway = _trim_text(item, 380)
+        if not takeaway:
+            continue
+        paper = papers_by_key.get(paper_key)
+        takeaways.append({
+            "paper_key": paper_key,
+            "paper_title": _trim_text((paper or {}).get("title"), MAX_PAPER_TITLE_LENGTH),
+            "takeaway": takeaway
+        })
+    return takeaways[:READ_PAPER_MAX_PAPERS]
+
+def _normalize_read_paper_questions(raw_items) -> List[str]:
+    questions = []
+    for item in raw_items or []:
+        question = _trim_text(item, 320)
+        if question:
+            questions.append(question)
+        if len(questions) >= MAX_READ_PAPER_QUESTIONS_TO_PRESS:
+            break
+    return questions
+
+def _build_read_paper_prompt(project_data: dict, payload: ReadPaperAnalyzeRequest, analyzed_papers: List[dict]) -> str:
+    selection_label = payload.selection_label or ("Selected cluster" if payload.selection_type == "cluster" else "Selected paper")
+    return (
+        "You are a rigorous academic reading assistant embedded inside a literature-analysis workspace.\n\n"
+        "Your job is to help the user read critically rather than just summarize politely.\n"
+        "Use only the supplied paper text. If the evidence is thin or missing, say so explicitly.\n\n"
+        "Return ONLY valid JSON with this exact schema:\n"
+        "{"
+        "\"deep_read_summary\":\"2-4 sentence critical synthesis\","
+        "\"user_question_answer\":\"answer the user question directly, or an empty string if no question was supplied\","
+        "\"paper_takeaways\":[{\"paper_key\":\"...\",\"takeaway\":\"one-sentence takeaway\"}],"
+        "\"threats_to_validity\":[{\"label\":\"...\",\"detail\":\"...\",\"severity\":\"high|medium|low\",\"source_paper_keys\":[\"...\"],\"snippet_candidates\":[{\"paper_key\":\"...\",\"quote\":\"...\"}]}],"
+        "\"external_validity_limits\":[{\"label\":\"...\",\"detail\":\"...\",\"severity\":\"high|medium|low\",\"source_paper_keys\":[\"...\"],\"snippet_candidates\":[{\"paper_key\":\"...\",\"quote\":\"...\"}]}],"
+        "\"design_vulnerabilities\":[{\"label\":\"...\",\"detail\":\"...\",\"severity\":\"high|medium|low\",\"source_paper_keys\":[\"...\"],\"snippet_candidates\":[{\"paper_key\":\"...\",\"quote\":\"...\"}]}],"
+        "\"improvement_opportunities\":[{\"label\":\"...\",\"detail\":\"...\",\"priority\":\"high|medium|low\",\"source_paper_keys\":[\"...\"],\"snippet_candidates\":[{\"paper_key\":\"...\",\"quote\":\"...\"}]}],"
+        "\"questions_to_press\":[\"question 1\", \"question 2\"]"
+        "}\n\n"
+        "Rules:\n"
+        "- For a single paper, evaluate that paper directly.\n"
+        "- For a cluster, synthesize recurring patterns and note when a concern applies only to some papers rather than the whole cluster.\n"
+        "- threats_to_validity should capture internal-validity threats, identification threats, measurement threats, confounds, and interpretation risks.\n"
+        "- external_validity_limits should capture sample, geography, time period, institution, domain, or population transfer limits.\n"
+        "- design_vulnerabilities should capture weaknesses in empirical strategy, controls, baselines, datasets, comparison groups, ablations, benchmarks, or reporting.\n"
+        "- improvement_opportunities must be concrete and actionable.\n"
+        "- questions_to_press should sound like the questions a strong advisor or reviewer would ask.\n"
+        "- snippet_candidates should be short verbatim fragments copied from the supplied text when possible.\n"
+        "- Never invent a result, sample, model choice, or limitation that does not appear in the text.\n"
+        "- Keep labels concise and readable.\n\n"
+        f"Project title: {_trim_text(project_data.get('target_title'), 300)}\n"
+        f"Project abstract: {_trim_text(_compact_whitespace(project_data.get('target_abstract')), 1800)}\n"
+        f"Project current content: {_trim_text(_compact_whitespace(project_data.get('target_current_content')), 1800)}\n"
+        f"Selection type: {payload.selection_type}\n"
+        f"Selection label: {selection_label}\n"
+        f"User question: {_trim_text(payload.user_question or '', MAX_READ_PAPER_QUESTION_LENGTH)}\n\n"
+        f"Papers:\n{json.dumps(analyzed_papers, ensure_ascii=False)}"
+    )
+
+def _analyze_read_paper_selection(project_data: dict, payload: ReadPaperAnalyzeRequest) -> dict:
+    normalized_papers = []
+    for paper in payload.papers[:READ_PAPER_MAX_PAPERS]:
+        raw_paper = paper.model_dump() if hasattr(paper, "model_dump") else dict(paper)
+        scrubbed = _scrub_paper_payload(raw_paper)
+        scrubbed["paper_key"] = _make_claim_paper_key(scrubbed)
+        normalized_papers.append({
+            "paper_key": scrubbed["paper_key"],
+            "filename": _trim_text(scrubbed.get("filename"), 300),
+            "title": _trim_text(scrubbed.get("title"), MAX_PAPER_TITLE_LENGTH),
+            "abstract": _trim_text(_compact_whitespace(scrubbed.get("abstract")), 1800),
+            "current_content": _trim_text(_compact_whitespace(scrubbed.get("current_content")), 1600),
+            "notes": _trim_text(_compact_whitespace(scrubbed.get("notes")), 700),
+            "authors": _trim_text(scrubbed.get("authors"), MAX_PAPER_AUTHORS_LENGTH),
+            "year": _trim_text(scrubbed.get("year"), 40),
+            "publication_venue": _trim_text(scrubbed.get("publication_venue"), 300),
+            "citation_count": _safe_int(scrubbed.get("citation_count")),
+            "similarity": round(_project_similarity_score(scrubbed), 4),
+            "status": _trim_text(scrubbed.get("status"), 40),
+        })
+    prompt = _build_read_paper_prompt(project_data, payload, normalized_papers)
+    parsed = _parse_llm_json_payload(_call_llm_from_env(prompt, temperature=0.08, json_mode=True))
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail="Read A Paper analysis returned an unexpected payload.")
+    fallback_keys = [paper.get("paper_key") for paper in normalized_papers if paper.get("paper_key")]
+    takeaways = _normalize_read_paper_takeaways(parsed.get("paper_takeaways"), normalized_papers)
+    takeaway_map = {item.get("paper_key"): item.get("takeaway") for item in takeaways if item.get("paper_key")}
+    papers = []
+    for paper in normalized_papers:
+        papers.append({
+            **paper,
+            "takeaway": takeaway_map.get(paper.get("paper_key"), "")
+        })
+    return {
+        "selection_type": payload.selection_type,
+        "selection_label": payload.selection_label or ("Selected cluster" if payload.selection_type == "cluster" else "Selected paper"),
+        "analyzed_paper_count": len(papers),
+        "papers": papers,
+        "analysis": {
+            "deep_read_summary": _trim_text(parsed.get("deep_read_summary"), MAX_READ_PAPER_SUMMARY_LENGTH),
+            "user_question_answer": _trim_text(parsed.get("user_question_answer"), MAX_READ_PAPER_SUMMARY_LENGTH),
+            "threats_to_validity": _normalize_read_paper_findings(parsed.get("threats_to_validity"), normalized_papers, fallback_keys),
+            "external_validity_limits": _normalize_read_paper_findings(parsed.get("external_validity_limits"), normalized_papers, fallback_keys),
+            "design_vulnerabilities": _normalize_read_paper_findings(parsed.get("design_vulnerabilities"), normalized_papers, fallback_keys),
+            "improvement_opportunities": _normalize_read_paper_findings(parsed.get("improvement_opportunities"), normalized_papers, fallback_keys),
+            "questions_to_press": _normalize_read_paper_questions(parsed.get("questions_to_press"))
+        }
+    }
+
+def _build_claim_classification_prompt(project_data: dict, claim_row: dict, candidates: List[dict]) -> str:
+    payload = _build_claim_classification_payload(candidates)
+    return (
+        "You are classifying project papers against a specific research claim.\n\n"
+        "Assign exactly one stance for each paper:\n"
+        "- support = directly supports the claim or a core mechanism\n"
+        "- challenge = weakens, narrows, conditions, or contradicts the claim\n"
+        "- setup = mainly contributes identification, data, measurement, empirical strategy, or research design\n"
+        "- pending = plausibly relevant, but evidence is too weak or unclear\n\n"
+        "Rules:\n"
+        "- Prefer the supplied abstract, notes, and current_content.\n"
+        "- challenge includes partial contradiction, boundary conditions, null effects, and domain-specific limitations.\n"
+        "- setup should win when the paper is mainly useful for identification, data, measurement, or design rather than substantive support.\n"
+        "- Do not invent evidence not present in the supplied text.\n"
+        "- why_matched must be one sentence.\n"
+        "- caveat should be short and empty when not needed.\n"
+        "- snippet_candidates should be short verbatim fragments copied from the supplied text when possible.\n"
+        "- Return JSON only in the form {\"results\":[...]}\n\n"
+        f"Project target title: {_trim_text(project_data.get('target_title'), 300)}\n"
+        f"Project target abstract: {_trim_text(_compact_whitespace(project_data.get('target_abstract')), 1800)}\n"
+        f"Project current content: {_trim_text(_compact_whitespace(project_data.get('target_current_content')), 1800)}\n"
+        f"Claim text: {_trim_text(claim_row.get('claim_text'), MAX_CLAIM_TEXT_LENGTH)}\n"
+        f"Claim type: {_trim_text(claim_row.get('claim_type'), MAX_CLAIM_TYPE_LENGTH)}\n"
+        f"Section label: {_trim_text(claim_row.get('section_label'), MAX_CLAIM_SECTION_LABEL_LENGTH)}\n\n"
+        "Return one object per input paper with keys:\n"
+        "paper_key, stance, directness, confidence, why_matched, caveat, snippet_candidates\n\n"
+        f"Papers:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+def _heuristic_claim_classification(paper: dict, claim_tokens: List[str], claim_phrases: Optional[List[str]] = None) -> dict:
+    claim_phrases = claim_phrases or []
+    claim_relevance = float(paper.get("claim_relevance") or 0)
+    support_hint = float(paper.get("support_hint") or 0)
+    challenge_hint = float(paper.get("challenge_hint") or 0)
+    setup_hint = float(paper.get("setup_hint") or 0)
+    support_signal = (support_hint * 0.52) + (claim_relevance * 0.48)
+    challenge_signal = (challenge_hint * 0.64) + (claim_relevance * 0.36)
+    setup_signal = (setup_hint * 0.7) + (claim_relevance * 0.3)
+    if challenge_signal >= 0.32 and challenge_signal >= support_signal + 0.05 and challenge_signal >= setup_signal:
+        stance = "challenge"
+    elif setup_signal >= 0.34 and setup_signal >= support_signal + 0.03:
+        stance = "setup"
+    elif support_signal >= 0.36:
+        stance = "support"
+    else:
+        stance = "pending"
+    snippets = _extract_claim_evidence_snippets(paper, claim_tokens, claim_phrases, limit=2, preferred_stance=stance)
+    why_matched = (
+        "The paper appears to provide direct evidence that aligns with the claim or one of its core mechanisms."
+        if stance == "support"
+        else (
+            "The paper appears to qualify, limit, or condition the claim rather than cleanly support it."
+            if stance == "challenge"
+            else (
+                "The paper looks most useful for setup, measurement, identification, or research design support."
+                if stance == "setup"
+                else "The paper may matter for the claim, but the current evidence is not decisive."
+            )
+        )
+    )
+    return {
+        "paper_key": paper.get("paper_key"),
+        "stance": stance,
+        "directness": round(max(
+            support_signal if stance == "support" else (
+                challenge_signal if stance == "challenge" else (
+                    setup_signal if stance == "setup" else claim_relevance
+                )
+            ),
+            0.12 if stance == "setup" else 0.08
+        ), 3),
+        "confidence": round(min(max(
+            support_signal if stance == "support" else (
+                challenge_signal if stance == "challenge" else (
+                    setup_signal if stance == "setup" else claim_relevance
+                )
+            ),
+            0.22
+        ), 0.86), 3),
+        "why_matched": why_matched,
+        "caveat": "",
+        "snippet_candidates": [item.get("text", "") for item in snippets],
+    }
+
+def _normalize_claim_snippets(project_id: int, claim_row: dict, raw_snippets, paper: dict, claim_tokens: List[str], claim_phrases: Optional[List[str]] = None, preferred_stance: str = "support") -> List[dict]:
+    claim_phrases = claim_phrases or []
+    normalized = []
+    for raw_snippet in raw_snippets or []:
+        grounded = _ground_claim_snippet(project_id, claim_row, raw_snippet, paper, claim_tokens, claim_phrases, preferred_stance=preferred_stance)
+        if grounded:
+            normalized.append(grounded)
+            if len(normalized) >= MAX_EVIDENCE_SNIPPETS_PER_ITEM:
+                break
+            continue
+        text = _trim_text(_compact_whitespace(raw_snippet), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH)
+        if text:
+            normalized.append({
+                "text": text,
+                "source_field": "model_excerpt",
+                "char_start": 0,
+                "char_end": len(text),
+            })
+        if len(normalized) >= MAX_EVIDENCE_SNIPPETS_PER_ITEM:
+            break
+    if normalized:
+        return normalized
+    return _extract_claim_evidence_snippets(
+        paper,
+        claim_tokens,
+        claim_phrases,
+        limit=MAX_EVIDENCE_SNIPPETS_PER_ITEM,
+        preferred_stance=preferred_stance
+    )
+
+def _analyze_claim_candidates(project_data: dict, claim_row: dict, candidates: List[dict]) -> Tuple[List[dict], bool]:
+    if not candidates:
+        return [], False
+    project_id = int(project_data.get("id") or 0)
+    claim_id = int((claim_row or {}).get("id") or 0)
+    analysis_version = _claim_analysis_version(claim_row)
+    claim_tokens = _claim_tokens(claim_row.get("claim_text", ""))
+    claim_phrases = _claim_phrases(claim_row.get("claim_text", ""))
+    llm_used = False
+    final_items = []
+    for index in range(0, len(candidates), CLAIM_ANALYSIS_BATCH_SIZE):
+        batch = candidates[index:index + CLAIM_ANALYSIS_BATCH_SIZE]
+        batch_results = []
+        try:
+            batch_payload = _build_claim_classification_payload(batch)
+            cache_input = _build_claim_llm_batch_cache_input(project_data, claim_row, batch_payload)
+            payload_hash = _hash_cache_payload(cache_input)
+            cache_key = f"claim-llm-batch:{payload_hash}"
+            cached_payload = _read_claim_cache_payload("claim_llm_batch_cache", cache_key, "response_json")
+            if cached_payload:
+                parsed = json.loads(cached_payload)
+            else:
+                prompt = _build_claim_classification_prompt(project_data, claim_row, batch)
+                parsed = _parse_llm_json_payload(_call_llm_from_env(prompt, temperature=0.05, json_mode=True))
+                _write_claim_llm_batch_cache(
+                    cache_key,
+                    project_id,
+                    claim_id,
+                    analysis_version,
+                    _llm_cache_model_name(),
+                    payload_hash,
+                    _stable_json_dumps(parsed)
+                )
+            batch_results = parsed.get("results") if isinstance(parsed, dict) else parsed
+            if not isinstance(batch_results, list):
+                raise ValueError("Model returned an unexpected claim-analysis payload.")
+            llm_used = True
+        except Exception:
+            batch_results = [_heuristic_claim_classification(paper, claim_tokens, claim_phrases) for paper in batch]
+
+        result_map = {}
+        for item in batch_results:
+            if not isinstance(item, dict):
+                continue
+            paper_key = _trim_text(item.get("paper_key"), 120)
+            if paper_key:
+                result_map[paper_key] = item
+
+        for paper in batch:
+            fallback = _heuristic_claim_classification(paper, claim_tokens, claim_phrases)
+            raw = result_map.get(paper.get("paper_key"), fallback)
+            stance = _normalize_claim_stance(raw.get("stance"))
+            try:
+                directness = max(0.0, min(float(raw.get("directness") or fallback.get("directness") or 0), 1.0))
+            except (TypeError, ValueError):
+                directness = float(fallback.get("directness") or 0)
+            try:
+                confidence = max(0.0, min(float(raw.get("confidence") or fallback.get("confidence") or 0), 1.0))
+            except (TypeError, ValueError):
+                confidence = float(fallback.get("confidence") or 0)
+            relevance_score = float(paper.get("claim_relevance") or 0)
+            quality_score = float(paper.get("quality_score") or 0)
+            strength_score = min(
+                (directness * 0.45) +
+                (relevance_score * 0.20) +
+                (quality_score * 0.20) +
+                (confidence * 0.15),
+                1.0
+            )
+            final_items.append({
+                "paper_key": paper.get("paper_key"),
+                "paper_title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+                "paper_year": _trim_text(paper.get("year"), 40),
+                "paper_authors": _trim_text(paper.get("authors"), MAX_PAPER_AUTHORS_LENGTH),
+                "citation_key": _trim_text(paper.get("citation_key"), 120),
+                "stance": stance,
+                "strength_score": round(strength_score, 4),
+                "relevance_score": round(relevance_score, 4),
+                "confidence_score": round(confidence, 4),
+                "quality_score": round(quality_score, 4),
+                "why_matched": _trim_text(raw.get("why_matched") or fallback.get("why_matched"), MAX_EVIDENCE_WHY_MATCHED_LENGTH),
+                "caveat": _trim_text(raw.get("caveat") or "", MAX_EVIDENCE_CAVEAT_LENGTH),
+                "evidence_snippets": _normalize_claim_snippets(project_id, claim_row, raw.get("snippet_candidates"), paper, claim_tokens, claim_phrases, preferred_stance=stance),
+            })
+    return final_items, llm_used
+
+def _resolve_project_paper_for_evidence(project_data: dict, evidence_row: dict) -> Optional[dict]:
+    papers = _load_project_top_papers(project_data)
+    if not papers:
+        return None
+    target_key = _trim_text((evidence_row or {}).get("paper_key"), 300)
+    if target_key:
+        for paper in papers:
+            if _make_claim_paper_key(paper) == target_key:
+                return paper
+
+    target_signatures = set(_paper_identity_signatures(evidence_row or {}))
+    target_title = _normalize_title_signature((evidence_row or {}).get("paper_title"))
+    for paper in papers:
+        paper_signatures = set(_paper_identity_signatures(paper))
+        if target_signatures and paper_signatures.intersection(target_signatures):
+            return paper
+        if target_title and _normalize_title_signature(paper.get("title")) == target_title:
+            return paper
+    return None
+
+def _fetch_openalex_works_by_ids(openalex_ids: List[str], api_key: str = "", contact_email: str = "", limit: int = MAX_CHALLENGE_EXPANSION_REFERENCES) -> List[dict]:
+    works: List[dict] = []
+    seen: set[str] = set()
+    for openalex_id in openalex_ids or []:
+        normalized = _trim_text(openalex_id, 300)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        try:
+            work = _fetch_openalex_work_by_id(normalized, api_key, contact_email)
+        except HTTPException:
+            continue
+        parsed_work = _parse_openalex_work(work)
+        if parsed_work.get("openalex_id") and parsed_work.get("title"):
+            works.append(parsed_work)
+        if len(works) >= limit:
+            break
+    return works
+
+def _fetch_openalex_cited_by_works(openalex_id: str, api_key: str = "", contact_email: str = "", limit: int = MAX_CHALLENGE_EXPANSION_CITED_BY) -> List[dict]:
+    short_id = _extract_openalex_short_id(openalex_id)
+    if not short_id:
+        return []
+    url = _build_url(
+        "https://api.openalex.org/works",
+        {
+            "filter": f"cites:{short_id}",
+            "per_page": max(1, min(int(limit or MAX_CHALLENGE_EXPANSION_CITED_BY), 25)),
+            "cursor": "*",
+            "api_key": api_key.strip()
+        }
+    )
+    response = _http_get_json(url, contact_email)
+    works: List[dict] = []
+    for work in response.get("results", []) or []:
+        parsed_work = _parse_openalex_work(work)
+        if parsed_work.get("openalex_id") and parsed_work.get("title"):
+            works.append(parsed_work)
+        if len(works) >= limit:
+            break
+    return works
+
+def _challenge_seed_text(seed_paper: dict) -> str:
+    return "\n\n".join([
+        _trim_text(seed_paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+        _trim_text(_compact_whitespace(seed_paper.get("abstract")), MAX_PAPER_ABSTRACT_LENGTH),
+        _trim_text(_compact_whitespace(seed_paper.get("current_content")), MAX_CHALLENGE_EXPANSION_SEED_CONTENT_LENGTH),
+    ]).strip()
+
+def _challenge_expansion_seed_similarity(candidate: dict, seed_tokens: List[str], seed_phrases: List[str]) -> float:
+    signal = _text_signal_bundle(
+        "\n".join([
+            str(candidate.get("title") or ""),
+            str(candidate.get("abstract") or "")
+        ]),
+        seed_tokens,
+        seed_phrases
+    )
+    return min(
+        (signal["token_overlap"] * 0.56) +
+        (signal["phrase_overlap"] * 0.32) +
+        (signal["challenge_marker"] * 0.12),
+        1.0
+    )
+
+def _heuristic_challenge_expansion_match(candidate: dict, claim_row: dict, seed_tokens: List[str], seed_phrases: List[str]) -> dict:
+    claim_text = str((claim_row or {}).get("claim_text") or "")
+    claim_tokens = _claim_tokens(claim_text)
+    claim_phrases = _claim_phrases(claim_text)
+    metrics = _build_claim_candidate_metrics(
+        {
+            **candidate,
+            "status": candidate.get("status") or "Unread",
+            "similarity": candidate.get("similarity") or 0,
+        },
+        claim_text,
+        claim_tokens,
+        claim_phrases,
+        False
+    )
+    seed_similarity = _challenge_expansion_seed_similarity(candidate, seed_tokens, seed_phrases)
+    relation_type = str(candidate.get("relationship_type") or "one_hop").strip().lower()
+    relation_bonus = 0.05 if relation_type == "cited_by" else 0.03
+    score = min(
+        (float(metrics.get("challenge_hint") or 0) * 0.33) +
+        (float(metrics.get("claim_relevance") or 0) * 0.29) +
+        (seed_similarity * 0.28) +
+        (float(metrics.get("quality_score") or 0) * 0.10) +
+        relation_bonus,
+        1.0
+    )
+    include = bool(
+        score >= 0.26 and (
+            float(metrics.get("challenge_hint") or 0) >= 0.16
+            or seed_similarity >= 0.20
+            or float(metrics.get("claim_relevance") or 0) >= 0.24
+        )
+    )
+    why_matched = (
+        "This one-hop paper appears to discuss limitations, boundary conditions, or contradictory findings close to the seed challenge paper."
+        if include
+        else "This one-hop paper looks related to the seed, but its challenge signal is still too weak or too indirect."
+    )
+    return {
+        "include": include,
+        "challenge_strength": round(score, 4),
+        "claim_relevance": round(float(metrics.get("claim_relevance") or 0), 4),
+        "seed_similarity": round(seed_similarity, 4),
+        "why_matched": why_matched,
+        "caveat": ""
+    }
+
+def _build_challenge_expansion_prompt(project_data: dict, claim_row: dict, seed_item: dict, seed_paper: dict, candidates: List[dict]) -> str:
+    payload = []
+    for candidate in candidates:
+        payload.append({
+            "candidate_key": candidate.get("candidate_key"),
+            "relationship_type": candidate.get("relationship_type"),
+            "title": _trim_text(candidate.get("title"), 320),
+            "year": _trim_text(candidate.get("year"), 40),
+            "authors": _trim_text(candidate.get("authors"), 220),
+            "publication_venue": _trim_text(candidate.get("publication_venue"), 220),
+            "citation_count": _safe_int(candidate.get("citation_count")),
+            "abstract": _trim_text(_compact_whitespace(candidate.get("abstract")), 1800),
+        })
+    return (
+        "You are expanding challenge literature for a research claim.\n\n"
+        "The seed paper is already classified as a challenge paper for this claim.\n"
+        "Your task is to inspect one-hop neighbors of the seed paper and decide which neighbors are worth recommending as additional challenge literature.\n\n"
+        "Recommend a candidate only when it likely does at least one of the following:\n"
+        "- contradicts the claim\n"
+        "- narrows the claim with boundary conditions\n"
+        "- reports null effects that weaken a broad version of the claim\n"
+        "- challenges a mechanism used by the claim or by the seed paper\n\n"
+        "Do not recommend generic background, mostly supportive papers, or methods-only setup papers unless they clearly function as challenge literature.\n"
+        "Return JSON only in the form {\"results\":[{\"candidate_key\":\"...\",\"include\":true,\"challenge_strength\":0.0,\"why_matched\":\"...\",\"caveat\":\"...\"}]}\n\n"
+        f"Project target title: {_trim_text(project_data.get('target_title'), 300)}\n"
+        f"Project target abstract: {_trim_text(_compact_whitespace(project_data.get('target_abstract')), 1400)}\n"
+        f"Claim text: {_trim_text(claim_row.get('claim_text'), MAX_CLAIM_TEXT_LENGTH)}\n"
+        f"Seed evidence why matched: {_trim_text(seed_item.get('why_matched'), 600)}\n"
+        f"Seed evidence caveat: {_trim_text(seed_item.get('caveat'), 500)}\n"
+        f"Seed paper title: {_trim_text(seed_paper.get('title'), 320)}\n"
+        f"Seed paper abstract: {_trim_text(_compact_whitespace(seed_paper.get('abstract')), 1600)}\n"
+        f"Seed paper current content excerpt: {_trim_text(_compact_whitespace(seed_paper.get('current_content')), MAX_CHALLENGE_EXPANSION_SEED_CONTENT_LENGTH)}\n\n"
+        f"Candidates:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+def _expand_challenge_seed(project_data: dict, claim_row: dict, evidence_row: dict, payload: ChallengeExpansionRequest) -> dict:
+    if _normalize_claim_stance((evidence_row or {}).get("stance")) != "challenge":
+        raise HTTPException(status_code=409, detail="Challenge expansion only works from a paper in the challenge column.")
+
+    seed_paper = _resolve_project_paper_for_evidence(project_data, evidence_row)
+    if not seed_paper:
+        raise HTTPException(status_code=404, detail="Could not match this evidence item back to a project paper.")
+
+    try:
+        enriched_seed = _enrich_paper_for_citation_graph(
+            PaperItem(**seed_paper),
+            payload.openalex_api_key,
+            payload.contact_email
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not resolve the seed paper on OpenAlex: {exc}")
+
+    seed_openalex_id = _trim_text(enriched_seed.get("openalex_id"), 300)
+    if not seed_openalex_id:
+        raise HTTPException(status_code=404, detail="The seed challenge paper could not be resolved on OpenAlex.")
+
+    references = _fetch_openalex_works_by_ids(
+        enriched_seed.get("referenced_openalex_ids") or [],
+        payload.openalex_api_key,
+        payload.contact_email,
+        payload.max_references
+    )
+    cited_by = _fetch_openalex_cited_by_works(
+        seed_openalex_id,
+        payload.openalex_api_key,
+        payload.contact_email,
+        payload.max_cited_by
+    )
+
+    project_signature_set = set()
+    for paper in _load_project_top_papers(project_data):
+        project_signature_set.update(_paper_identity_signatures(paper))
+
+    candidates: List[dict] = []
+    seen_candidate_keys: set[str] = set()
+    skipped_existing = 0
+    for relationship_type, works in (("reference", references), ("cited_by", cited_by)):
+        for work in works:
+            candidate_key = _paper_identity_key(work)
+            if not candidate_key or candidate_key in seen_candidate_keys:
+                continue
+            seen_candidate_keys.add(candidate_key)
+            if any(signature in project_signature_set for signature in _paper_identity_signatures(work)):
+                skipped_existing += 1
+                continue
+            candidates.append({
+                **work,
+                "candidate_key": candidate_key,
+                "relationship_type": relationship_type,
+                "status": "Unread",
+                "similarity": 0,
+                "import_source": "citation_import"
+            })
+
+    if not candidates:
+        return {
+            "seed_paper": enriched_seed,
+            "recommendations": [],
+            "source_summary": {
+                "reference_count": len(references),
+                "cited_by_count": len(cited_by),
+                "candidate_count": 0,
+                "skipped_existing_count": skipped_existing,
+                "returned_count": 0,
+            }
+        }
+
+    seed_text = _challenge_seed_text(enriched_seed)
+    seed_tokens = _claim_tokens(seed_text)
+    seed_phrases = _claim_phrases(seed_text)
+    heuristics_by_key: Dict[str, dict] = {}
+    for candidate in candidates:
+        heuristics_by_key[candidate["candidate_key"]] = _heuristic_challenge_expansion_match(candidate, claim_row, seed_tokens, seed_phrases)
+
+    ranked_candidates = sorted(
+        candidates,
+        key=lambda candidate: (
+            float((heuristics_by_key.get(candidate["candidate_key"]) or {}).get("challenge_strength") or 0),
+            _safe_int(candidate.get("citation_count")),
+            _trim_text(candidate.get("year"), 40)
+        ),
+        reverse=True
+    )[:MAX_CHALLENGE_EXPANSION_CANDIDATES]
+
+    llm_results_by_key: Dict[str, dict] = {}
+    try:
+        prompt = _build_challenge_expansion_prompt(project_data, claim_row, evidence_row, enriched_seed, ranked_candidates)
+        parsed = _parse_llm_json_payload(_call_llm_from_env(prompt, temperature=0.05, json_mode=True))
+        raw_results = parsed.get("results") if isinstance(parsed, dict) else []
+        if isinstance(raw_results, list):
+            for item in raw_results:
+                if not isinstance(item, dict):
+                    continue
+                candidate_key = _trim_text(item.get("candidate_key"), 240)
+                if candidate_key:
+                    llm_results_by_key[candidate_key] = item
+    except Exception:
+        llm_results_by_key = {}
+
+    recommendations = []
+    for candidate in ranked_candidates:
+        candidate_key = candidate["candidate_key"]
+        heuristic = heuristics_by_key.get(candidate_key, {})
+        llm_item = llm_results_by_key.get(candidate_key) or {}
+        try:
+            llm_strength = max(0.0, min(float(llm_item.get("challenge_strength") or 0), 1.0))
+        except (TypeError, ValueError):
+            llm_strength = 0.0
+        include = bool(llm_item.get("include")) if "include" in llm_item else bool(heuristic.get("include"))
+        final_score = (
+            (llm_strength * 0.56) + (float(heuristic.get("challenge_strength") or 0) * 0.44)
+            if llm_item else float(heuristic.get("challenge_strength") or 0)
+        )
+        if not include and final_score < 0.34:
+            continue
+        recommendations.append({
+            **candidate,
+            "relationship_label": "Referenced by seed" if candidate.get("relationship_type") == "reference" else "Cites seed",
+            "challenge_score": round(min(final_score, 1.0), 4),
+            "claim_relevance": heuristic.get("claim_relevance"),
+            "seed_similarity": heuristic.get("seed_similarity"),
+            "why_matched": _trim_text(llm_item.get("why_matched") or heuristic.get("why_matched"), MAX_EVIDENCE_WHY_MATCHED_LENGTH),
+            "caveat": _trim_text(llm_item.get("caveat") or heuristic.get("caveat") or "", MAX_EVIDENCE_CAVEAT_LENGTH),
+        })
+
+    recommendations.sort(
+        key=lambda item: (
+            float(item.get("challenge_score") or 0),
+            float(item.get("seed_similarity") or 0),
+            _safe_int(item.get("citation_count"))
+        ),
+        reverse=True
+    )
+    recommendations = recommendations[:payload.max_results]
+
+    return {
+        "seed_paper": enriched_seed,
+        "recommendations": recommendations,
+        "source_summary": {
+            "reference_count": len(references),
+            "cited_by_count": len(cited_by),
+            "candidate_count": len(candidates),
+            "skipped_existing_count": skipped_existing,
+            "returned_count": len(recommendations),
+        }
+    }
+
+def _search_openalex_works(query: str, api_key: str = "", contact_email: str = "", per_page: int = MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY) -> List[dict]:
+    cleaned_query = _trim_text(_compact_whitespace(query), 240)
+    if not cleaned_query:
+        return []
+    params = {
+        "search": cleaned_query,
+        "per_page": max(1, min(int(per_page or MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY), 25)),
+    }
+    if api_key:
+        params["api_key"] = api_key.strip()
+    url = _build_url("https://api.openalex.org/works", params)
+    response = _http_get_json(url, contact_email) or {}
+    papers: List[dict] = []
+    for work in response.get("results", []) or []:
+        parsed = _parse_openalex_work(work)
+        if not parsed or not parsed.get("title"):
+            continue
+        parsed["matched_query"] = cleaned_query
+        papers.append(parsed)
+    return papers
+
+def _build_stardust_semantic_queries(project_data: dict, claim_row: dict, evidence_row: dict, seed_paper: dict, sub_target_thesis: str) -> List[str]:
+    seed_title = _trim_text(_compact_whitespace(seed_paper.get("title")), 220)
+    thesis_tokens = _claim_tokens(sub_target_thesis)
+    claim_tokens = _claim_tokens((claim_row or {}).get("claim_text"))
+    evidence_tokens = _claim_tokens(
+        f"{_trim_text((evidence_row or {}).get('why_matched'), 600)} {_trim_text((evidence_row or {}).get('caveat'), 400)}"
+    )
+    target_tokens = _claim_tokens(
+        f"{_trim_text((project_data or {}).get('target_title'), 220)} {_trim_text((project_data or {}).get('target_abstract'), 1400)}"
+    )
+    seed_title_tokens = _claim_tokens(seed_title)
+    raw_queries = [
+        seed_title,
+        " ".join(thesis_tokens[:8]),
+        " ".join(dict.fromkeys(seed_title_tokens[:4] + thesis_tokens[:5]).keys()),
+        " ".join(dict.fromkeys(thesis_tokens[:4] + claim_tokens[:4] + evidence_tokens[:3]).keys()),
+        " ".join(dict.fromkeys(seed_title_tokens[:3] + target_tokens[:3] + thesis_tokens[:3]).keys()),
+    ]
+    queries: List[str] = []
+    for raw_query in raw_queries:
+        cleaned = _trim_text(_compact_whitespace(raw_query), 240)
+        if cleaned and cleaned not in queries:
+            queries.append(cleaned)
+        if len(queries) >= MAX_STARDUST_SEMANTIC_QUERY_COUNT:
+            break
+    return queries
+
+def _register_stardust_candidate(
+    candidates_by_key: Dict[str, dict],
+    signature_to_primary: Dict[str, str],
+    project_signature_set: set[str],
+    work: dict,
+    *,
+    discovery_source: str,
+    relationship_type: str,
+    hop_distance: int,
+    skipped: dict,
+) -> bool:
+    candidate_key = _paper_identity_key(work)
+    if not candidate_key or not _trim_text(work.get("title"), MAX_PAPER_TITLE_LENGTH):
+        skipped["invalid_count"] = int(skipped.get("invalid_count") or 0) + 1
+        return False
+    identity_signatures = list(dict.fromkeys(_paper_identity_signatures(work) + [candidate_key]))
+    if any(signature in project_signature_set for signature in identity_signatures):
+        skipped["existing_count"] = int(skipped.get("existing_count") or 0) + 1
+        return False
+    matched_primary = candidates_by_key.get(candidate_key)
+    if not matched_primary:
+        existing_primary_key = next((signature_to_primary.get(signature) for signature in identity_signatures if signature_to_primary.get(signature)), None)
+        matched_primary = candidates_by_key.get(existing_primary_key or "")
+    if matched_primary:
+        candidate = matched_primary
+        skipped["duplicate_count"] = int(skipped.get("duplicate_count") or 0) + 1
+    else:
+        candidate = {
+            "paper_key": candidate_key,
+            "title": _trim_text(work.get("title"), MAX_PAPER_TITLE_LENGTH),
+            "abstract": _trim_text(work.get("abstract"), MAX_PAPER_ABSTRACT_LENGTH),
+            "current_content": _trim_text(work.get("current_content"), MAX_PAPER_CURRENT_CONTENT_LENGTH),
+            "authors": _trim_text(work.get("authors"), MAX_PAPER_AUTHORS_LENGTH),
+            "year": _trim_text(work.get("year"), 40),
+            "doi": _clean_doi(work.get("doi")),
+            "openalex_id": _trim_text(work.get("openalex_id"), 300),
+            "paper_url": _trim_text(work.get("paper_url"), 1000),
+            "source_url": _trim_text(work.get("source_url"), 1000),
+            "publication_venue": _trim_text(work.get("publication_venue"), 300),
+            "citation_count": _safe_int(work.get("citation_count"), 0),
+            "referenced_openalex_ids": list(work.get("referenced_openalex_ids") or []),
+            "_identity_signatures": identity_signatures,
+            "_discovery_sources": [],
+            "_relationship_types": [],
+            "_matched_queries": [],
+            "hop_distance": max(1, _safe_int(hop_distance, 1)),
+        }
+        candidates_by_key[candidate_key] = candidate
+        for signature in identity_signatures:
+            signature_to_primary[signature] = candidate_key
+    for field_name, max_length in (
+        ("title", MAX_PAPER_TITLE_LENGTH),
+        ("abstract", MAX_PAPER_ABSTRACT_LENGTH),
+        ("current_content", MAX_PAPER_CURRENT_CONTENT_LENGTH),
+        ("authors", MAX_PAPER_AUTHORS_LENGTH),
+        ("year", 40),
+        ("doi", 300),
+        ("openalex_id", 300),
+        ("paper_url", 1000),
+        ("source_url", 1000),
+        ("publication_venue", 300),
+    ):
+        incoming = _trim_text(work.get(field_name), max_length)
+        if incoming and (not candidate.get(field_name) or len(incoming) > len(str(candidate.get(field_name) or ""))):
+            candidate[field_name] = incoming
+    candidate["citation_count"] = max(_safe_int(candidate.get("citation_count"), 0), _safe_int(work.get("citation_count"), 0))
+    referenced_ids = list(dict.fromkeys((candidate.get("referenced_openalex_ids") or []) + list(work.get("referenced_openalex_ids") or [])))
+    candidate["referenced_openalex_ids"] = referenced_ids[:120]
+    if discovery_source and discovery_source not in candidate["_discovery_sources"]:
+        candidate["_discovery_sources"].append(discovery_source)
+    if relationship_type and relationship_type not in candidate["_relationship_types"]:
+        candidate["_relationship_types"].append(relationship_type)
+    matched_query = _trim_text(work.get("matched_query"), 240)
+    if matched_query and matched_query not in candidate["_matched_queries"]:
+        candidate["_matched_queries"].append(matched_query)
+    candidate["hop_distance"] = min(max(1, _safe_int(candidate.get("hop_distance"), 1)), max(1, _safe_int(hop_distance, 1)))
+    return True
+
+def _annotate_existing_stardust_candidates_with_relationship(
+    candidates_by_key: Dict[str, dict],
+    signature_to_primary: Dict[str, str],
+    works: List[dict],
+    relationship_type: str,
+    *,
+    discovery_source: str = "hop_1_overlap",
+    hop_distance: int = 1,
+) -> int:
+    annotated_count = 0
+    for work in works or []:
+        identity_signatures = list(dict.fromkeys(_paper_identity_signatures(work) + [_paper_identity_key(work)]))
+        matched_primary_key = next((signature_to_primary.get(signature) for signature in identity_signatures if signature_to_primary.get(signature)), None)
+        if not matched_primary_key:
+            continue
+        candidate = candidates_by_key.get(matched_primary_key)
+        if not candidate:
+            continue
+        was_already_linked = relationship_type in list(candidate.get("_relationship_types") or [])
+        for field_name, max_length in (
+            ("title", MAX_PAPER_TITLE_LENGTH),
+            ("abstract", MAX_PAPER_ABSTRACT_LENGTH),
+            ("current_content", MAX_PAPER_CURRENT_CONTENT_LENGTH),
+            ("authors", MAX_PAPER_AUTHORS_LENGTH),
+            ("year", 40),
+            ("doi", 300),
+            ("openalex_id", 300),
+            ("paper_url", 1000),
+            ("source_url", 1000),
+            ("publication_venue", 300),
+        ):
+            incoming = _trim_text(work.get(field_name), max_length)
+            if incoming and (not candidate.get(field_name) or len(incoming) > len(str(candidate.get(field_name) or ""))):
+                candidate[field_name] = incoming
+        candidate["citation_count"] = max(_safe_int(candidate.get("citation_count"), 0), _safe_int(work.get("citation_count"), 0))
+        referenced_ids = list(dict.fromkeys((candidate.get("referenced_openalex_ids") or []) + list(work.get("referenced_openalex_ids") or [])))
+        candidate["referenced_openalex_ids"] = referenced_ids[:120]
+        if discovery_source and discovery_source not in candidate["_discovery_sources"]:
+            candidate["_discovery_sources"].append(discovery_source)
+        if relationship_type and relationship_type not in candidate["_relationship_types"]:
+            candidate["_relationship_types"].append(relationship_type)
+        candidate["hop_distance"] = min(max(1, _safe_int(candidate.get("hop_distance"), 1)), max(1, _safe_int(hop_distance, 1)))
+        if not was_already_linked:
+            annotated_count += 1
+    return annotated_count
+
+def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_tokens: List[str], focus_phrases: List[str], seed_tokens: List[str], seed_phrases: List[str], seed_context_label: str = "seed paper") -> dict:
+    metrics = _build_claim_candidate_metrics(
+        {
+            **candidate,
+            "status": candidate.get("status") or "Unread",
+            "similarity": candidate.get("similarity") or 0,
+        },
+        focus_claim_text,
+        focus_tokens,
+        focus_phrases,
+        False
+    )
+    challenge_hint = float(metrics.get("challenge_hint") or 0)
+    claim_relevance = float(metrics.get("claim_relevance") or 0)
+    quality_score = float(metrics.get("quality_score") or 0)
+    seed_similarity = _challenge_expansion_seed_similarity(candidate, seed_tokens, seed_phrases)
+    discovery_sources = list(candidate.get("_discovery_sources") or [])
+    relationship_types = list(candidate.get("_relationship_types") or [])
+    hop_distance = max(1, _safe_int(candidate.get("hop_distance"), 1))
+    semantic_overlap = min(
+        (seed_similarity * 0.58) +
+        (claim_relevance * 0.42),
+        1.0
+    )
+    citation_bonus = min((math.log1p(max(_safe_int(candidate.get("citation_count"), 0), 0)) / math.log1p(250)), 1.0) * 0.02
+    semantic_bonus = 0.045 if "semantic_supplement" in discovery_sources else 0.0
+    semantic_linked_bonus = 0.0
+    if semantic_overlap >= 0.24:
+        if "cited_by" in relationship_types and "reference" in relationship_types:
+            semantic_linked_bonus = 0.05
+        elif "cited_by" in relationship_types:
+            semantic_linked_bonus = 0.038
+        elif "reference" in relationship_types:
+            semantic_linked_bonus = 0.03
+    score = min(
+        (semantic_overlap * 0.50) +
+        (challenge_hint * 0.20) +
+        (claim_relevance * 0.12) +
+        (quality_score * 0.10) +
+        semantic_bonus +
+        semantic_linked_bonus +
+        citation_bonus,
+        1.0
+    )
+    include = bool(
+        score >= 0.27 and (
+            semantic_overlap >= 0.24
+            or claim_relevance >= 0.28
+            or seed_similarity >= 0.22
+            or ("semantic_supplement" in discovery_sources and semantic_overlap >= 0.30)
+        )
+    )
+    reasons: List[str] = []
+    seed_context = _trim_text(seed_context_label, 80) or "seed paper"
+    if semantic_overlap >= 0.3:
+        reasons.append(f"its semantic overlap with the {seed_context} and sub-target thesis is strong")
+    elif claim_relevance >= 0.28:
+        reasons.append("it matches the sub-target thesis closely")
+    elif seed_similarity >= 0.22:
+        reasons.append(f"it overlaps clearly with the {seed_context}")
+    if "semantic_supplement" in discovery_sources:
+        reasons.append("semantic retrieval surfaced it as a challenge-adjacent candidate")
+    if "cited_by" in relationship_types and "reference" in relationship_types:
+        reasons.append(f"it is semantically aligned and also linked to the {seed_context} in both citation directions")
+    elif "cited_by" in relationship_types:
+        reasons.append(f"it is semantically aligned and also cites the {seed_context}")
+    elif "reference" in relationship_types:
+        reasons.append(f"it is semantically aligned and is also referenced by the {seed_context}")
+    elif hop_distance == 1:
+        reasons.append(f"it still sits in the immediate citation neighborhood of the {seed_context}")
+    if challenge_hint >= 0.16:
+        reasons.append("its language suggests limits, null effects, or boundary conditions")
+    if not reasons:
+        reasons.append("it remained one of the strongest challenge-adjacent candidates in this seed trail")
+    why_matched = f"This paper was kept because {'; '.join(reasons[:3])}."
+    caveat = ""
+    return {
+        **candidate,
+        "relationship_type": "+".join(sorted(relationship_types)) or "semantic_match",
+        "discovery_source": "+".join(sorted(discovery_sources)) or "semantic_supplement",
+        "challenge_score": round(score, 4),
+        "semantic_overlap": round(semantic_overlap, 4),
+        "seed_similarity": round(seed_similarity, 4),
+        "claim_relevance": round(claim_relevance, 4),
+        "quality_score": round(quality_score, 4),
+        "why_matched": _trim_text(why_matched, MAX_EVIDENCE_WHY_MATCHED_LENGTH),
+        "caveat": _trim_text(caveat, MAX_EVIDENCE_CAVEAT_LENGTH),
+        "include": include,
+    }
+
+def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_row: dict, payload: ChallengeStardustCreateRequest) -> dict:
+    creation_mode = _normalize_stardust_creation_mode(payload.mode)
+    seed_context_label = "seed paper"
+    if creation_mode == "challenge_paper":
+        if _normalize_claim_stance((evidence_row or {}).get("stance")) != "challenge":
+            raise HTTPException(status_code=409, detail="Challenge Stardust can only be created from a paper in the challenge column.")
+
+        seed_paper = _resolve_project_paper_for_evidence(project_data, evidence_row)
+        if not seed_paper:
+            raise HTTPException(status_code=404, detail="Could not match this evidence item back to a project paper.")
+
+        try:
+            enriched_seed = _enrich_paper_for_citation_graph(
+                PaperItem(**seed_paper),
+                payload.openalex_api_key,
+                payload.contact_email
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Could not resolve the seed paper on OpenAlex: {exc}")
+
+        seed_openalex_id = _trim_text(enriched_seed.get("openalex_id"), 300)
+        if not seed_openalex_id:
+            raise HTTPException(status_code=404, detail="The seed challenge paper could not be resolved on OpenAlex.")
+    else:
+        seed_claim_text = _trim_text(payload.seed_claim_text, MAX_CLAIM_TEXT_LENGTH)
+        enriched_seed = {
+            "title": seed_claim_text,
+            "abstract": _trim_text(payload.sub_target_thesis or (claim_row or {}).get("claim_text"), MAX_PAPER_ABSTRACT_LENGTH),
+            "current_content": _trim_text((claim_row or {}).get("claim_text"), MAX_CHALLENGE_EXPANSION_SEED_CONTENT_LENGTH),
+            "authors": "Claim seed",
+            "year": "",
+            "doi": "",
+            "openalex_id": "",
+            "paper_url": "",
+            "source_url": "",
+            "publication_venue": "",
+            "citation_count": 0,
+            "referenced_openalex_ids": [],
+        }
+        seed_openalex_id = ""
+        seed_context_label = "seed claim"
+
+    project_signature_set = set()
+    for paper in _load_project_top_papers(project_data):
+        project_signature_set.update(_paper_identity_signatures(paper))
+
+    candidates_by_key: Dict[str, dict] = {}
+    signature_to_primary: Dict[str, str] = {}
+    skipped = {"existing_count": 0, "duplicate_count": 0, "invalid_count": 0}
+    partial_failures: List[dict] = []
+
+    hop1_references: List[dict] = []
+    hop1_cited_by: List[dict] = []
+    if creation_mode == "challenge_paper":
+        try:
+            hop1_references = _fetch_openalex_works_by_ids(
+                enriched_seed.get("referenced_openalex_ids") or [],
+                payload.openalex_api_key,
+                payload.contact_email,
+                MAX_STARDUST_HOP1_REFERENCES
+            )
+        except HTTPException as exc:
+            partial_failures.append({
+                "stage": "hop_1_references",
+                "detail": _trim_text(str(exc.detail), 200),
+            })
+        try:
+            hop1_cited_by = _fetch_openalex_cited_by_works(
+                seed_openalex_id,
+                payload.openalex_api_key,
+                payload.contact_email,
+                MAX_STARDUST_HOP1_CITED_BY
+            )
+        except HTTPException as exc:
+            partial_failures.append({
+                "stage": "hop_1_cited_by",
+                "detail": _trim_text(str(exc.detail), 200),
+            })
+
+    focus_claim_text = "\n".join(
+        part for part in [
+            _trim_text(payload.sub_target_thesis, MAX_SUB_TARGET_THESIS_LENGTH),
+            _trim_text((claim_row or {}).get("claim_text"), MAX_CLAIM_TEXT_LENGTH),
+        ]
+        if part
+    )
+    focus_tokens = _claim_tokens(focus_claim_text)
+    focus_phrases = _claim_phrases(focus_claim_text)
+    seed_text = _challenge_seed_text(enriched_seed)
+    seed_tokens = _claim_tokens(seed_text)
+    seed_phrases = _claim_phrases(seed_text)
+
+    semantic_queries = _build_stardust_semantic_queries(project_data, claim_row, evidence_row or {}, enriched_seed, payload.sub_target_thesis)
+    semantic_result_count = 0
+    for query in semantic_queries:
+        try:
+            semantic_results = _search_openalex_works(
+                query,
+                payload.openalex_api_key,
+                payload.contact_email,
+                MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY
+            )
+        except HTTPException as exc:
+            partial_failures.append({
+                "stage": "semantic_supplement",
+                "query": _trim_text(query, 140),
+                "detail": _trim_text(str(exc.detail), 200),
+            })
+            continue
+        semantic_result_count += len(semantic_results)
+        for work in semantic_results:
+            _register_stardust_candidate(
+                candidates_by_key,
+                signature_to_primary,
+                project_signature_set,
+                work,
+                discovery_source="semantic_supplement",
+                relationship_type="semantic_match",
+                hop_distance=3,
+                skipped=skipped,
+            )
+
+    hop1_reference_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
+        candidates_by_key,
+        signature_to_primary,
+        hop1_references,
+        "reference",
+    )
+    hop1_cited_by_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
+        candidates_by_key,
+        signature_to_primary,
+        hop1_cited_by,
+        "cited_by",
+    )
+
+    used_hop1_fallback = False
+    if creation_mode == "challenge_paper" and not candidates_by_key:
+        used_hop1_fallback = True
+        for relationship_type, works in (("reference", hop1_references), ("cited_by", hop1_cited_by)):
+            for work in works:
+                _register_stardust_candidate(
+                    candidates_by_key,
+                    signature_to_primary,
+                    project_signature_set,
+                    work,
+                    discovery_source="hop_1_fallback",
+                    relationship_type=relationship_type,
+                    hop_distance=1,
+                    skipped=skipped,
+                )
+
+    scored_candidates = [
+        _score_stardust_candidate(candidate, focus_claim_text, focus_tokens, focus_phrases, seed_tokens, seed_phrases, seed_context_label)
+        for candidate in candidates_by_key.values()
+    ]
+    scored_candidates.sort(
+        key=lambda item: (
+            float(item.get("challenge_score") or 0),
+            float(item.get("semantic_overlap") or 0),
+            float(item.get("claim_relevance") or 0),
+            float(item.get("seed_similarity") or 0),
+            float(item.get("quality_score") or 0),
+            _safe_int(item.get("citation_count"), 0)
+        ),
+        reverse=True
+    )
+    included_candidates = [item for item in scored_candidates if item.get("include")]
+    if not included_candidates:
+        included_candidates = [item for item in scored_candidates if float(item.get("challenge_score") or 0) >= 0.22]
+    if len(included_candidates) < payload.max_papers:
+        seen_candidate_ids = {id(item) for item in included_candidates}
+        for item in scored_candidates:
+            if id(item) in seen_candidate_ids:
+                continue
+            included_candidates.append(item)
+            seen_candidate_ids.add(id(item))
+            if len(included_candidates) >= payload.max_papers:
+                break
+    included_candidates = included_candidates[:payload.max_papers]
+    for item in included_candidates:
+        item.pop("include", None)
+        item.pop("_identity_signatures", None)
+        item.pop("_discovery_sources", None)
+        item.pop("_relationship_types", None)
+        item.pop("_matched_queries", None)
+
+    source_summary = {
+        "creation_mode": creation_mode,
+        "seed_claim_text": _trim_text(payload.seed_claim_text, MAX_CLAIM_TEXT_LENGTH) if creation_mode == "claim_only" else "",
+        "seed_label": _trim_text(payload.seed_claim_text, 220) if creation_mode == "claim_only" else _trim_text(enriched_seed.get("title"), 220),
+        "hop1_reference_count": len(hop1_references),
+        "hop1_cited_by_count": len(hop1_cited_by),
+        "semantic_query_count": len(semantic_queries),
+        "semantic_result_count": semantic_result_count,
+        "semantic_candidate_count": len(candidates_by_key),
+        "hop1_reference_overlap_count": hop1_reference_overlap_count,
+        "hop1_cited_by_overlap_count": hop1_cited_by_overlap_count,
+        "used_hop1_fallback": used_hop1_fallback,
+        "deduped_candidate_count": len(candidates_by_key),
+        "skipped_existing_count": int(skipped.get("existing_count") or 0),
+        "skipped_duplicate_count": int(skipped.get("duplicate_count") or 0),
+        "skipped_invalid_count": int(skipped.get("invalid_count") or 0),
+        "stored_count": len(included_candidates),
+        "partial_failures": partial_failures[:12],
+    }
+    return {
+        "seed_paper": enriched_seed,
+        "papers": included_candidates,
+        "source_summary": source_summary,
+    }
+
+def _default_claim_summary() -> dict:
+    return {stance: 0 for stance in sorted(CLAIM_STANCE_VALUES)}
+
+def _serialize_claim_evidence_row(row: dict) -> dict:
+    item = dict(row)
+    try:
+        item["evidence_snippets"] = json.loads(item.get("evidence_snippets_json") or "[]")
+    except Exception:
+        item["evidence_snippets"] = []
+    item.pop("evidence_snippets_json", None)
+    item["user_override"] = bool(item.get("user_override"))
+    item["pinned"] = bool(item.get("pinned"))
+    item["hidden"] = bool(item.get("hidden"))
+    return item
+
+def _create_claim_analysis_run(claim_id: int, project_id: int) -> int:
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO claim_analysis_runs (claim_id, project_id, candidate_count, analyzed_count, status, summary_json, error_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (claim_id, project_id, 0, 0, "running", "{}", "", now, now)
+    )
+    conn.commit()
+    run_id = int(cursor.lastrowid)
+    conn.close()
+    return run_id
+
+def _update_claim_analysis_run(run_id: int, **kwargs):
+    if not kwargs:
+        return
+    allowed = {"candidate_count", "analyzed_count", "status", "summary_json", "error_text", "updated_at"}
+    fields = []
+    params = []
+    for key, value in kwargs.items():
+        if key not in allowed:
+            continue
+        fields.append(f"{key} = ?")
+        params.append(value)
+    if not fields:
+        return
+    params.append(run_id)
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE claim_analysis_runs SET {', '.join(fields)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+def _stable_json_dumps(value) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+def _hash_cache_payload(value) -> str:
+    return hashlib.sha1(_stable_json_dumps(value).encode("utf-8")).hexdigest()
+
+def _claim_analysis_version(claim_row: dict) -> str:
+    return _trim_text((claim_row or {}).get("analysis_version"), MAX_CLAIM_ANALYSIS_VERSION_LENGTH) or "v1"
+
+def _llm_cache_model_name() -> str:
+    provider = (_env_value("STARMAP_LLM_PROVIDER", "groq") or "groq").lower()
+    if provider == "openai":
+        model = "gpt-4o-mini"
+    elif provider == "deepseek":
+        model = "deepseek-chat"
+    elif provider == "gemini":
+        model = GEMINI_MODEL
+    else:
+        model = "llama-3.1-8b-instant"
+    return f"{provider}:{model}"
+
+def _read_claim_cache_payload(table_name: str, cache_key: str, payload_column: str) -> Optional[str]:
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT {payload_column} AS payload FROM {table_name} WHERE cache_key = ?",
+        (cache_key,)
+    )
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(f"UPDATE {table_name} SET last_hit_at = ? WHERE cache_key = ?", (_now_ts(), cache_key))
+        conn.commit()
+    conn.close()
+    if not row:
+        return None
+    return row["payload"]
+
+def _write_claim_candidate_cache(cache_key: str, project_id: int, claim_id: int, analysis_version: str, payload_hash: str, candidate_json: str):
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''INSERT INTO claim_candidate_cache (cache_key, project_id, claim_id, analysis_version, payload_hash, candidate_json, created_at, last_hit_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(cache_key) DO UPDATE SET
+               analysis_version = excluded.analysis_version,
+               payload_hash = excluded.payload_hash,
+               candidate_json = excluded.candidate_json,
+               last_hit_at = excluded.last_hit_at''',
+        (cache_key, project_id, claim_id, analysis_version, payload_hash, candidate_json, now, now)
+    )
+    conn.commit()
+    conn.close()
+    _cleanup_claim_caches(force=False)
+
+def _write_claim_llm_batch_cache(cache_key: str, project_id: int, claim_id: int, analysis_version: str, model_name: str, payload_hash: str, response_json: str):
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''INSERT INTO claim_llm_batch_cache (cache_key, project_id, claim_id, analysis_version, model_name, payload_hash, response_json, created_at, last_hit_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(cache_key) DO UPDATE SET
+               analysis_version = excluded.analysis_version,
+               model_name = excluded.model_name,
+               payload_hash = excluded.payload_hash,
+               response_json = excluded.response_json,
+               last_hit_at = excluded.last_hit_at''',
+        (cache_key, project_id, claim_id, analysis_version, model_name, payload_hash, response_json, now, now)
+    )
+    conn.commit()
+    conn.close()
+    _cleanup_claim_caches(force=False)
+
+def _write_claim_snippet_cache(cache_key: str, project_id: int, claim_id: int, analysis_version: str, paper_key: str, payload_hash: str, snippet_json: str):
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''INSERT INTO claim_snippet_cache (cache_key, project_id, claim_id, analysis_version, paper_key, payload_hash, snippet_json, created_at, last_hit_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(cache_key) DO UPDATE SET
+               analysis_version = excluded.analysis_version,
+               paper_key = excluded.paper_key,
+               payload_hash = excluded.payload_hash,
+               snippet_json = excluded.snippet_json,
+               last_hit_at = excluded.last_hit_at''',
+        (cache_key, project_id, claim_id, analysis_version, paper_key, payload_hash, snippet_json, now, now)
+    )
+    conn.commit()
+    conn.close()
+    _cleanup_claim_caches(force=False)
+
+def _build_claim_candidate_cache_input(project_data: dict, claim_row: dict, include_statuses: List[str], max_candidates: int, prefer_fulltext: bool) -> dict:
+    papers = []
+    for paper in _load_project_top_papers(project_data):
+        papers.append({
+            "paper_key": _make_claim_paper_key(paper),
+            "title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+            "abstract": _trim_text(_compact_whitespace(paper.get("abstract")), 2400),
+            "notes": _trim_text(_compact_whitespace(paper.get("notes")), 1800),
+            "current_content": _trim_text(_compact_whitespace(paper.get("current_content")), 2800),
+            "status": _trim_text(paper.get("status"), 40),
+            "similarity": float(paper.get("similarity") or 0),
+            "citation_count": _safe_int(paper.get("citation_count"), 0),
+            "year": _trim_text(paper.get("year"), 20),
+            "authors": _trim_text(paper.get("authors"), MAX_PAPER_AUTHORS_LENGTH),
+            "publication_venue": _trim_text(paper.get("publication_venue"), 240),
+            "zotero_has_fulltext": bool(paper.get("zotero_has_fulltext")),
+            "citation_cluster_id": _trim_text(paper.get("citation_cluster_id"), 200),
+            "citation_cluster_theme_name": _trim_text(paper.get("citation_cluster_theme_name"), 240),
+            "citation_key": _trim_text(paper.get("citation_key"), 120),
+        })
+    papers.sort(key=lambda item: item["paper_key"])
+    return {
+        "analysis_version": _claim_analysis_version(claim_row),
+        "claim_id": int((claim_row or {}).get("id") or 0),
+        "claim_text": _trim_text((claim_row or {}).get("claim_text"), MAX_CLAIM_TEXT_LENGTH),
+        "claim_type": _trim_text((claim_row or {}).get("claim_type"), MAX_CLAIM_TYPE_LENGTH),
+        "section_label": _trim_text((claim_row or {}).get("section_label"), MAX_CLAIM_SECTION_LABEL_LENGTH),
+        "project_id": int(project_data.get("id") or 0),
+        "target_title": _trim_text(project_data.get("target_title"), MAX_TARGET_TITLE_LENGTH),
+        "target_abstract": _trim_text(_compact_whitespace(project_data.get("target_abstract")), 2400),
+        "target_current_content": _trim_text(_compact_whitespace(project_data.get("target_current_content")), 2800),
+        "include_statuses": sorted({str(status or "").strip().lower() for status in include_statuses if str(status or "").strip()}),
+        "max_candidates": int(max_candidates),
+        "prefer_fulltext": bool(prefer_fulltext),
+        "papers": papers,
+    }
+
+def _build_claim_classification_payload(candidates: List[dict]) -> List[dict]:
+    payload = []
+    for paper in candidates:
+        payload.append({
+            "paper_key": paper.get("paper_key"),
+            "title": _trim_text(paper.get("title"), 220),
+            "authors": _trim_text(paper.get("authors"), 260),
+            "year": _trim_text(paper.get("year"), 20),
+            "status": _trim_text(paper.get("status"), 30),
+            "citation_count": _safe_int(paper.get("citation_count"), 0),
+            "publication_venue": _trim_text(paper.get("publication_venue"), 180),
+            "abstract": _trim_text(_compact_whitespace(paper.get("abstract")), 1400),
+            "notes": _trim_text(_compact_whitespace(paper.get("notes")), 900),
+            "current_content": _trim_text(_compact_whitespace(paper.get("current_content")), 1800),
+        })
+    return payload
+
+def _build_claim_llm_batch_cache_input(project_data: dict, claim_row: dict, batch_payload: List[dict]) -> dict:
+    return {
+        "analysis_version": _claim_analysis_version(claim_row),
+        "model_name": _llm_cache_model_name(),
+        "project_id": int(project_data.get("id") or 0),
+        "claim_id": int((claim_row or {}).get("id") or 0),
+        "claim_text": _trim_text((claim_row or {}).get("claim_text"), MAX_CLAIM_TEXT_LENGTH),
+        "claim_type": _trim_text((claim_row or {}).get("claim_type"), MAX_CLAIM_TYPE_LENGTH),
+        "section_label": _trim_text((claim_row or {}).get("section_label"), MAX_CLAIM_SECTION_LABEL_LENGTH),
+        "target_title": _trim_text(project_data.get("target_title"), 300),
+        "target_abstract": _trim_text(_compact_whitespace(project_data.get("target_abstract")), 1800),
+        "target_current_content": _trim_text(_compact_whitespace(project_data.get("target_current_content")), 1800),
+        "papers": batch_payload,
+    }
+
+def _build_claim_snippet_cache_input(project_id: int, claim_row: dict, paper: dict, raw_snippet: str, preferred_stance: str) -> dict:
+    return {
+        "analysis_version": _claim_analysis_version(claim_row),
+        "project_id": int(project_id or 0),
+        "claim_id": int((claim_row or {}).get("id") or 0),
+        "claim_text": _trim_text((claim_row or {}).get("claim_text"), MAX_CLAIM_TEXT_LENGTH),
+        "paper_key": _trim_text(paper.get("paper_key"), 160),
+        "preferred_stance": _normalize_claim_stance(preferred_stance),
+        "raw_snippet": _trim_text(_compact_whitespace(raw_snippet), MAX_EVIDENCE_SNIPPET_TEXT_LENGTH),
+        "abstract": _trim_text(_compact_whitespace(paper.get("abstract")), 2400),
+        "current_content": _trim_text(_compact_whitespace(paper.get("current_content")), 3200),
+        "notes": _trim_text(_compact_whitespace(paper.get("notes")), 1800),
+    }
+
+def _claim_cache_usage_stats() -> dict:
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    stats = {"total_rows": 0, "total_bytes": 0, "tables": {}}
+    for table_name, payload_column in CACHE_PRIORITY_ORDER:
+        cursor.execute(
+            f"""SELECT
+                    COUNT(*) AS row_count,
+                    COALESCE(SUM(LENGTH(cache_key)), 0)
+                    + COALESCE(SUM(LENGTH(payload_hash)), 0)
+                    + COALESCE(SUM(LENGTH(analysis_version)), 0)
+                    + COALESCE(SUM(LENGTH({payload_column})), 0) AS approx_bytes
+                FROM {table_name}"""
+        )
+        row = cursor.fetchone()
+        row_count = int((row["row_count"] or 0) if row else 0)
+        approx_bytes = int((row["approx_bytes"] or 0) if row else 0)
+        if table_name == "claim_llm_batch_cache":
+            cursor.execute(f"SELECT COALESCE(SUM(LENGTH(model_name)), 0) AS extra_bytes FROM {table_name}")
+            extra = cursor.fetchone()
+            approx_bytes += int((extra["extra_bytes"] or 0) if extra else 0)
+        elif table_name == "claim_snippet_cache":
+            cursor.execute(f"SELECT COALESCE(SUM(LENGTH(paper_key)), 0) AS extra_bytes FROM {table_name}")
+            extra = cursor.fetchone()
+            approx_bytes += int((extra["extra_bytes"] or 0) if extra else 0)
+        stats["tables"][table_name] = {"rows": row_count, "bytes": approx_bytes}
+        stats["total_rows"] += row_count
+        stats["total_bytes"] += approx_bytes
+    conn.close()
+    return stats
+
+def _delete_oldest_claim_cache_rows(table_name: str, delete_count: int) -> int:
+    if delete_count <= 0:
+        return 0
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""DELETE FROM {table_name}
+            WHERE cache_key IN (
+                SELECT cache_key
+                FROM {table_name}
+                ORDER BY last_hit_at ASC, created_at ASC, cache_key ASC
+                LIMIT ?
+            )""",
+        (int(delete_count),)
+    )
+    deleted = int(cursor.rowcount or 0)
+    conn.commit()
+    conn.close()
+    return deleted
+
+def _cleanup_claim_caches(force: bool = False) -> dict:
+    now = _now_ts()
+    if not force and (now - int(CLAIM_CACHE_MAINTENANCE.get("last_checked_at") or 0)) < CACHE_CLEANUP_MIN_INTERVAL_SECONDS:
+        return {"skipped": True}
+
+    CLAIM_CACHE_MAINTENANCE["last_checked_at"] = now
+    before = _claim_cache_usage_stats()
+    if (
+        before["total_bytes"] <= CACHE_SOFT_LIMIT_BYTES
+        and before["total_rows"] <= CACHE_ROW_LIMIT
+        and not force
+    ):
+        return {"skipped": True, "stats": before}
+
+    target_bytes = CACHE_TARGET_LIMIT_BYTES if before["total_bytes"] > CACHE_SOFT_LIMIT_BYTES else before["total_bytes"]
+    target_rows = CACHE_TARGET_ROW_LIMIT if before["total_rows"] > CACHE_ROW_LIMIT else before["total_rows"]
+    if before["total_bytes"] > CACHE_HARD_LIMIT_BYTES:
+        target_bytes = min(target_bytes, CACHE_TARGET_LIMIT_BYTES)
+    deleted_by_table = {}
+
+    for table_name, _payload_column in CACHE_PRIORITY_ORDER:
+        current = _claim_cache_usage_stats()
+        if current["total_bytes"] <= target_bytes and current["total_rows"] <= target_rows:
+            break
+        table_rows = int((current["tables"].get(table_name) or {}).get("rows") or 0)
+        if table_rows <= 0:
+            continue
+        overflow_rows = max(current["total_rows"] - target_rows, 0)
+        delete_count = min(
+            table_rows,
+            max(CACHE_CLEANUP_BATCH_SIZE, overflow_rows, math.ceil(table_rows * 0.2))
+        )
+        deleted = _delete_oldest_claim_cache_rows(table_name, delete_count)
+        if deleted > 0:
+            deleted_by_table[table_name] = deleted_by_table.get(table_name, 0) + deleted
+
+    after = _claim_cache_usage_stats()
+    return {
+        "skipped": False,
+        "before": before,
+        "after": after,
+        "deleted_by_table": deleted_by_table,
+    }
+
 async def _require_session(request: Request):
     token = request.headers.get("X-Session-Token", "").strip()
     if not token:
@@ -841,6 +3283,428 @@ def _get_owned_project(project_id: int, user_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Project not found.")
     return dict(row)
+
+def _get_owned_claim(project_id: int, claim_id: int, user_id: int) -> dict:
+    _get_owned_project(project_id, user_id)
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM project_claims WHERE id = ? AND project_id = ?",
+        (claim_id, project_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Claim not found.")
+    return dict(row)
+
+def _normalize_stardust_status(raw_status: Optional[str]) -> str:
+    value = _trim_text(raw_status or "draft", MAX_STARDUST_STATUS_LENGTH).lower() or "draft"
+    return value if value in STARDUST_STATUS_VALUES else "draft"
+
+def _normalize_stardust_graph_mode(raw_mode: Optional[str]) -> str:
+    value = _trim_text(raw_mode or "directed", 40).lower() or "directed"
+    return value if value in STARDUST_GRAPH_MODE_VALUES else "directed"
+
+def _normalize_stardust_creation_mode(raw_mode: Optional[str]) -> str:
+    value = _trim_text(raw_mode or "challenge_paper", 40).lower() or "challenge_paper"
+    return value if value in {"challenge_paper", "claim_only"} else "challenge_paper"
+
+def _validate_stardust_create_payload(payload: ChallengeStardustCreateRequest) -> ChallengeStardustCreateRequest:
+    payload.claim_id = max(1, int(payload.claim_id or 0))
+    payload.mode = _normalize_stardust_creation_mode(payload.mode)
+    payload.seed_evidence_id = max(0, int(payload.seed_evidence_id or 0))
+    payload.seed_claim_text = _trim_text(payload.seed_claim_text, MAX_CLAIM_TEXT_LENGTH)
+    if payload.seed_claim_text and payload.seed_evidence_id <= 0:
+        payload.mode = "claim_only"
+    payload.name = _trim_text(payload.name, MAX_STARDUST_NAME_LENGTH)
+    payload.sub_target_thesis = _trim_text(payload.sub_target_thesis, MAX_SUB_TARGET_THESIS_LENGTH)
+    payload.replace_stardust_id = int(payload.replace_stardust_id) if payload.replace_stardust_id else None
+    payload.max_papers = max(10, min(int(payload.max_papers or MAX_STARDUST_PAPERS), MAX_STARDUST_PAPERS))
+    if not payload.name:
+        raise HTTPException(status_code=400, detail="Stardust name cannot be empty.")
+    if not payload.sub_target_thesis:
+        raise HTTPException(status_code=400, detail="Sub target thesis cannot be empty.")
+    if payload.mode == "challenge_paper" and payload.seed_evidence_id <= 0:
+        raise HTTPException(status_code=400, detail="A seed challenge paper is required for this Stardust mode.")
+    if payload.mode == "claim_only" and not payload.seed_claim_text:
+        raise HTTPException(status_code=400, detail="A seed claim is required for claim-seed Stardust mode.")
+    return _apply_runtime_defaults_to_lookup(payload)
+
+def _validate_stardust_update_payload(payload: ChallengeStardustUpdateRequest) -> ChallengeStardustUpdateRequest:
+    if payload.name is not None:
+        payload.name = _trim_text(payload.name, MAX_STARDUST_NAME_LENGTH)
+        if not payload.name:
+            raise HTTPException(status_code=400, detail="Stardust name cannot be empty.")
+    if payload.sub_target_thesis is not None:
+        payload.sub_target_thesis = _trim_text(payload.sub_target_thesis, MAX_SUB_TARGET_THESIS_LENGTH)
+        if not payload.sub_target_thesis:
+            raise HTTPException(status_code=400, detail="Sub target thesis cannot be empty.")
+    if payload.status is not None:
+        payload.status = _normalize_stardust_status(payload.status)
+    return payload
+
+def _validate_stardust_graph_build_payload(payload: ChallengeStardustGraphBuildRequest) -> ChallengeStardustGraphBuildRequest:
+    payload.mode = _normalize_stardust_graph_mode(payload.mode)
+    payload.force_rebuild = bool(payload.force_rebuild)
+    return _apply_runtime_defaults_to_lookup(payload)
+
+def _serialize_stardust_seed_summary(conn: sqlite3.Connection, stardust_row: dict) -> Optional[dict]:
+    seed_evidence_id = int(stardust_row.get("seed_evidence_id") or 0)
+    if not seed_evidence_id:
+        return None
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, paper_key, paper_title, paper_year, paper_authors, citation_key, stance, why_matched, caveat FROM claim_evidence_items WHERE id = ?",
+        (seed_evidence_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["stance"] = _normalize_claim_stance(item.get("stance"))
+    return item
+
+def _serialize_stardust_claim_summary(conn: sqlite3.Connection, stardust_row: dict) -> Optional[dict]:
+    claim_id = int(stardust_row.get("claim_id") or 0)
+    if not claim_id:
+        return None
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, claim_text, claim_type, section_label, status, analysis_version, created_at, updated_at FROM project_claims WHERE id = ?",
+        (claim_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    claim = dict(row)
+    claim["claim_type"] = _normalize_claim_type(claim.get("claim_type"))
+    claim["status"] = _normalize_claim_status(claim.get("status"))
+    return claim
+
+def _serialize_stardust_graph_summaries(conn: sqlite3.Connection, stardust_id: int) -> List[dict]:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, graph_mode, graph_signature, created_at, updated_at FROM challenge_stardust_graph_cache WHERE stardust_id = ? ORDER BY updated_at DESC, id DESC",
+        (stardust_id,)
+    )
+    return [
+        {
+            "id": int(row["id"]),
+            "graph_mode": _normalize_stardust_graph_mode(row["graph_mode"]),
+            "graph_signature": row["graph_signature"] or "",
+            "created_at": int(row["created_at"] or 0),
+            "updated_at": int(row["updated_at"] or 0),
+        }
+        for row in cursor.fetchall()
+    ]
+
+def _serialize_stardust_row(conn: sqlite3.Connection, row: dict, include_children: bool = False) -> dict:
+    item = dict(row)
+    item["status"] = _normalize_stardust_status(item.get("status"))
+    item["paper_count"] = int(item.get("paper_count") or 0)
+    try:
+        item["source_summary"] = json.loads(item.get("source_summary_json") or "{}")
+    except Exception:
+        item["source_summary"] = {}
+    item.pop("source_summary_json", None)
+    item["creation_mode"] = _normalize_stardust_creation_mode(
+        item.get("source_summary", {}).get("creation_mode") or ("challenge_paper" if int(item.get("seed_evidence_id") or 0) > 0 else "claim_only")
+    )
+    item["seed"] = _serialize_stardust_seed_summary(conn, item)
+    item["claim"] = _serialize_stardust_claim_summary(conn, item)
+    item["graphs"] = _serialize_stardust_graph_summaries(conn, int(item.get("id") or 0))
+    if include_children:
+        item["papers"] = _load_stardust_papers(conn, int(item.get("id") or 0))
+    return item
+
+def _serialize_stardust_paper_row(row: dict) -> dict:
+    item = dict(row)
+    try:
+        item["referenced_openalex_ids"] = json.loads(item.get("referenced_openalex_ids_json") or "[]")
+    except Exception:
+        item["referenced_openalex_ids"] = []
+    item.pop("referenced_openalex_ids_json", None)
+    item["selected_for_import"] = bool(item.get("selected_for_import"))
+    item["hidden"] = bool(item.get("hidden"))
+    item["hop_distance"] = int(item.get("hop_distance") or 0)
+    return item
+
+def _load_stardust_papers(conn: sqlite3.Connection, stardust_id: int, include_hidden: bool = True) -> List[dict]:
+    cursor = conn.cursor()
+    if include_hidden:
+        cursor.execute(
+            "SELECT * FROM challenge_stardust_papers WHERE stardust_id = ? ORDER BY challenge_score DESC, citation_count DESC, id DESC",
+            (stardust_id,)
+        )
+    else:
+        cursor.execute(
+            "SELECT * FROM challenge_stardust_papers WHERE stardust_id = ? AND hidden = 0 ORDER BY challenge_score DESC, citation_count DESC, id DESC",
+            (stardust_id,)
+        )
+    return [_serialize_stardust_paper_row(dict(row)) for row in cursor.fetchall()]
+
+def _get_owned_stardust(project_id: int, stardust_id: int, user_id: int) -> dict:
+    _get_owned_project(project_id, user_id)
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM challenge_stardusts WHERE id = ? AND project_id = ?",
+        (stardust_id, project_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Challenge Stardust not found.")
+    return dict(row)
+
+def _delete_stardust_records(conn: sqlite3.Connection, stardust_id: int):
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM challenge_stardust_graph_cache WHERE stardust_id = ?", (stardust_id,))
+    cursor.execute("DELETE FROM challenge_stardust_papers WHERE stardust_id = ?", (stardust_id,))
+    cursor.execute("DELETE FROM challenge_stardusts WHERE id = ?", (stardust_id,))
+
+def _insert_stardust_papers(conn: sqlite3.Connection, stardust_id: int, papers: List[dict]):
+    if not papers:
+        return
+    cursor = conn.cursor()
+    now = _now_ts()
+    rows = []
+    for paper in papers:
+        rows.append((
+            stardust_id,
+            _trim_text(paper.get("paper_key"), 300),
+            _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+            _trim_text(paper.get("abstract"), MAX_PAPER_ABSTRACT_LENGTH),
+            _trim_text(paper.get("current_content"), MAX_PAPER_CURRENT_CONTENT_LENGTH),
+            _trim_text(paper.get("authors"), MAX_PAPER_AUTHORS_LENGTH),
+            _trim_text(paper.get("year"), 40),
+            _clean_doi(paper.get("doi")),
+            _trim_text(paper.get("openalex_id"), 300),
+            _trim_text(paper.get("paper_url"), 1000),
+            _trim_text(paper.get("source_url"), 1000),
+            _trim_text(paper.get("publication_venue"), 300),
+            _safe_int(paper.get("citation_count"), 0),
+            json.dumps(paper.get("referenced_openalex_ids") or [], ensure_ascii=False),
+            _trim_text(paper.get("relationship_type"), 120),
+            _trim_text(paper.get("discovery_source"), 120),
+            max(0, min(_safe_int(paper.get("hop_distance"), 0), 9)),
+            round(max(0.0, min(float(paper.get("challenge_score") or 0), 1.0)), 4),
+            round(max(0.0, min(float(paper.get("seed_similarity") or 0), 1.0)), 4),
+            round(max(0.0, min(float(paper.get("claim_relevance") or 0), 1.0)), 4),
+            round(max(0.0, min(float(paper.get("quality_score") or 0), 1.0)), 4),
+            _trim_text(paper.get("why_matched"), MAX_EVIDENCE_WHY_MATCHED_LENGTH),
+            _trim_text(paper.get("caveat"), MAX_EVIDENCE_CAVEAT_LENGTH),
+            0,
+            0,
+            now,
+            now,
+        ))
+    cursor.executemany(
+        '''INSERT INTO challenge_stardust_papers (
+            stardust_id, paper_key, title, abstract, current_content, authors, year, doi,
+            openalex_id, paper_url, source_url, publication_venue, citation_count,
+            referenced_openalex_ids_json, relationship_type, discovery_source, hop_distance,
+            challenge_score, seed_similarity, claim_relevance, quality_score, why_matched,
+            caveat, selected_for_import, hidden, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        rows
+    )
+
+def _stardust_paper_to_paper_item(paper: dict) -> PaperItem:
+    return PaperItem(
+        filename=_trim_text(paper.get("paper_key") or f"stardust-paper-{paper.get('id') or uuid.uuid4().hex}", 300),
+        title=_trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+        abstract=_trim_text(paper.get("abstract"), MAX_PAPER_ABSTRACT_LENGTH),
+        current_content=_trim_text(paper.get("current_content"), MAX_PAPER_CURRENT_CONTENT_LENGTH),
+        authors=_trim_text(paper.get("authors"), MAX_PAPER_AUTHORS_LENGTH) or "Unknown",
+        year=_trim_text(paper.get("year"), 40) or "Unknown",
+        similarity=float(paper.get("challenge_score") or 0),
+        status="Unread",
+        doi=_clean_doi(paper.get("doi")),
+        paper_url=_trim_text(paper.get("paper_url"), 1000),
+        publication_venue=_trim_text(paper.get("publication_venue"), 300),
+        citation_count=_safe_int(paper.get("citation_count"), 0),
+        openalex_id=_trim_text(paper.get("openalex_id"), 300),
+        referenced_openalex_ids=list(paper.get("referenced_openalex_ids") or []),
+        source_url=_trim_text(paper.get("source_url"), 1000),
+        import_source="challenge_stardust",
+    )
+
+def _update_stardust_paper_graph_metadata(conn: sqlite3.Connection, stardust_id: int, paper: dict):
+    paper_id = int(paper.get("id") or 0)
+    if not paper_id:
+        return
+    cursor = conn.cursor()
+    cursor.execute(
+        '''UPDATE challenge_stardust_papers SET
+               doi = ?, openalex_id = ?, paper_url = ?, source_url = ?, publication_venue = ?,
+               citation_count = ?, referenced_openalex_ids_json = ?, updated_at = ?
+           WHERE id = ? AND stardust_id = ?''',
+        (
+            _clean_doi(paper.get("doi")),
+            _trim_text(paper.get("openalex_id"), 300),
+            _trim_text(paper.get("paper_url"), 1000),
+            _trim_text(paper.get("source_url"), 1000),
+            _trim_text(paper.get("publication_venue"), 300),
+            _safe_int(paper.get("citation_count"), 0),
+            json.dumps(paper.get("referenced_openalex_ids") or [], ensure_ascii=False),
+            _now_ts(),
+            paper_id,
+            stardust_id,
+        )
+    )
+
+def _build_stardust_graph_signature(papers: List[dict], mode: str) -> str:
+    payload = [
+        {
+            "paper_key": _trim_text(paper.get("paper_key"), 300),
+            "title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
+            "openalex_id": _trim_text(paper.get("openalex_id"), 300),
+            "citation_count": _safe_int(paper.get("citation_count"), 0),
+            "referenced_openalex_ids": sorted([
+                _trim_text(value, 300)
+                for value in (paper.get("referenced_openalex_ids") or [])
+                if _trim_text(value, 300)
+            ]),
+        }
+        for paper in sorted(
+            papers or [],
+            key=lambda item: (
+                _trim_text(item.get("paper_key"), 300),
+                _trim_text(item.get("openalex_id"), 300),
+                _trim_text(item.get("title"), MAX_PAPER_TITLE_LENGTH)
+            )
+        )
+    ]
+    return hashlib.sha1(_stable_json_dumps({"mode": _normalize_stardust_graph_mode(mode), "papers": payload}).encode("utf-8")).hexdigest()
+
+def _load_stardust_graph_cache(conn: sqlite3.Connection, stardust_id: int, mode: str) -> Optional[dict]:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM challenge_stardust_graph_cache WHERE stardust_id = ? AND graph_mode = ?",
+        (stardust_id, _normalize_stardust_graph_mode(mode))
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    try:
+        nodes = json.loads(item.get("nodes_json") or "[]")
+    except Exception:
+        nodes = []
+    try:
+        edges = json.loads(item.get("edges_json") or "[]")
+    except Exception:
+        edges = []
+    try:
+        meta = json.loads(item.get("meta_json") or "{}")
+    except Exception:
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["mode"] = _normalize_stardust_graph_mode(item.get("graph_mode"))
+    meta["graph_signature"] = item.get("graph_signature") or ""
+    return {
+        "id": int(item.get("id") or 0),
+        "graph_mode": meta["mode"],
+        "graph_signature": item.get("graph_signature") or "",
+        "nodes": nodes if isinstance(nodes, list) else [],
+        "edges": edges if isinstance(edges, list) else [],
+        "meta": meta,
+        "created_at": int(item.get("created_at") or 0),
+        "updated_at": int(item.get("updated_at") or 0),
+    }
+
+def _upsert_stardust_graph_cache(conn: sqlite3.Connection, stardust_id: int, mode: str, signature: str, nodes: List[dict], edges: List[dict], meta: dict):
+    normalized_mode = _normalize_stardust_graph_mode(mode)
+    now = _now_ts()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''INSERT INTO challenge_stardust_graph_cache (
+               stardust_id, graph_mode, graph_signature, nodes_json, edges_json, meta_json, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(stardust_id, graph_mode) DO UPDATE SET
+               graph_signature = excluded.graph_signature,
+               nodes_json = excluded.nodes_json,
+               edges_json = excluded.edges_json,
+               meta_json = excluded.meta_json,
+               updated_at = excluded.updated_at''',
+        (
+            stardust_id,
+            normalized_mode,
+            signature,
+            json.dumps(nodes, ensure_ascii=False),
+            json.dumps(edges, ensure_ascii=False),
+            json.dumps(meta, ensure_ascii=False),
+            now,
+            now,
+        )
+    )
+    cursor.execute(
+        "UPDATE challenge_stardusts SET graph_cache_signature = ?, updated_at = ? WHERE id = ?",
+        (signature, now, stardust_id)
+    )
+
+def _build_stardust_graph_result(enriched_papers: List[dict], mode: str, partial_failures: Optional[List[dict]] = None) -> dict:
+    normalized_mode = _normalize_stardust_graph_mode(mode)
+    base_result = _build_citation_graph_result(enriched_papers)
+    full_edges = list(base_result.get("edges") or [])
+    edge_lookup = {
+        (str(edge.get("source") or "").strip(), str(edge.get("target") or "").strip())
+        for edge in full_edges
+        if str(edge.get("source") or "").strip() and str(edge.get("target") or "").strip()
+    }
+    mutual_pairs: Dict[Tuple[str, str], dict] = {}
+    directed_only_edges: List[dict] = []
+    for edge in full_edges:
+        source = str(edge.get("source") or "").strip()
+        target = str(edge.get("target") or "").strip()
+        if not source or not target or source == target:
+            continue
+        reverse_key = (target, source)
+        if reverse_key in edge_lookup:
+            pair_key = tuple(sorted([source, target]))
+            if pair_key not in mutual_pairs:
+                mutual_pairs[pair_key] = {
+                    "source": pair_key[0],
+                    "target": pair_key[1],
+                    "relationship": "mutual",
+                }
+        else:
+            directed_only_edges.append({
+                **edge,
+                "relationship": "directed"
+            })
+
+    if normalized_mode == "mutual":
+        display_edges = list(mutual_pairs.values())
+    elif normalized_mode == "full":
+        display_edges = [
+            {
+                **edge,
+                "relationship": "mutual_member" if tuple(sorted([str(edge.get("source") or "").strip(), str(edge.get("target") or "").strip()])) in mutual_pairs else "directed"
+            }
+            for edge in full_edges
+        ]
+    else:
+        display_edges = directed_only_edges
+
+    stats = {
+        **(base_result.get("stats") or {}),
+        "mode": normalized_mode,
+        "full_edge_count": len(full_edges),
+        "directed_only_edge_count": len(directed_only_edges),
+        "mutual_pair_count": len(mutual_pairs),
+        "edge_count": len(display_edges),
+        "partial_failures": (partial_failures or [])[:12],
+    }
+    return {
+        "mode": normalized_mode,
+        "nodes": enriched_papers,
+        "edges": display_edges,
+        "stats": stats,
+    }
 
 async def _acquire_project_task_lock(project_id: int, task_name: str):
     key = f"{project_id}:{task_name}"
@@ -952,6 +3816,19 @@ class CitationGraphJobCreated(BaseModel):
     job_id: str
     status: str
 
+class SemanticClusterRequest(BaseModel):
+    project_id: int = 0
+    target_title: str = ""
+    target_abstract: str = ""
+    target_current_content: str = ""
+    papers: List[PaperItem]
+    seed_limit: int = SEMANTIC_CLUSTER_SEED_LIMIT
+    assignment_limit: int = MAX_TOP_PAPERS
+
+class SemanticClusterJobCreated(BaseModel):
+    job_id: str
+    status: str
+
 class ZoteroSyncRequest(BaseModel):
     zotero_user_id: str
     zotero_api_key: str = ""
@@ -974,6 +3851,40 @@ class ZoteroHydrateRequest(BaseModel):
     papers: List[PaperItem]
     zotero_user_id: str = ""
     zotero_api_key: str = ""
+
+class ReadPaperMarkedPassage(BaseModel):
+    page: int = 1
+    excerpt: str = ""
+    context: str = ""
+    mark_type: str = "default"
+    mark_color: str = "yellow"
+    user_note: str = ""
+    user_question: str = ""
+    interpretation: str = ""
+    critique: str = ""
+    next_check: str = ""
+    question_answer: str = ""
+    area: Dict[str, Any] = Field(default_factory=dict)
+
+class ReadPaperPaperLevelExport(BaseModel):
+    user_question: str = ""
+    deep_read_summary: str = ""
+    user_question_answer: str = ""
+    threats_to_validity: List[Dict[str, Any]] = Field(default_factory=list)
+    external_validity_limits: List[Dict[str, Any]] = Field(default_factory=list)
+    design_vulnerabilities: List[Dict[str, Any]] = Field(default_factory=list)
+    improvement_opportunities: List[Dict[str, Any]] = Field(default_factory=list)
+    questions_to_press: List[str] = Field(default_factory=list)
+
+class ReadPaperZoteroExportRequest(BaseModel):
+    paper: PaperItem
+    pdf_base64: str
+    pdf_filename: str = ""
+    zotero_user_id: str = ""
+    zotero_api_key: str = ""
+    collection_key: str = ""
+    marked_passages: List[ReadPaperMarkedPassage] = Field(default_factory=list)
+    paper_level: Optional[ReadPaperPaperLevelExport] = None
 
 class BibtexExportRequest(BaseModel):
     title: str = ""
@@ -999,6 +3910,12 @@ class LlmProxyRequest(BaseModel):
     temperature: float = 0.2
     json_mode: bool = False
 
+class LlmVisionRequest(BaseModel):
+    prompt: str
+    image_data_url: str
+    temperature: float = 0.2
+    json_mode: bool = False
+
 class LiteratureWatchJournalSource(BaseModel):
     id: str = ""
     display_name: str = ""
@@ -1017,6 +3934,66 @@ class LiteratureWatchRequest(BaseModel):
     scholar_names: List[str] = Field(default_factory=list)
     journal_sources: List[LiteratureWatchJournalSource] = Field(default_factory=list)
 
+class ClaimCreateRequest(BaseModel):
+    claim_text: str
+    claim_type: str = "thesis_claim"
+    section_label: str = ""
+
+class ClaimAnalyzeRequest(BaseModel):
+    max_candidates: int = 36
+    reanalyze_overrides: bool = False
+    include_statuses: List[str] = Field(default_factory=lambda: ["Core", "Pending", "Underweight", "Unread"])
+    prefer_fulltext: bool = True
+
+class ClaimEvidencePatchRequest(BaseModel):
+    stance: Optional[str] = None
+    pinned: Optional[bool] = None
+    hidden: Optional[bool] = None
+    user_override: Optional[bool] = None
+    why_matched: Optional[str] = None
+    caveat: Optional[str] = None
+
+class ChallengeStardustCreateRequest(BaseModel):
+    claim_id: int
+    mode: str = "challenge_paper"
+    seed_evidence_id: int = 0
+    seed_claim_text: str = ""
+    name: str
+    sub_target_thesis: str
+    replace_stardust_id: Optional[int] = None
+    max_papers: int = MAX_STARDUST_PAPERS
+    openalex_api_key: str = ""
+    contact_email: str = ""
+
+class ChallengeStardustUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    sub_target_thesis: Optional[str] = None
+    status: Optional[str] = None
+
+class ChallengeStardustPaperPatchRequest(BaseModel):
+    selected_for_import: Optional[bool] = None
+    hidden: Optional[bool] = None
+
+class ChallengeStardustGraphBuildRequest(BaseModel):
+    mode: str = "directed"
+    force_rebuild: bool = False
+    openalex_api_key: str = ""
+    contact_email: str = ""
+
+class ChallengeExpansionRequest(BaseModel):
+    evidence_id: int
+    max_references: int = MAX_CHALLENGE_EXPANSION_REFERENCES
+    max_cited_by: int = MAX_CHALLENGE_EXPANSION_CITED_BY
+    max_results: int = MAX_CHALLENGE_EXPANSION_RESULTS
+    openalex_api_key: str = ""
+    contact_email: str = ""
+
+class ReadPaperAnalyzeRequest(BaseModel):
+    selection_type: str = "paper"
+    selection_label: str = ""
+    papers: List[PaperItem]
+    user_question: str = ""
+
 def _clean_doi(raw_value: Optional[str]) -> str:
     if not raw_value:
         return ""
@@ -1029,6 +4006,13 @@ def _apply_runtime_defaults_to_lookup(payload):
     payload.openalex_api_key = _trim_text(payload.openalex_api_key or _env_value("STARMAP_OPENALEX_API_KEY"), 300)
     payload.contact_email = _trim_text(payload.contact_email or _env_value("STARMAP_CONTACT_EMAIL"), MAX_LOOKUP_EMAIL_LENGTH)
     return payload
+
+def _validate_challenge_expansion_payload(payload: ChallengeExpansionRequest) -> ChallengeExpansionRequest:
+    payload.evidence_id = max(1, int(payload.evidence_id or 0))
+    payload.max_references = max(4, min(int(payload.max_references or MAX_CHALLENGE_EXPANSION_REFERENCES), 20))
+    payload.max_cited_by = max(4, min(int(payload.max_cited_by or MAX_CHALLENGE_EXPANSION_CITED_BY), 20))
+    payload.max_results = max(4, min(int(payload.max_results or MAX_CHALLENGE_EXPANSION_RESULTS), 20))
+    return _apply_runtime_defaults_to_lookup(payload)
 
 def _tokenize_literature_watch_text(value: str) -> List[str]:
     return [
@@ -1219,6 +4203,489 @@ def _build_watch_fallback_strategy(context: dict) -> dict:
         "queries": queries[:6],
         "discipline": discipline.get("label", "")
     }
+
+def _semantic_cluster_hash(text: str) -> int:
+    return int(hashlib.md5(str(text or "").encode("utf-8")).hexdigest(), 16)
+
+def _semantic_cluster_tokenize(text: str) -> List[str]:
+    normalized = unicodedata.normalize("NFKD", str(text or "").lower())
+    tokens = re.findall(r"[a-z0-9]+", normalized)
+    return [token for token in tokens if len(token) >= 3 and token not in SEMANTIC_CLUSTER_STOPWORDS]
+
+def _semantic_cluster_add_weighted_terms(container: Dict[str, float], text: str, weight: float, *, include_bigrams: bool = True):
+    tokens = _semantic_cluster_tokenize(text)
+    if not tokens:
+        return
+    for token in tokens:
+        container[token] = container.get(token, 0.0) + weight
+    if include_bigrams and len(tokens) > 1:
+        for index in range(len(tokens) - 1):
+            bigram = f"{tokens[index]} {tokens[index + 1]}"
+            container[bigram] = container.get(bigram, 0.0) + (weight * 1.15)
+
+def _build_semantic_cluster_term_weights(paper: dict) -> Dict[str, float]:
+    weighted_terms: Dict[str, float] = {}
+    title = str((paper or {}).get("title") or "").strip()
+    abstract = str((paper or {}).get("abstract") or "").strip()
+    current_content = str((paper or {}).get("current_content") or "").strip()[:SEMANTIC_CLUSTER_CURRENT_CONTENT_LIMIT]
+    _semantic_cluster_add_weighted_terms(weighted_terms, title, 3.0, include_bigrams=True)
+    _semantic_cluster_add_weighted_terms(weighted_terms, abstract, 1.8, include_bigrams=True)
+    _semantic_cluster_add_weighted_terms(weighted_terms, current_content, 0.9, include_bigrams=False)
+    return weighted_terms
+
+def _normalize_vector(values: List[float]) -> List[float]:
+    norm = math.sqrt(sum(value * value for value in values)) or 1.0
+    return [value / norm for value in values]
+
+def _average_vectors(vectors: List[List[float]]) -> List[float]:
+    if not vectors:
+        return []
+    length = len(vectors[0])
+    sums = [0.0] * length
+    for vector in vectors:
+        for index, value in enumerate(vector):
+            sums[index] += value
+    return _normalize_vector([value / len(vectors) for value in sums])
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    if not a or not b:
+        return 0.0
+    length = min(len(a), len(b))
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for index in range(length):
+        dot += a[index] * b[index]
+        norm_a += a[index] * a[index]
+        norm_b += b[index] * b[index]
+    if norm_a <= 0 or norm_b <= 0:
+        return 0.0
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+
+def _hash_weighted_terms_to_vector(weighted_terms: Dict[str, float], document_frequency: Dict[str, int], total_docs: int, vector_dim: int = SEMANTIC_CLUSTER_TEXT_VECTOR_DIM) -> List[float]:
+    vector = [0.0] * vector_dim
+    for term, weight in weighted_terms.items():
+        df = document_frequency.get(term, 1)
+        idf = math.log((total_docs + 1) / (df + 1)) + 1.0
+        bucket_hash = _semantic_cluster_hash(term)
+        bucket = bucket_hash % vector_dim
+        sign = 1.0 if ((_semantic_cluster_hash(f"sign::{term}") & 1) == 0) else -1.0
+        vector[bucket] += weight * idf * sign
+    return _normalize_vector(vector)
+
+def _get_cluster_size_list(assignments: List[int], cluster_count: int) -> List[int]:
+    sizes = [0] * cluster_count
+    for index in assignments:
+        if 0 <= index < cluster_count:
+            sizes[index] += 1
+    return sizes
+
+def _assign_vectors_to_centroids(vectors: List[List[float]], centroids: List[List[float]]) -> List[int]:
+    assignments: List[int] = []
+    for vector in vectors:
+        best_index = 0
+        best_score = float("-inf")
+        for index, centroid in enumerate(centroids):
+            score = _cosine_similarity(vector, centroid)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        assignments.append(best_index)
+    return assignments
+
+def _assign_vectors_to_centroids_with_scores(vectors: List[List[float]], centroids: List[List[float]]) -> List[dict]:
+    results: List[dict] = []
+    for vector in vectors:
+        best_index = 0
+        best_score = float("-inf")
+        for index, centroid in enumerate(centroids):
+            score = _cosine_similarity(vector, centroid)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        results.append({"clusterIndex": best_index, "score": best_score})
+    return results
+
+def _recalculate_centroids(vectors: List[List[float]], assignments: List[int], cluster_count: int, fallback_centroids: List[List[float]]) -> List[List[float]]:
+    centroids: List[List[float]] = []
+    for cluster_index in range(cluster_count):
+        members = [vector for vector_index, vector in enumerate(vectors) if assignments[vector_index] == cluster_index]
+        centroids.append(_average_vectors(members) if members else fallback_centroids[cluster_index])
+    return centroids
+
+def _initialize_kmeans_plus_plus(vectors: List[List[float]], cluster_count: int, seed_offset: int = 0) -> List[List[float]]:
+    if not vectors:
+        return []
+    first_index = _semantic_cluster_hash(f"{seed_offset}:{len(vectors)}") % len(vectors)
+    centroid_indices = [first_index]
+    while len(centroid_indices) < cluster_count:
+        best_index = 0
+        best_distance = float("-inf")
+        for index, vector in enumerate(vectors):
+            if index in centroid_indices:
+                continue
+            nearest_similarity = max(_cosine_similarity(vector, vectors[centroid_index]) for centroid_index in centroid_indices)
+            distance = 1.0 - nearest_similarity
+            jitter = ((_semantic_cluster_hash(f"{seed_offset}:{index}") % 997) / 997000.0)
+            if distance + jitter > best_distance:
+                best_distance = distance + jitter
+                best_index = index
+        centroid_indices.append(best_index)
+    return [vectors[index] for index in centroid_indices]
+
+def _rebalance_undersized_clusters(vectors: List[List[float]], assignments: List[int], centroids: List[List[float]], min_size: int = SEMANTIC_CLUSTER_MIN_SIZE) -> Tuple[List[int], List[List[float]]]:
+    cluster_count = len(centroids)
+    if cluster_count <= 0 or len(vectors) < cluster_count * min_size:
+        return assignments, centroids
+    next_assignments = list(assignments)
+    next_centroids = [list(centroid) for centroid in centroids]
+    cluster_sizes = _get_cluster_size_list(next_assignments, cluster_count)
+    guard = 0
+    while any(size < min_size for size in cluster_sizes) and guard < len(vectors) * max(cluster_count, 1):
+        guard += 1
+        target_index = next((index for index, size in enumerate(cluster_sizes) if size < min_size), -1)
+        donor_indices = [index for index, size in enumerate(cluster_sizes) if size > min_size]
+        if target_index < 0 or not donor_indices:
+            break
+        best_vector_index = -1
+        best_score = float("-inf")
+        for donor_index in donor_indices:
+            for vector_index, assigned_cluster in enumerate(next_assignments):
+                if assigned_cluster != donor_index:
+                    continue
+                target_score = _cosine_similarity(vectors[vector_index], next_centroids[target_index])
+                donor_score = _cosine_similarity(vectors[vector_index], next_centroids[donor_index])
+                relocation_score = (target_score * 1.15) - donor_score
+                if relocation_score > best_score:
+                    best_score = relocation_score
+                    best_vector_index = vector_index
+        if best_vector_index < 0:
+            break
+        next_assignments[best_vector_index] = target_index
+        cluster_sizes = _get_cluster_size_list(next_assignments, cluster_count)
+        next_centroids = _recalculate_centroids(vectors, next_assignments, cluster_count, next_centroids)
+    return next_assignments, next_centroids
+
+def _evaluate_cluster_assignments(vectors: List[List[float]], assignments: List[int], centroids: List[List[float]]) -> float:
+    if not vectors or not centroids:
+        return 0.0
+    cluster_sizes = _get_cluster_size_list(assignments, len(centroids))
+    undersized_penalty = 0.0
+    for size in cluster_sizes:
+        if size < SEMANTIC_CLUSTER_MIN_SIZE:
+            undersized_penalty += (SEMANTIC_CLUSTER_MIN_SIZE - size) * 0.28
+    margin_total = 0.0
+    for vector_index, vector in enumerate(vectors):
+        own_index = assignments[vector_index]
+        own_score = _cosine_similarity(vector, centroids[own_index])
+        next_best = max([
+            _cosine_similarity(vector, centroid)
+            for centroid_index, centroid in enumerate(centroids)
+            if centroid_index != own_index
+        ] or [0.0])
+        margin_total += (own_score - next_best)
+    return (margin_total / len(vectors)) - undersized_penalty
+
+def _extract_semantic_candidate_terms(paper: dict) -> List[str]:
+    generic_terms = {
+        "paper", "study", "studies", "evidence", "model", "models", "analysis", "default",
+        "country", "countries", "international", "empirical", "approach", "effects", "effect",
+        "role", "global", "financial", "finance", "credit", "ratings", "rating", "risk", "risks"
+    }
+    title_tokens = [
+        token for token in _semantic_cluster_tokenize((paper or {}).get("title", ""))
+        if token not in generic_terms
+    ]
+    phrases: List[str] = []
+    for index in range(len(title_tokens) - 1):
+        phrase = f"{title_tokens[index]} {title_tokens[index + 1]}"
+        if not any(part in generic_terms for part in phrase.split(" ")):
+            phrases.append(phrase)
+    return phrases + title_tokens
+
+def _select_distinct_semantic_terms(cluster_papers: List[dict], all_papers: List[dict], limit: int = 4) -> List[str]:
+    cluster_df: Dict[str, int] = {}
+    global_df: Dict[str, int] = {}
+    for paper in all_papers:
+        for term in set(_extract_semantic_candidate_terms(paper)):
+            global_df[term] = global_df.get(term, 0) + 1
+    for paper in cluster_papers:
+        for term in set(_extract_semantic_candidate_terms(paper)):
+            cluster_df[term] = cluster_df.get(term, 0) + 1
+    total_docs = max(len(all_papers), 1)
+    cluster_size = max(len(cluster_papers), 1)
+    scored_terms: List[dict] = []
+    for term, count in cluster_df.items():
+        global_count = global_df.get(term, count)
+        cluster_ratio = count / cluster_size
+        global_ratio = global_count / total_docs
+        if global_ratio > 0.34:
+            continue
+        idf = math.log((total_docs + 1) / (global_count + 1)) + 1.0
+        lift = cluster_ratio / max(global_ratio, 0.0001)
+        phrase_boost = 1.18 if " " in term else 1.0
+        scored_terms.append({"term": term, "score": cluster_ratio * idf * lift * phrase_boost})
+    scored_terms.sort(key=lambda item: item["score"], reverse=True)
+    chosen: List[str] = []
+    for item in scored_terms:
+        term = item["term"]
+        if any(existing in term or term in existing for existing in chosen):
+            continue
+        chosen.append(term)
+        if len(chosen) >= limit:
+            break
+    return chosen
+
+def _title_case_semantic_words(words: List[str]) -> List[str]:
+    output: List[str] = []
+    for word in words:
+        output.append(" ".join(part[:1].upper() + part[1:] for part in word.split(" ") if part))
+    return output
+
+def _build_semantic_cluster_presentation(clusters: List[dict], all_papers: List[dict]) -> List[dict]:
+    presented: List[dict] = []
+    for index, cluster in enumerate(clusters):
+        top_terms = _select_distinct_semantic_terms(cluster.get("papers", []), all_papers)
+        label = " / ".join(_title_case_semantic_words(top_terms[:2])) if top_terms else f"Theme {index + 1}"
+        summary = (
+            f"This cluster emphasizes {', '.join(top_terms[:3])} rather than the corpus-wide baseline topics."
+            if top_terms else
+            "This cluster groups papers with similar semantic content."
+        )
+        presented.append({
+            **cluster,
+            "label": label,
+            "summary": summary,
+            "topTerms": top_terms
+        })
+    return presented
+
+def _build_semantic_cluster_signature(papers: List[dict], seed_limit: int, assignment_limit: int) -> str:
+    serialized = json.dumps([
+        {
+            "filename": str((paper or {}).get("filename") or ""),
+            "title": str((paper or {}).get("title") or "").strip(),
+            "abstract": str((paper or {}).get("abstract") or "").strip(),
+            "current_content": str((paper or {}).get("current_content") or "").strip()[:SEMANTIC_CLUSTER_CURRENT_CONTENT_LIMIT],
+            "similarity": round(float((paper or {}).get("similarity") or 0), 6),
+        }
+        for paper in papers
+    ], ensure_ascii=False, separators=(",", ":"))
+    return f"{SEMANTIC_CLUSTER_ALGORITHM_VERSION}:{seed_limit}:{assignment_limit}:{hashlib.sha1(serialized.encode('utf-8')).hexdigest()}"
+
+def _is_semantic_cluster_paper_analyzable(paper: dict) -> bool:
+    return bool(str((paper or {}).get("title") or "").strip()) and (
+        bool(str((paper or {}).get("abstract") or "").strip())
+        or bool(str((paper or {}).get("current_content") or "").strip())
+    )
+
+def _select_semantic_assignment_papers(papers: List[dict], assignment_limit: int) -> List[dict]:
+    analyzable = [paper for paper in (papers or []) if _is_semantic_cluster_paper_analyzable(paper)]
+    analyzable.sort(key=lambda paper: float((paper or {}).get("similarity") or 0), reverse=True)
+    normalized_limit = max(3, min(int(assignment_limit or MAX_TOP_PAPERS), MAX_TOP_PAPERS))
+    return analyzable[:normalized_limit]
+
+def _build_semantic_cluster_result(payload: SemanticClusterRequest, progress_callback=None) -> dict:
+    assignment_limit = max(3, min(int(payload.assignment_limit or MAX_TOP_PAPERS), MAX_TOP_PAPERS))
+    seed_limit = max(3, min(int(payload.seed_limit or SEMANTIC_CLUSTER_SEED_LIMIT), assignment_limit))
+    source_papers = [paper.model_dump() if hasattr(paper, "model_dump") else dict(paper) for paper in payload.papers[:MAX_TOP_PAPERS]]
+    assignment_papers = _select_semantic_assignment_papers(source_papers, assignment_limit)
+    seed_papers = assignment_papers[:seed_limit]
+    signature = _build_semantic_cluster_signature(assignment_papers, seed_limit, assignment_limit)
+
+    if progress_callback:
+        progress_callback("prepare", 6, f"Preparing {len(assignment_papers)} papers for backend semantic clustering...")
+
+    if len(seed_papers) < 3:
+        return {
+            "projectId": int(payload.project_id or 0),
+            "clusterMode": "semantic",
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "signature": signature,
+            "seedSignature": signature,
+            "paperCount": len(seed_papers),
+            "assignedPaperCount": len(assignment_papers),
+            "clusterQuality": 0,
+            "clusters": [],
+            "usedLlmThemeNaming": False
+        }
+
+    term_weights_by_paper: List[Dict[str, float]] = []
+    document_frequency: Dict[str, int] = {}
+    for index, paper in enumerate(assignment_papers, start=1):
+        weighted_terms = _build_semantic_cluster_term_weights(paper)
+        term_weights_by_paper.append(weighted_terms)
+        for term in set(weighted_terms.keys()):
+            document_frequency[term] = document_frequency.get(term, 0) + 1
+        if progress_callback and (index % 8 == 0 or index == len(assignment_papers)):
+            percent = 10 + int((index / max(len(assignment_papers), 1)) * 38)
+            progress_callback("embedding", percent, f"Building backend semantic embeddings: {index}/{len(assignment_papers)} papers")
+
+    total_docs = max(len(term_weights_by_paper), 1)
+    assignment_vectors = [
+        _hash_weighted_terms_to_vector(weighted_terms, document_frequency, total_docs)
+        for weighted_terms in term_weights_by_paper
+    ]
+    seed_vectors = assignment_vectors[:len(seed_papers)]
+
+    max_cluster_count = min(max(3, len(seed_papers)), len(seed_papers), max(SEMANTIC_CLUSTER_COUNT_OPTIONS))
+    candidate_counts = [count for count in SEMANTIC_CLUSTER_COUNT_OPTIONS if count <= max_cluster_count]
+    best_result = None
+    total_runs = 0
+    for cluster_count in candidate_counts:
+        total_runs += SEMANTIC_CLUSTER_BASE_ATTEMPTS + 1
+    completed_runs = 0
+
+    for cluster_count in candidate_counts:
+        candidate_best = None
+        for attempt_index in range(SEMANTIC_CLUSTER_BASE_ATTEMPTS + 1):
+            if attempt_index > 0 and candidate_best:
+                cluster_sizes = candidate_best.get("clusterSizes", [])
+                has_undersized = len(seed_vectors) >= cluster_count * SEMANTIC_CLUSTER_MIN_SIZE and any(size < SEMANTIC_CLUSTER_MIN_SIZE for size in cluster_sizes)
+                if candidate_best.get("score", 0) >= SEMANTIC_CLUSTER_QUALITY_RETRY_THRESHOLD and not has_undersized:
+                    break
+            if progress_callback:
+                completed_runs += 1
+                progress_callback(
+                    "clustering",
+                    50 + int((completed_runs / max(total_runs, 1)) * 28),
+                    f"Testing {cluster_count} semantic themes (pass {attempt_index + 1})..."
+                )
+            centroids = _initialize_kmeans_plus_plus(seed_vectors, cluster_count, seed_offset=attempt_index + cluster_count)
+            assignments = _assign_vectors_to_centroids(seed_vectors, centroids)
+            for _ in range(8):
+                centroids = _recalculate_centroids(seed_vectors, assignments, cluster_count, centroids)
+                next_assignments = _assign_vectors_to_centroids(seed_vectors, centroids)
+                if next_assignments == assignments:
+                    break
+                assignments = next_assignments
+            assignments, centroids = _rebalance_undersized_clusters(seed_vectors, assignments, centroids, SEMANTIC_CLUSTER_MIN_SIZE)
+            score = _evaluate_cluster_assignments(seed_vectors, assignments, centroids)
+            candidate = {
+                "clusterCount": cluster_count,
+                "assignments": assignments,
+                "centroids": centroids,
+                "score": score,
+                "clusterSizes": _get_cluster_size_list(assignments, cluster_count)
+            }
+            if not candidate_best or score > candidate_best["score"]:
+                candidate_best = candidate
+        if candidate_best and (not best_result or candidate_best["score"] > best_result["score"]):
+            best_result = candidate_best
+
+    if not best_result:
+        return {
+            "projectId": int(payload.project_id or 0),
+            "clusterMode": "semantic",
+            "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "signature": signature,
+            "seedSignature": signature,
+            "paperCount": len(seed_papers),
+            "assignedPaperCount": len(assignment_papers),
+            "clusterQuality": 0,
+            "clusters": [],
+            "usedLlmThemeNaming": False
+        }
+
+    if progress_callback:
+        progress_callback("assignment", 84, f"Assigning top {len(assignment_papers)} papers using Visualization Density...")
+
+    assignment_results = _assign_vectors_to_centroids_with_scores(assignment_vectors, best_result["centroids"])
+    target_weighted_terms = {}
+    _semantic_cluster_add_weighted_terms(target_weighted_terms, payload.target_title, 3.0, include_bigrams=True)
+    _semantic_cluster_add_weighted_terms(target_weighted_terms, payload.target_abstract, 1.8, include_bigrams=True)
+    _semantic_cluster_add_weighted_terms(target_weighted_terms, str(payload.target_current_content or "")[:SEMANTIC_CLUSTER_CURRENT_CONTENT_LIMIT], 0.9, include_bigrams=False)
+    target_vector = _hash_weighted_terms_to_vector(target_weighted_terms, document_frequency, total_docs) if target_weighted_terms else []
+
+    clusters: List[dict] = []
+    for cluster_index, centroid in enumerate(best_result["centroids"]):
+        assigned = []
+        for paper_index, paper in enumerate(assignment_papers):
+            result = assignment_results[paper_index]
+            if result["clusterIndex"] != cluster_index:
+                continue
+            enriched = dict(paper)
+            enriched["cluster_similarity"] = result["score"]
+            assigned.append(enriched)
+        assigned.sort(key=lambda item: (float(item.get("cluster_similarity") or 0), float(item.get("similarity") or 0)), reverse=True)
+        if not assigned:
+            continue
+        clusters.append({
+            "index": cluster_index,
+            "target_relevance": max(0.0, _cosine_similarity(target_vector, centroid)) if target_vector else 0.0,
+            "papers": assigned,
+            "representative_papers": assigned[:SEMANTIC_CLUSTER_MAX_DISPLAY_PAPERS],
+        })
+    clusters.sort(key=lambda cluster: len(cluster.get("papers", [])), reverse=True)
+
+    if progress_callback:
+        progress_callback("labeling", 93, "Extracting local semantic theme labels...")
+
+    presented_clusters = _build_semantic_cluster_presentation(clusters, assignment_papers)
+    return {
+        "projectId": int(payload.project_id or 0),
+        "clusterMode": "semantic",
+        "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "signature": signature,
+        "seedSignature": signature,
+        "paperCount": len(seed_papers),
+        "assignedPaperCount": len(assignment_papers),
+        "clusterQuality": best_result.get("score", 0),
+        "clusters": presented_clusters,
+        "usedLlmThemeNaming": False
+    }
+
+def _create_semantic_cluster_job(total: int) -> str:
+    job_id = uuid.uuid4().hex
+    SEMANTIC_CLUSTER_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "queued",
+        "message": "Queued semantic cluster build...",
+        "total": total,
+        "completed": 0,
+        "progress": 0,
+        "result": None,
+        "error": None
+    }
+    return job_id
+
+def _update_semantic_cluster_job(job_id: str, **kwargs):
+    job = SEMANTIC_CLUSTER_JOBS.get(job_id)
+    if not job:
+        return
+    job.update(kwargs)
+
+async def _run_semantic_cluster_job(job_id: str, payload: SemanticClusterRequest):
+    _update_semantic_cluster_job(job_id, status="running", stage="prepare", message="Preparing backend semantic clustering...", total=min(len(payload.papers), MAX_TOP_PAPERS))
+    try:
+        def progress_callback(stage: str, percent: int, detail: str):
+            _update_semantic_cluster_job(
+                job_id,
+                stage=stage,
+                progress=max(0, min(100, int(percent))),
+                message=detail,
+                completed=max(0, min(len(payload.papers), int((max(0, min(100, int(percent))) / 100) * max(min(len(payload.papers), MAX_TOP_PAPERS), 1))))
+            )
+        result = await asyncio.to_thread(_build_semantic_cluster_result, payload, progress_callback)
+        _update_semantic_cluster_job(
+            job_id,
+            status="completed",
+            stage="completed",
+            progress=100,
+            completed=min(len(payload.papers), MAX_TOP_PAPERS),
+            message="Semantic clustering complete.",
+            result=result,
+            error=None
+        )
+    except Exception as exc:
+        _update_semantic_cluster_job(
+            job_id,
+            status="failed",
+            stage="failed",
+            message="Semantic clustering failed.",
+            error=str(exc)
+        )
 
 def _build_literature_watch_prompt(context: dict) -> str:
     core_lines = []
@@ -1851,6 +5318,84 @@ def _http_post_json(url: str, body: dict, headers: Optional[dict] = None, timeou
     except TimeoutError:
         raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
 
+def _http_post_form(url: str, body: dict, headers: Optional[dict] = None, timeout: int = 90):
+    encoded = parse.urlencode({key: value for key, value in (body or {}).items() if value is not None}).encode("utf-8")
+    req = request.Request(url, data=encoded, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    for key, value in (headers or {}).items():
+        if value:
+            req.add_header(key, value)
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw.strip() else {}
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+    except error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
+
+def _http_post_bytes(url: str, body: bytes, headers: Optional[dict] = None, timeout: int = 120):
+    req = request.Request(url, data=body, method="POST")
+    for key, value in (headers or {}).items():
+        if value:
+            req.add_header(key, value)
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            return {
+                "body": resp.read(),
+                "headers": {key.lower(): value for key, value in resp.headers.items()},
+                "status": getattr(resp, "status", 200)
+            }
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+    except error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
+
+def _http_patch_json(url: str, body: dict, headers: Optional[dict] = None, timeout: int = 90):
+    encoded = json.dumps(body).encode("utf-8")
+    req = request.Request(url, data=encoded, method="PATCH")
+    req.add_header("Content-Type", "application/json")
+    for key, value in (headers or {}).items():
+        if value:
+            req.add_header(key, value)
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw.strip() else {}
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+    except error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
+
+def _http_delete(url: str, headers: Optional[dict] = None, timeout: int = 90):
+    req = request.Request(url, method="DELETE")
+    for key, value in (headers or {}).items():
+        if value:
+            req.add_header(key, value)
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            return {
+                "body": resp.read().decode("utf-8", errors="ignore"),
+                "headers": {key.lower(): value for key, value in resp.headers.items()},
+                "status": getattr(resp, "status", 200)
+            }
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+    except error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
+    except TimeoutError:
+        raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
+
 def _call_llm_from_env(prompt: str, temperature: float = 0.2, json_mode: bool = False) -> str:
     provider = (_env_value("STARMAP_LLM_PROVIDER", "groq") or "groq").lower()
     api_key = _env_value("STARMAP_LLM_API_KEY")
@@ -1891,6 +5436,77 @@ def _call_llm_from_env(prompt: str, temperature: float = 0.2, json_mode: bool = 
         return ((((response.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text") or "").strip()
 
     raise HTTPException(status_code=400, detail="Unsupported LLM provider configured in .env")
+
+def _parse_data_url_image(data_url: str) -> Tuple[str, bytes]:
+    raw = str(data_url or "").strip()
+    match = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", raw, re.DOTALL)
+    if not match:
+        raise HTTPException(status_code=400, detail="A valid base64 image data URL is required.")
+    mime_type = match.group(1)
+    try:
+        image_bytes = base64.b64decode(match.group(2), validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode the image payload: {exc}")
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="The supplied image payload was empty.")
+    return mime_type, image_bytes
+
+def _call_vision_llm_from_env(prompt: str, image_data_url: str, temperature: float = 0.2, json_mode: bool = False) -> str:
+    provider = (_env_value("STARMAP_LLM_PROVIDER", "groq") or "groq").lower()
+    api_key = _env_value("STARMAP_LLM_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="LLM API key is not configured in .env")
+
+    mime_type, image_bytes = _parse_data_url_image(image_data_url)
+
+    if provider == "openai":
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_url}}
+                ]
+            }],
+            "temperature": temperature,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        response = _http_post_json(
+            "https://api.openai.com/v1/chat/completions",
+            payload,
+            {"Authorization": f"Bearer {api_key}"},
+            timeout=90
+        )
+        return (((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+
+    if provider == "gemini":
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": base64.b64encode(image_bytes).decode("ascii")
+                        }
+                    }
+                ]
+            }],
+            "generationConfig": {
+                "temperature": temperature,
+                **({"response_mime_type": "application/json"} if json_mode else {}),
+            }
+        }
+        response = _http_post_json(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={parse.quote(api_key, safe='')}",
+            payload,
+            timeout=90
+        )
+        return ((((response.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text") or "").strip()
+
+    raise HTTPException(status_code=400, detail=f"The configured provider '{provider}' does not currently support screenshot-based passage analysis in StarMap. Switch to OpenAI or Gemini for vision.")
 
 def _status_result(name: str, state: str, detail: str, configured: bool) -> dict:
     return {
@@ -3136,6 +6752,83 @@ def _get_zotero_child_items(user_id: str, parent_key: str, api_key: str = "") ->
     url = f"https://api.zotero.org/users/{encoded_user}/items/{encoded_parent}/children?v=3&format=json"
     return _http_get_json(url, extra_headers=_build_zotero_headers(api_key))
 
+def _get_zotero_child_items_with_meta(user_id: str, parent_key: str, api_key: str = "") -> Tuple[List[dict], Dict[str, str]]:
+    if not user_id or not parent_key:
+        return [], {}
+    encoded_user = parse.quote(user_id, safe="")
+    encoded_parent = parse.quote(parent_key, safe="")
+    url = f"https://api.zotero.org/users/{encoded_user}/items/{encoded_parent}/children?v=3&format=json"
+    payload, headers = _http_get_json_with_meta(url, extra_headers=_build_zotero_headers(api_key))
+    return (payload if isinstance(payload, list) else []), headers
+
+def _get_zotero_item(user_id: str, item_key: str, api_key: str = "") -> Tuple[dict, Dict[str, str]]:
+    if not user_id or not item_key:
+        return {}, {}
+    encoded_user = parse.quote(user_id, safe="")
+    encoded_item = parse.quote(item_key, safe="")
+    url = f"https://api.zotero.org/users/{encoded_user}/items/{encoded_item}?v=3&format=json"
+    payload, headers = _http_get_json_with_meta(url, extra_headers=_build_zotero_headers(api_key))
+    return (payload if isinstance(payload, dict) else {}), headers
+
+def _zotero_item_has_tag(item: dict, tag_text: str) -> bool:
+    normalized = _normalize_zotero_match_key(tag_text)
+    tags = ((item.get("data") or {}).get("tags") or [])
+    for entry in tags:
+        if _normalize_zotero_match_key((entry or {}).get("tag") or "") == normalized:
+            return True
+    return False
+
+def _is_starmap_read_paper_export_child(item: dict) -> bool:
+    data = item.get("data") or {}
+    item_type = str(data.get("itemType") or "")
+    title = _normalize_zotero_match_key(data.get("title") or "")
+    note_html = _normalize_zotero_match_key(data.get("note") or "")
+    if _zotero_item_has_tag(item, "StarMap Read A Paper Export"):
+        return True
+    if item_type == "attachment" and title == _normalize_zotero_match_key("StarMap Marked PDF"):
+        return True
+    if item_type == "note" and ("starmap marked passage" in note_html or "starmap paper-level critique" in note_html):
+        return True
+    return False
+
+def _delete_zotero_items(user_id: str, api_key: str, item_keys: List[str], library_version: int) -> int:
+    normalized_keys = [str(key or "").strip() for key in item_keys if str(key or "").strip()]
+    if not normalized_keys:
+        return 0
+    encoded_user = parse.quote(user_id, safe="")
+    query = "&".join(f"itemKey={parse.quote(key, safe='')}" for key in normalized_keys)
+    url = f"https://api.zotero.org/users/{encoded_user}/items?{query}"
+    headers = {
+        **_build_zotero_headers(api_key),
+        "If-Unmodified-Since-Version": str(max(0, int(library_version or 0)))
+    }
+    _http_delete(url, headers=headers, timeout=60)
+    return len(normalized_keys)
+
+def _ensure_parent_in_zotero_collection(item: dict, user_id: str, api_key: str, collection_key: str = ""):
+    collection_key = _trim_text(collection_key, 120)
+    if not collection_key:
+        return
+    item_key = item.get("key") or (item.get("data") or {}).get("key") or ""
+    if not item_key:
+        return
+    data = item.get("data") or {}
+    current_collections = list(data.get("collections") or [])
+    if collection_key in current_collections:
+        return
+    _, headers = _get_zotero_item(user_id, item_key, api_key)
+    item_version = int(headers.get("last-modified-version") or data.get("version") or item.get("version") or 0)
+    url = f"https://api.zotero.org/users/{parse.quote(user_id, safe='')}/items/{parse.quote(item_key, safe='')}"
+    _http_patch_json(
+        url,
+        {"collections": [*current_collections, collection_key]},
+        headers={
+            **_build_zotero_headers(api_key),
+            "If-Unmodified-Since-Version": str(max(0, item_version))
+        },
+        timeout=45
+    )
+
 def _get_zotero_attachment_fulltext(user_id: str, attachment_key: str, api_key: str = "") -> str:
     if not user_id or not attachment_key:
         return ""
@@ -3425,6 +7118,295 @@ def _paper_to_zotero_item(paper: PaperItem, collection_key: str = "") -> dict:
         payload["extra"] = _trim_text(paper.notes, 2000)
     return payload
 
+def _extract_zotero_successful_entries(response: dict) -> List[dict]:
+    successful = response.get("successful") or {}
+    rows = []
+    for index_key, entry in successful.items():
+        entry_data = entry.get("data") if isinstance(entry, dict) else {}
+        rows.append({
+            "index": int(index_key) if str(index_key).isdigit() else len(rows),
+            "key": (entry.get("key") if isinstance(entry, dict) else "") or entry_data.get("key") or "",
+            "version": (entry.get("version") if isinstance(entry, dict) else None) or entry_data.get("version"),
+            "data": entry_data or (entry if isinstance(entry, dict) else {})
+        })
+    rows.sort(key=lambda item: item["index"])
+    return rows
+
+def _create_zotero_items(items: List[dict], user_id: str, api_key: str) -> List[dict]:
+    if not items:
+        return []
+    base_path = f"https://api.zotero.org/users/{parse.quote(user_id, safe='')}/items"
+    headers = _build_zotero_headers(api_key)
+    headers["Zotero-Write-Token"] = uuid.uuid4().hex
+    response = _http_post_json(base_path, items, headers=headers, timeout=45)
+    created = _extract_zotero_successful_entries(response)
+    if not created:
+        failed = response.get("failed") or {}
+        failed_detail = json.dumps(failed, ensure_ascii=False)[:500] if failed else "No items were accepted by Zotero."
+        raise HTTPException(status_code=502, detail=f"Zotero did not create the requested items. {failed_detail}")
+    return created
+
+def _find_existing_zotero_item_for_paper(paper: PaperItem, payload: ZoteroSyncRequest) -> Optional[dict]:
+    doi_key = _normalize_zotero_match_key(_clean_doi(paper.doi))
+    title_key = _normalize_zotero_match_key(paper.title)
+    if not doi_key and not title_key:
+        return None
+    try:
+        existing_items = _fetch_zotero_items(payload, collection_key="")
+    except HTTPException:
+        return None
+    for item in existing_items or []:
+        data = item.get("data") or {}
+        if doi_key and doi_key == _normalize_zotero_match_key(_clean_doi(data.get("DOI") or "")):
+            return item
+        if title_key and title_key == _normalize_zotero_match_key(data.get("title") or ""):
+            return item
+    return None
+
+def _sanitize_zotero_filename(filename: str) -> str:
+    cleaned = re.sub(r"[^\w.\- ()]+", "_", str(filename or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    if not cleaned:
+        cleaned = f"starmap_read_paper_{uuid.uuid4().hex[:8]}.pdf"
+    if not cleaned.lower().endswith(".pdf"):
+        cleaned = f"{cleaned}.pdf"
+    return cleaned[:180]
+
+def _html_blockquote(text: str) -> str:
+    cleaned = _trim_text(_compact_whitespace(text), 4000)
+    if not cleaned:
+        return ""
+    return f"<blockquote><p>{html.escape(cleaned)}</p></blockquote>"
+
+def _html_paragraph(label: str, value: str, limit: int = 2400) -> str:
+    cleaned = _trim_text(_compact_whitespace(value), limit)
+    if not cleaned:
+        return ""
+    safe_label = html.escape(label)
+    safe_value = html.escape(cleaned).replace("\n", "<br>")
+    return f"<p><strong>{safe_label}:</strong> {safe_value}</p>"
+
+def _html_list_section(title: str, items: List[Any], limit: int = 5) -> str:
+    normalized = []
+    for item in items or []:
+        if isinstance(item, str):
+            text = _trim_text(_compact_whitespace(item), 600)
+            if text:
+                normalized.append(text)
+            continue
+        if isinstance(item, dict):
+            label = _trim_text(_compact_whitespace(item.get("label")), MAX_READ_PAPER_FINDING_LABEL_LENGTH)
+            detail = _trim_text(_compact_whitespace(item.get("detail")), 700)
+            severity = _trim_text(item.get("severity") or item.get("priority") or "", 20)
+            combined = label or detail
+            if not combined:
+                continue
+            if severity:
+                combined = f"[{severity}] {combined}"
+            if detail and detail != label:
+                combined = f"{combined}: {detail}"
+            normalized.append(combined)
+    if not normalized:
+        return ""
+    items_html = "".join(f"<li>{html.escape(entry)}</li>" for entry in normalized[:limit])
+    return f"<p><strong>{html.escape(title)}:</strong></p><ul>{items_html}</ul>"
+
+def _format_read_paper_mark_type(mark_type: str) -> str:
+    normalized = _trim_text(mark_type, 60).lower() or "default"
+    labels = {
+        "default": "Default",
+        "claim": "Claim",
+        "evidence": "Evidence",
+        "method": "Method",
+        "threat": "Threat",
+        "limitation": "Limitation",
+        "question": "Question",
+        "to_cite": "To Cite",
+    }
+    return labels.get(normalized, normalized.replace("_", " ").title())
+
+def _build_read_paper_passage_note_html(passage: ReadPaperMarkedPassage, sequence: int = 1) -> str:
+    blocks = [
+        f"<h1>StarMap Marked Passage {sequence}</h1>",
+        _html_paragraph("Mark Type", _format_read_paper_mark_type(passage.mark_type), 120),
+        _html_paragraph("Highlight Color", _trim_text(passage.mark_color, 60), 60),
+        _html_paragraph("Question", passage.user_question, MAX_READ_PAPER_QUESTION_LENGTH),
+        _html_paragraph("User Note", passage.user_note, 2400),
+        _html_paragraph("Captured Context", passage.context, 2200),
+        _html_blockquote(passage.excerpt),
+        _html_paragraph("Interpretation", passage.interpretation, 2200),
+        _html_paragraph("Critical Reading Note", passage.critique, 2200),
+        _html_paragraph("Best Next Check", passage.next_check, 1600),
+        _html_paragraph("Answer to User Question", passage.question_answer, 2200),
+    ]
+    return "".join(block for block in blocks if block)
+
+def _build_read_paper_paper_note_html(paper_level: ReadPaperPaperLevelExport) -> str:
+    if not paper_level:
+        return ""
+    blocks = [
+        "<h1>StarMap Paper-level Critique</h1>",
+        _html_paragraph("Paper-level Question", paper_level.user_question, MAX_READ_PAPER_QUESTION_LENGTH),
+        _html_paragraph("Deep Read Summary", paper_level.deep_read_summary, MAX_READ_PAPER_SUMMARY_LENGTH),
+        _html_paragraph("Answer to Paper-level Question", paper_level.user_question_answer, MAX_READ_PAPER_SUMMARY_LENGTH),
+        _html_list_section("Threats to Validity", paper_level.threats_to_validity),
+        _html_list_section("External Validity Limits", paper_level.external_validity_limits),
+        _html_list_section("Design Vulnerabilities", paper_level.design_vulnerabilities),
+        _html_list_section("Improvement Opportunities", paper_level.improvement_opportunities),
+        _html_list_section("Questions to Press", paper_level.questions_to_press, limit=MAX_READ_PAPER_QUESTIONS_TO_PRESS),
+    ]
+    return "".join(block for block in blocks if block)
+
+def _upload_zotero_attachment_file(user_id: str, api_key: str, attachment_key: str, filename: str, file_bytes: bytes, content_type: str = "application/pdf") -> dict:
+    if not user_id or not attachment_key:
+        raise HTTPException(status_code=400, detail="Zotero attachment upload requires a user ID and attachment key.")
+    upload_url = f"https://api.zotero.org/users/{parse.quote(user_id, safe='')}/items/{parse.quote(attachment_key, safe='')}/file"
+    auth_payload = {
+        "md5": hashlib.md5(file_bytes).hexdigest(),
+        "filename": _sanitize_zotero_filename(filename),
+        "filesize": len(file_bytes),
+        "mtime": int(time.time() * 1000),
+        "contentType": content_type
+    }
+    write_headers = {
+        **_build_zotero_headers(api_key),
+        "If-None-Match": "*"
+    }
+    auth_response = _http_post_form(upload_url, auth_payload, headers=write_headers, timeout=60)
+    if auth_response.get("exists"):
+        return {"uploaded": False, "reused_existing_binary": True}
+    upstream_url = str(auth_response.get("url") or "").strip()
+    upload_key = str(auth_response.get("uploadKey") or "").strip()
+    prefix = auth_response.get("prefix") or ""
+    suffix = auth_response.get("suffix") or ""
+    if not upstream_url or not upload_key:
+        raise HTTPException(status_code=502, detail="Zotero attachment upload did not return a usable upload URL.")
+    body = prefix.encode("utf-8") + file_bytes + suffix.encode("utf-8")
+    _http_post_bytes(
+        upstream_url,
+        body,
+        headers={"Content-Type": str(auth_response.get("contentType") or "application/octet-stream")},
+        timeout=180
+    )
+    _http_post_form(
+        upload_url,
+        {"upload": upload_key},
+        headers=write_headers,
+        timeout=60
+    )
+    return {"uploaded": True, "reused_existing_binary": False}
+
+def _export_read_paper_to_zotero(payload: ReadPaperZoteroExportRequest) -> dict:
+    sync_payload = _apply_runtime_defaults_to_zotero(ZoteroSyncRequest(
+        zotero_user_id=payload.zotero_user_id,
+        zotero_api_key=payload.zotero_api_key,
+        collection_key=payload.collection_key
+    ))
+    if not sync_payload.zotero_user_id or not sync_payload.zotero_api_key:
+        raise HTTPException(status_code=400, detail="Please configure the Zotero User ID and API key in backend settings first.")
+    if not payload.pdf_base64.strip():
+        raise HTTPException(status_code=422, detail="A PDF payload is required for Zotero export.")
+    try:
+        pdf_bytes = base64.b64decode(payload.pdf_base64, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not decode the PDF payload for Zotero export: {exc}")
+    if not pdf_bytes:
+        raise HTTPException(status_code=422, detail="The supplied PDF payload was empty.")
+
+    existing_item = _find_existing_zotero_item_for_paper(payload.paper, sync_payload)
+    created_parent = False
+    if existing_item:
+        _ensure_parent_in_zotero_collection(existing_item, sync_payload.zotero_user_id, sync_payload.zotero_api_key, sync_payload.collection_key)
+        parent_key = existing_item.get("key") or (existing_item.get("data") or {}).get("key") or ""
+    else:
+        parent_item = _paper_to_zotero_item(payload.paper, sync_payload.collection_key)
+        parent_item["tags"] = [
+            {"tag": "StarMap Export"},
+            {"tag": "Read A Paper PDF"}
+        ]
+        created_items = _create_zotero_items([parent_item], sync_payload.zotero_user_id, sync_payload.zotero_api_key)
+        parent_key = created_items[0].get("key") or ""
+        created_parent = True
+    if not parent_key:
+        raise HTTPException(status_code=502, detail="Could not determine the Zotero parent item key for this export.")
+
+    existing_children, child_headers = _get_zotero_child_items_with_meta(parent_key=parent_key, user_id=sync_payload.zotero_user_id, api_key=sync_payload.zotero_api_key)
+    export_child_keys = [
+        child.get("key") or (child.get("data") or {}).get("key") or ""
+        for child in existing_children
+        if _is_starmap_read_paper_export_child(child)
+    ]
+    deleted_export_children = 0
+    if export_child_keys:
+        deleted_export_children = _delete_zotero_items(
+            sync_payload.zotero_user_id,
+            sync_payload.zotero_api_key,
+            export_child_keys,
+            int(child_headers.get("last-modified-version") or 0)
+        )
+
+    attachment_filename = _sanitize_zotero_filename(payload.pdf_filename or payload.paper.filename or f"{payload.paper.title or 'starmap_marked'}.pdf")
+    attachment_item = {
+        "itemType": "attachment",
+        "parentItem": parent_key,
+        "linkMode": "imported_file",
+        "title": "StarMap Marked PDF",
+        "filename": attachment_filename,
+        "contentType": "application/pdf",
+        "note": "<p>Uploaded from StarMap Read A Paper PDF.</p>",
+        "tags": [{"tag": "StarMap Read A Paper Export"}]
+    }
+    attachment_created = _create_zotero_items([attachment_item], sync_payload.zotero_user_id, sync_payload.zotero_api_key)
+    attachment_key = attachment_created[0].get("key") or ""
+    if not attachment_key:
+        raise HTTPException(status_code=502, detail="Zotero accepted the attachment item but did not return its key.")
+    upload_result = _upload_zotero_attachment_file(
+        sync_payload.zotero_user_id,
+        sync_payload.zotero_api_key,
+        attachment_key,
+        attachment_filename,
+        pdf_bytes,
+        "application/pdf"
+    )
+
+    note_items = []
+    for index, passage in enumerate(payload.marked_passages or [], start=1):
+        note_html = _build_read_paper_passage_note_html(passage, sequence=index)
+        if not note_html:
+            continue
+        note_items.append({
+            "itemType": "note",
+            "parentItem": parent_key,
+            "note": note_html,
+            "tags": [{"tag": "StarMap Read A Paper Export"}]
+        })
+    paper_note_html = _build_read_paper_paper_note_html(payload.paper_level) if payload.paper_level else ""
+    if paper_note_html:
+        note_items.append({
+            "itemType": "note",
+            "parentItem": parent_key,
+            "note": paper_note_html,
+            "tags": [{"tag": "StarMap Read A Paper Export"}]
+        })
+    created_note_keys = []
+    if note_items:
+        created_note_keys = [item.get("key") or "" for item in _create_zotero_items(note_items, sync_payload.zotero_user_id, sync_payload.zotero_api_key)]
+
+    return {
+        "parent_item_key": parent_key,
+        "created_parent_item": created_parent,
+        "attachment_item_key": attachment_key,
+        "attachment_filename": attachment_filename,
+        "pdf_uploaded": bool(upload_result.get("uploaded") or upload_result.get("reused_existing_binary")),
+        "highlighted_passage_count": len(payload.marked_passages or []),
+        "note_keys": [key for key in created_note_keys if key],
+        "note_count": len([key for key in created_note_keys if key]),
+        "deleted_previous_export_children": deleted_export_children,
+        "notes_preserve_passage_mapping": True,
+        "passage_mapping_mode": "Each Zotero child note stores the quoted passage, page number, and normalized highlight coordinates.",
+        "native_zotero_annotation_objects_created": False
+    }
+
 def _map_zotero_item_to_paper(item: dict) -> Optional[dict]:
     data = item.get("data") or {}
     item_type = data.get("itemType", "")
@@ -3563,6 +7545,30 @@ async def get_project(project_id: int, current_user: dict = Depends(_require_ses
     project_data.pop("target_keywords", None)
     return project_data
 
+@app.post("/api/projects/{project_id}/read-paper/analyze")
+async def analyze_project_read_paper_selection(project_id: int, payload: ReadPaperAnalyzeRequest, current_user: dict = Depends(_require_session)):
+    project_data = _get_owned_project(project_id, current_user["user_id"])
+    payload = _validate_read_paper_payload(payload)
+    try:
+        result = _analyze_read_paper_selection(project_data, payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Read A Paper analysis failed: {exc}")
+    _write_audit_log(
+        "read_paper_analyze",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={
+            "selection_type": payload.selection_type,
+            "selection_label": payload.selection_label,
+            "paper_count": len(payload.papers),
+            "has_question": bool(payload.user_question)
+        },
+        success=True
+    )
+    return result
+
 @app.put("/api/projects/{project_id}")
 async def update_project(project_id: int, req: ProjectUpdate, current_user: dict = Depends(_require_session)):
     _get_owned_project(project_id, current_user["user_id"])
@@ -3659,6 +7665,750 @@ async def update_project_papers(project_id: int, request: UpdatePapersRequest, c
         conn.close()
         lock.release()
 
+@app.post("/api/projects/{project_id}/claims")
+async def create_project_claim(project_id: int, payload: ClaimCreateRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    payload = _validate_claim_create_payload(payload)
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO project_claims (project_id, claim_text, claim_type, section_label, status, analysis_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (project_id, payload.claim_text, payload.claim_type, payload.section_label, "active", "v1", now, now)
+        )
+        conn.commit()
+        claim_id = int(cursor.lastrowid)
+        _write_audit_log(
+            "project_claim_create",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={"claim_id": claim_id, "claim_type": payload.claim_type},
+            success=True
+        )
+        return {
+            "claim": {
+                "id": claim_id,
+                "project_id": project_id,
+                "claim_text": payload.claim_text,
+                "claim_type": payload.claim_type,
+                "section_label": payload.section_label,
+                "status": "active",
+                "analysis_version": "v1",
+                "created_at": now,
+                "updated_at": now,
+            }
+        }
+    finally:
+        conn.close()
+
+@app.get("/api/projects/{project_id}/claims")
+async def list_project_claims(project_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM project_claims WHERE project_id = ? AND status != 'archived' ORDER BY updated_at DESC, id DESC",
+        (project_id,)
+    )
+    claims = [dict(row) for row in cursor.fetchall()]
+    claim_ids = [int(claim["id"]) for claim in claims]
+    evidence_summary: Dict[int, dict] = {claim_id: _default_claim_summary() for claim_id in claim_ids}
+    latest_runs: Dict[int, dict] = {}
+    if claim_ids:
+        placeholders = ",".join("?" for _ in claim_ids)
+        cursor.execute(
+            f"SELECT claim_id, stance, COUNT(*) AS item_count FROM claim_evidence_items WHERE hidden = 0 AND claim_id IN ({placeholders}) GROUP BY claim_id, stance",
+            claim_ids
+        )
+        for row in cursor.fetchall():
+            evidence_summary.setdefault(int(row["claim_id"]), _default_claim_summary())[row["stance"]] = int(row["item_count"] or 0)
+        cursor.execute(
+            f"SELECT claim_id, MAX(id) AS latest_run_id FROM claim_analysis_runs WHERE claim_id IN ({placeholders}) GROUP BY claim_id",
+            claim_ids
+        )
+        latest_run_ids = [int(row["latest_run_id"]) for row in cursor.fetchall() if row["latest_run_id"]]
+        if latest_run_ids:
+            run_placeholders = ",".join("?" for _ in latest_run_ids)
+            cursor.execute(
+                f"SELECT * FROM claim_analysis_runs WHERE id IN ({run_placeholders})",
+                latest_run_ids
+            )
+            latest_runs = {int(row["claim_id"]): dict(row) for row in cursor.fetchall()}
+    conn.close()
+    return {
+        "claims": [
+            {
+                **claim,
+                "claim_type": _normalize_claim_type(claim.get("claim_type")),
+                "status": _normalize_claim_status(claim.get("status")),
+                "evidence_summary": evidence_summary.get(int(claim["id"]), _default_claim_summary()),
+                "latest_run": latest_runs.get(int(claim["id"]))
+            }
+            for claim in claims
+        ]
+    }
+
+@app.post("/api/projects/{project_id}/stardusts")
+async def create_project_stardust(project_id: int, payload: ChallengeStardustCreateRequest, current_user: dict = Depends(_require_session)):
+    project_data = _get_owned_project(project_id, current_user["user_id"])
+    payload = _validate_stardust_create_payload(payload)
+    claim = _get_owned_claim(project_id, payload.claim_id, current_user["user_id"])
+    creation_mode = _normalize_stardust_creation_mode(payload.mode)
+    if payload.seed_claim_text and int(payload.seed_evidence_id or 0) <= 0:
+        creation_mode = "claim_only"
+        payload.mode = "claim_only"
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    evidence_row = None
+    if creation_mode == "challenge_paper":
+        cursor.execute(
+            "SELECT * FROM claim_evidence_items WHERE id = ? AND claim_id = ? AND project_id = ?",
+            (payload.seed_evidence_id, payload.claim_id, project_id)
+        )
+        evidence_row = cursor.fetchone()
+        if not evidence_row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Seed evidence item not found.")
+
+    replaced_stardust_id = None
+    if payload.replace_stardust_id:
+        cursor.execute(
+            "SELECT * FROM challenge_stardusts WHERE id = ? AND project_id = ?",
+            (payload.replace_stardust_id, project_id)
+        )
+        replace_row = cursor.fetchone()
+        if not replace_row:
+            conn.close()
+            raise HTTPException(status_code=404, detail="The Challenge Stardust chosen for replacement was not found.")
+        replaced_stardust_id = int(replace_row["id"])
+
+    cursor.execute(
+        "SELECT COUNT(*) AS item_count FROM challenge_stardusts WHERE project_id = ?",
+        (project_id,)
+    )
+    current_count = int((cursor.fetchone() or {"item_count": 0})["item_count"] or 0)
+    if current_count >= MAX_STARDUSTS_PER_PROJECT and not replaced_stardust_id:
+        conn.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"This project already has {MAX_STARDUSTS_PER_PROJECT} Challenge Stardusts. Replace an existing one before creating a new one."
+        )
+    conn.close()
+
+    generation_result = _generate_challenge_stardust(project_data, claim, dict(evidence_row) if evidence_row else {}, payload)
+    papers = generation_result.get("papers") or []
+    source_summary = generation_result.get("source_summary") or {}
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    if replaced_stardust_id:
+        _delete_stardust_records(conn, replaced_stardust_id)
+    now = _now_ts()
+    cursor.execute(
+        '''INSERT INTO challenge_stardusts (
+            project_id, claim_id, seed_evidence_id, seed_paper_key, name, sub_target_thesis,
+            status, paper_count, graph_cache_signature, source_summary_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (
+            project_id,
+            payload.claim_id,
+            payload.seed_evidence_id if creation_mode == "challenge_paper" else 0,
+            _trim_text(evidence_row["paper_key"], 300) if evidence_row else "__claim_seed__",
+            payload.name,
+            payload.sub_target_thesis,
+            "ready",
+            len(papers),
+            "",
+            json.dumps(source_summary, ensure_ascii=False),
+            now,
+            now,
+        )
+    )
+    stardust_id = int(cursor.lastrowid)
+    _insert_stardust_papers(conn, stardust_id, papers)
+    conn.commit()
+    cursor.execute("SELECT * FROM challenge_stardusts WHERE id = ?", (stardust_id,))
+    stardust_row = cursor.fetchone()
+    serialized = _serialize_stardust_row(conn, dict(stardust_row), include_children=True)
+    conn.close()
+
+    _write_audit_log(
+        "project_stardust_create",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={
+            "stardust_id": stardust_id,
+            "claim_id": int(claim["id"]),
+            "creation_mode": creation_mode,
+            "seed_evidence_id": payload.seed_evidence_id if creation_mode == "challenge_paper" else 0,
+            "replaced_stardust_id": replaced_stardust_id,
+            "stored_count": len(papers),
+        },
+        success=True
+    )
+    return {
+        "stardust": serialized,
+        "seed_paper": generation_result.get("seed_paper") or {},
+        "source_summary": source_summary,
+    }
+
+@app.get("/api/projects/{project_id}/stardusts")
+async def list_project_stardusts(project_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM challenge_stardusts WHERE project_id = ? ORDER BY updated_at DESC, id DESC",
+        (project_id,)
+    )
+    stardusts = [_serialize_stardust_row(conn, dict(row), include_children=False) for row in cursor.fetchall()]
+    conn.close()
+    return {"stardusts": stardusts}
+
+@app.get("/api/projects/{project_id}/stardusts/{stardust_id}")
+async def get_project_stardust(project_id: int, stardust_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM challenge_stardusts WHERE id = ?", (stardust_id,))
+    row = cursor.fetchone()
+    serialized = _serialize_stardust_row(conn, dict(row), include_children=True)
+    conn.close()
+    return {"stardust": serialized}
+
+@app.get("/api/projects/{project_id}/stardusts/{stardust_id}/papers")
+async def list_project_stardust_papers(project_id: int, stardust_id: int, include_hidden: bool = True, current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    papers = _load_stardust_papers(conn, stardust_id, include_hidden=include_hidden)
+    conn.close()
+    return {"papers": papers}
+
+@app.get("/api/projects/{project_id}/stardusts/{stardust_id}/graph")
+async def get_project_stardust_graph(project_id: int, stardust_id: int, mode: str = "directed", current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    normalized_mode = _normalize_stardust_graph_mode(mode)
+    conn = _db_connect(row_factory=True)
+    cached = _load_stardust_graph_cache(conn, stardust_id, normalized_mode)
+    graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
+    conn.close()
+    if not cached:
+        raise HTTPException(status_code=404, detail="No cached Stardust graph exists for this mode yet.")
+    return {
+        "cache_hit": True,
+        "graph": {
+            "mode": normalized_mode,
+            "nodes": cached.get("nodes") or [],
+            "edges": cached.get("edges") or [],
+            "stats": cached.get("meta") or {},
+        },
+        "graphs": graphs,
+    }
+
+@app.post("/api/projects/{project_id}/stardusts/{stardust_id}/graph/build")
+async def build_project_stardust_graph(project_id: int, stardust_id: int, payload: ChallengeStardustGraphBuildRequest, current_user: dict = Depends(_require_session)):
+    stardust_row = _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    project_data = _get_owned_project(project_id, current_user["user_id"])
+    payload = _validate_stardust_graph_build_payload(payload)
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM claim_evidence_items WHERE id = ? AND project_id = ?",
+        (int(stardust_row.get("seed_evidence_id") or 0), project_id)
+    )
+    seed_evidence_row = cursor.fetchone()
+    papers = _load_stardust_papers(conn, stardust_id, include_hidden=False)
+    initial_signature = _build_stardust_graph_signature(papers, payload.mode)
+    cached = _load_stardust_graph_cache(conn, stardust_id, payload.mode)
+    if cached and cached.get("graph_signature") == initial_signature and not payload.force_rebuild:
+        graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
+        conn.close()
+        return {
+            "cache_hit": True,
+            "graph": {
+                "mode": payload.mode,
+                "nodes": cached.get("nodes") or [],
+                "edges": cached.get("edges") or [],
+                "stats": cached.get("meta") or {},
+            },
+            "graphs": graphs,
+        }
+
+    seed_graph_paper = None
+    if seed_evidence_row:
+        try:
+            resolved_seed = _resolve_project_paper_for_evidence(project_data, dict(seed_evidence_row))
+            if resolved_seed:
+                seed_graph_paper = _enrich_paper_for_citation_graph(
+                    PaperItem(**resolved_seed),
+                    payload.openalex_api_key,
+                    payload.contact_email
+                )
+        except Exception:
+            seed_graph_paper = None
+
+    enriched_papers: List[dict] = []
+    partial_failures: List[dict] = []
+    for paper in papers:
+        enriched = dict(paper)
+        needs_enrichment = not _trim_text(enriched.get("openalex_id"), 300) or not (enriched.get("referenced_openalex_ids") or [])
+        if needs_enrichment:
+            try:
+                enriched = {
+                    **enriched,
+                    **_enrich_paper_for_citation_graph(
+                        _stardust_paper_to_paper_item(enriched),
+                        payload.openalex_api_key,
+                        payload.contact_email
+                    )
+                }
+                _update_stardust_paper_graph_metadata(conn, stardust_id, enriched)
+            except Exception as exc:
+                partial_failures.append({
+                    "paper_key": _trim_text(enriched.get("paper_key"), 300),
+                    "title": _trim_text(enriched.get("title"), 180),
+                    "detail": _trim_text(str(exc), 220),
+                })
+        enriched_papers.append(enriched)
+
+    graph_signature = _build_stardust_graph_signature(enriched_papers, payload.mode)
+    cached = _load_stardust_graph_cache(conn, stardust_id, payload.mode)
+    if cached and cached.get("graph_signature") == graph_signature and not payload.force_rebuild:
+        graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
+        conn.commit()
+        conn.close()
+        return {
+            "cache_hit": True,
+            "graph": {
+                "mode": payload.mode,
+                "nodes": cached.get("nodes") or [],
+                "edges": cached.get("edges") or [],
+                "stats": cached.get("meta") or {},
+            },
+            "graphs": graphs,
+        }
+
+    graph = _build_stardust_graph_result(enriched_papers, payload.mode, partial_failures)
+    graph_meta = {
+        **(graph.get("stats") or {}),
+        "mode": payload.mode,
+        "graph_signature": graph_signature,
+        "seed": {
+            "paper_key": _trim_text((seed_evidence_row or {}).get("paper_key"), 300),
+            "paper_title": _trim_text((seed_evidence_row or {}).get("paper_title"), MAX_PAPER_TITLE_LENGTH),
+            "paper_authors": _trim_text((seed_evidence_row or {}).get("paper_authors"), MAX_PAPER_AUTHORS_LENGTH),
+            "paper_year": _trim_text((seed_evidence_row or {}).get("paper_year"), 40),
+            "openalex_id": _trim_text((seed_graph_paper or {}).get("openalex_id"), 300),
+            "doi": _clean_doi((seed_graph_paper or {}).get("doi")),
+            "paper_url": _trim_text((seed_graph_paper or {}).get("paper_url"), 1000),
+            "publication_venue": _trim_text((seed_graph_paper or {}).get("publication_venue"), 300),
+            "citation_count": _safe_int((seed_graph_paper or {}).get("citation_count"), 0),
+            "referenced_openalex_ids": list((seed_graph_paper or {}).get("referenced_openalex_ids") or []),
+        },
+    }
+    _upsert_stardust_graph_cache(
+        conn,
+        stardust_id,
+        payload.mode,
+        graph_signature,
+        graph.get("nodes") or [],
+        graph.get("edges") or [],
+        graph_meta,
+    )
+    conn.commit()
+    graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
+    conn.close()
+
+    _write_audit_log(
+        "project_stardust_graph_build",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"stardust_id": stardust_id, "mode": payload.mode, "edge_count": int((graph.get("stats") or {}).get("edge_count") or 0)},
+        success=True
+    )
+    return {
+        "cache_hit": False,
+        "graph": graph,
+        "graphs": graphs,
+    }
+
+@app.patch("/api/projects/{project_id}/stardusts/{stardust_id}")
+async def update_project_stardust(project_id: int, stardust_id: int, payload: ChallengeStardustUpdateRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    payload = _validate_stardust_update_payload(payload)
+    fields = []
+    params = []
+    if payload.name is not None:
+        fields.append("name = ?")
+        params.append(payload.name)
+    if payload.sub_target_thesis is not None:
+        fields.append("sub_target_thesis = ?")
+        params.append(payload.sub_target_thesis)
+    if payload.status is not None:
+        fields.append("status = ?")
+        params.append(payload.status)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No stardust changes were provided.")
+    fields.append("updated_at = ?")
+    params.append(_now_ts())
+    params.append(stardust_id)
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE challenge_stardusts SET {', '.join(fields)} WHERE id = ?", params)
+    conn.commit()
+    cursor.execute("SELECT * FROM challenge_stardusts WHERE id = ?", (stardust_id,))
+    row = cursor.fetchone()
+    serialized = _serialize_stardust_row(conn, dict(row), include_children=False)
+    conn.close()
+
+    _write_audit_log(
+        "project_stardust_update",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"stardust_id": stardust_id},
+        success=True
+    )
+    return {"stardust": serialized}
+
+@app.patch("/api/projects/{project_id}/stardusts/{stardust_id}/papers/{paper_id}")
+async def patch_project_stardust_paper(project_id: int, stardust_id: int, paper_id: int, payload: ChallengeStardustPaperPatchRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    fields = []
+    params = []
+    if payload.selected_for_import is not None:
+        fields.append("selected_for_import = ?")
+        params.append(1 if payload.selected_for_import else 0)
+    if payload.hidden is not None:
+        fields.append("hidden = ?")
+        params.append(1 if payload.hidden else 0)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No stardust paper changes were provided.")
+    fields.append("updated_at = ?")
+    params.append(_now_ts())
+    params.extend([paper_id, stardust_id])
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM challenge_stardust_papers WHERE id = ? AND stardust_id = ?",
+        (paper_id, stardust_id)
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Challenge Stardust paper not found.")
+
+    cursor.execute(
+        f"UPDATE challenge_stardust_papers SET {', '.join(fields)} WHERE id = ? AND stardust_id = ?",
+        params
+    )
+    conn.commit()
+    cursor.execute("SELECT * FROM challenge_stardust_papers WHERE id = ?", (paper_id,))
+    updated = _serialize_stardust_paper_row(dict(cursor.fetchone()))
+    conn.close()
+
+    _write_audit_log(
+        "project_stardust_patch_paper",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"stardust_id": stardust_id, "paper_id": paper_id},
+        success=True
+    )
+    return {"paper": updated}
+
+@app.delete("/api/projects/{project_id}/stardusts/{stardust_id}")
+async def delete_project_stardust(project_id: int, stardust_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    _delete_stardust_records(conn, stardust_id)
+    conn.commit()
+    conn.close()
+    _write_audit_log(
+        "project_stardust_delete",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"stardust_id": stardust_id},
+        success=True
+    )
+    return {"deleted": True, "stardust_id": stardust_id}
+
+@app.post("/api/projects/{project_id}/claims/{claim_id}/analyze")
+async def analyze_project_claim(project_id: int, claim_id: int, payload: ClaimAnalyzeRequest, current_user: dict = Depends(_require_session)):
+    project_data = _get_owned_project(project_id, current_user["user_id"])
+    claim = _get_owned_claim(project_id, claim_id, current_user["user_id"])
+    if _normalize_claim_status(claim.get("status")) == "archived":
+        raise HTTPException(status_code=409, detail="Archived claims cannot be analyzed.")
+    payload = _validate_claim_analyze_payload(payload)
+    lock = await _acquire_project_task_lock(project_id, f"claim_analysis_{claim_id}")
+    run_id = _create_claim_analysis_run(claim_id, project_id)
+    conn = None
+    try:
+        candidates = _build_claim_candidate_pool(
+            project_data,
+            claim,
+            payload.include_statuses,
+            payload.max_candidates,
+            payload.prefer_fulltext
+        )
+        analyzed_items, llm_used = _analyze_claim_candidates(project_data, claim, candidates)
+        now = _now_ts()
+        conn = _db_connect(row_factory=True)
+        cursor = conn.cursor()
+        if payload.reanalyze_overrides:
+            cursor.execute("DELETE FROM claim_evidence_items WHERE claim_id = ?", (claim_id,))
+            manual_keys = set()
+        else:
+            cursor.execute("DELETE FROM claim_evidence_items WHERE claim_id = ? AND user_override = 0", (claim_id,))
+            cursor.execute("SELECT paper_key FROM claim_evidence_items WHERE claim_id = ? AND user_override = 1", (claim_id,))
+            manual_keys = {str(row["paper_key"]) for row in cursor.fetchall()}
+
+        inserted_count = 0
+        for item in analyzed_items:
+            paper_key = str(item.get("paper_key") or "").strip()
+            if not paper_key or (paper_key in manual_keys and not payload.reanalyze_overrides):
+                continue
+            cursor.execute(
+                '''INSERT OR REPLACE INTO claim_evidence_items (
+                    claim_id, project_id, paper_key, paper_title, paper_year, paper_authors, citation_key,
+                    stance, strength_score, relevance_score, confidence_score, quality_score,
+                    why_matched, caveat, evidence_snippets_json, source_pass, user_override,
+                    pinned, hidden, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (
+                    claim_id,
+                    project_id,
+                    paper_key,
+                    item.get("paper_title", ""),
+                    item.get("paper_year", ""),
+                    item.get("paper_authors", ""),
+                    item.get("citation_key", ""),
+                    _normalize_claim_stance(item.get("stance")),
+                    float(item.get("strength_score") or 0),
+                    float(item.get("relevance_score") or 0),
+                    float(item.get("confidence_score") or 0),
+                    float(item.get("quality_score") or 0),
+                    _trim_text(item.get("why_matched"), MAX_EVIDENCE_WHY_MATCHED_LENGTH),
+                    _trim_text(item.get("caveat"), MAX_EVIDENCE_CAVEAT_LENGTH),
+                    json.dumps(item.get("evidence_snippets") or [], ensure_ascii=False),
+                    "llm" if llm_used else "heuristic",
+                    0,
+                    0,
+                    0,
+                    now,
+                    now,
+                )
+            )
+            inserted_count += 1
+
+        cursor.execute("UPDATE project_claims SET updated_at = ? WHERE id = ?", (now, claim_id))
+        conn.commit()
+        cursor.execute(
+            "SELECT stance, COUNT(*) AS item_count FROM claim_evidence_items WHERE claim_id = ? AND hidden = 0 GROUP BY stance",
+            (claim_id,)
+        )
+        summary = _default_claim_summary()
+        for row in cursor.fetchall():
+            summary[_normalize_claim_stance(row["stance"])] = int(row["item_count"] or 0)
+        conn.close()
+
+        _update_claim_analysis_run(
+            run_id,
+            candidate_count=len(candidates),
+            analyzed_count=inserted_count,
+            status="completed",
+            summary_json=json.dumps({"summary": summary, "llm_used": llm_used}, ensure_ascii=False),
+            error_text="",
+            updated_at=now,
+        )
+        _write_audit_log(
+            "project_claim_analyze",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={"claim_id": claim_id, "candidate_count": len(candidates), "inserted_count": inserted_count, "llm_used": llm_used},
+            success=True
+        )
+        cleanup_result = _cleanup_claim_caches(force=True)
+        return {
+            "run": {
+                "id": run_id,
+                "status": "completed",
+                "candidate_count": len(candidates),
+                "analyzed_count": inserted_count,
+            },
+            "summary": summary,
+            "cache_maintenance": cleanup_result
+        }
+    except HTTPException as exc:
+        _update_claim_analysis_run(
+            run_id,
+            status="failed",
+            error_text=_trim_text(str(exc.detail), 2000),
+            updated_at=_now_ts(),
+        )
+        raise
+    except Exception as exc:
+        _update_claim_analysis_run(
+            run_id,
+            status="failed",
+            error_text=_trim_text(str(exc), 2000),
+            updated_at=_now_ts(),
+        )
+        raise HTTPException(status_code=502, detail=f"Claim analysis failed: {exc}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        lock.release()
+
+@app.get("/api/projects/{project_id}/claims/{claim_id}/board")
+async def get_claim_evidence_board(project_id: int, claim_id: int, current_user: dict = Depends(_require_session)):
+    claim = _get_owned_claim(project_id, claim_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM claim_evidence_items WHERE claim_id = ? AND hidden = 0 ORDER BY pinned DESC, strength_score DESC, relevance_score DESC, id DESC",
+        (claim_id,)
+    )
+    rows = [_serialize_claim_evidence_row(dict(row)) for row in cursor.fetchall()]
+    cursor.execute(
+        "SELECT * FROM claim_analysis_runs WHERE claim_id = ? ORDER BY id DESC LIMIT 1",
+        (claim_id,)
+    )
+    latest_run_row = cursor.fetchone()
+    conn.close()
+    board = {stance: [] for stance in sorted(CLAIM_STANCE_VALUES)}
+    summary = _default_claim_summary()
+    for row in rows:
+        stance = _normalize_claim_stance(row.get("stance"))
+        board.setdefault(stance, []).append(row)
+        summary[stance] = summary.get(stance, 0) + 1
+    return {
+        "claim": {
+            **claim,
+            "claim_type": _normalize_claim_type(claim.get("claim_type")),
+            "status": _normalize_claim_status(claim.get("status")),
+        },
+        "board": board,
+        "summary": summary,
+        "meta": {
+            "last_run": dict(latest_run_row) if latest_run_row else None
+        }
+    }
+
+@app.patch("/api/projects/{project_id}/claims/{claim_id}/evidence/{evidence_id}")
+async def patch_claim_evidence_item(project_id: int, claim_id: int, evidence_id: int, payload: ClaimEvidencePatchRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_claim(project_id, claim_id, current_user["user_id"])
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM claim_evidence_items WHERE id = ? AND claim_id = ? AND project_id = ?",
+        (evidence_id, claim_id, project_id)
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Evidence item not found.")
+
+    fields = []
+    params = []
+    user_override_touched = False
+    if payload.stance is not None:
+        fields.append("stance = ?")
+        params.append(_normalize_claim_stance(payload.stance))
+        user_override_touched = True
+    if payload.pinned is not None:
+        fields.append("pinned = ?")
+        params.append(1 if payload.pinned else 0)
+    if payload.hidden is not None:
+        fields.append("hidden = ?")
+        params.append(1 if payload.hidden else 0)
+    if payload.why_matched is not None:
+        fields.append("why_matched = ?")
+        params.append(_trim_text(payload.why_matched, MAX_EVIDENCE_WHY_MATCHED_LENGTH))
+        user_override_touched = True
+    if payload.caveat is not None:
+        fields.append("caveat = ?")
+        params.append(_trim_text(payload.caveat, MAX_EVIDENCE_CAVEAT_LENGTH))
+        user_override_touched = True
+    if payload.user_override is not None:
+        fields.append("user_override = ?")
+        params.append(1 if payload.user_override else 0)
+    elif user_override_touched:
+        fields.append("user_override = ?")
+        params.append(1)
+    if not fields:
+        conn.close()
+        raise HTTPException(status_code=400, detail="No evidence changes were provided.")
+    fields.append("updated_at = ?")
+    params.append(_now_ts())
+    params.append(evidence_id)
+    cursor.execute(f"UPDATE claim_evidence_items SET {', '.join(fields)} WHERE id = ?", params)
+    conn.commit()
+    cursor.execute("SELECT * FROM claim_evidence_items WHERE id = ?", (evidence_id,))
+    updated = _serialize_claim_evidence_row(dict(cursor.fetchone()))
+    conn.close()
+    _write_audit_log(
+        "project_claim_patch_evidence",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"claim_id": claim_id, "evidence_id": evidence_id},
+        success=True
+    )
+    return {"evidence": updated}
+
+@app.post("/api/projects/{project_id}/claims/{claim_id}/challenge-expand")
+async def expand_claim_challenge_seed(project_id: int, claim_id: int, payload: ChallengeExpansionRequest, current_user: dict = Depends(_require_session)):
+    project_data = _get_owned_project(project_id, current_user["user_id"])
+    claim = _get_owned_claim(project_id, claim_id, current_user["user_id"])
+    payload = _validate_challenge_expansion_payload(payload)
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM claim_evidence_items WHERE id = ? AND claim_id = ? AND project_id = ? AND hidden = 0",
+        (payload.evidence_id, claim_id, project_id)
+    )
+    evidence_row = cursor.fetchone()
+    conn.close()
+    if not evidence_row:
+        raise HTTPException(status_code=404, detail="Challenge seed evidence item not found.")
+
+    result = _expand_challenge_seed(project_data, claim, dict(evidence_row), payload)
+    _write_audit_log(
+        "project_claim_expand_challenge",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"claim_id": claim_id, "evidence_id": payload.evidence_id, "returned_count": len(result.get("recommendations") or [])},
+        success=True
+    )
+    return result
+
+@app.delete("/api/projects/{project_id}/claims/{claim_id}")
+async def archive_project_claim(project_id: int, claim_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_claim(project_id, claim_id, current_user["user_id"])
+    now = _now_ts()
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE project_claims SET status = ?, updated_at = ? WHERE id = ? AND project_id = ?",
+        ("archived", now, claim_id, project_id)
+    )
+    conn.commit()
+    conn.close()
+    _write_audit_log(
+        "project_claim_archive",
+        user_id=current_user["user_id"],
+        project_id=project_id,
+        detail={"claim_id": claim_id},
+        success=True
+    )
+    return {"message": "Claim archived"}
+
 @app.post("/api/papers/lookup")
 async def lookup_paper_metadata(payload: PaperLookupRequest, current_user: dict = Depends(_require_session)):
     try:
@@ -3746,6 +8496,16 @@ async def llm_text(payload: LlmProxyRequest, current_user: dict = Depends(_requi
         raise HTTPException(status_code=400, detail="Prompt is required")
     return {"text": _call_llm_from_env(prompt, temperature=payload.temperature, json_mode=payload.json_mode)}
 
+@app.post("/api/llm/vision")
+async def llm_vision(payload: LlmVisionRequest, current_user: dict = Depends(_require_session)):
+    prompt = _trim_text(payload.prompt, 120000)
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+    image_data_url = _trim_text(payload.image_data_url, 8_000_000)
+    if not image_data_url:
+        raise HTTPException(status_code=400, detail="Image data is required")
+    return {"text": _call_vision_llm_from_env(prompt, image_data_url=image_data_url, temperature=payload.temperature, json_mode=payload.json_mode)}
+
 @app.get("/api/zotero/collections")
 async def zotero_collections(current_user: dict = Depends(_require_session)):
     payload = _apply_runtime_defaults_to_zotero(ZoteroSyncRequest(zotero_user_id=""))
@@ -3820,6 +8580,28 @@ async def zotero_upload(payload: ZoteroUploadRequest, current_user: dict = Depen
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Zotero upload failed: {exc}")
     _write_audit_log("zotero_upload", user_id=current_user["user_id"], detail=result, success=True)
+    return result
+
+@app.post("/api/zotero/read-paper/export")
+async def zotero_read_paper_export(payload: ReadPaperZoteroExportRequest, current_user: dict = Depends(_require_session)):
+    try:
+        result = _export_read_paper_to_zotero(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Read A Paper Zotero export failed: {exc}")
+    _write_audit_log(
+        "zotero_read_paper_export",
+        user_id=current_user["user_id"],
+        detail={
+            "paper_title": _trim_text(payload.paper.title, MAX_PAPER_TITLE_LENGTH),
+            "parent_item_key": result.get("parent_item_key", ""),
+            "attachment_item_key": result.get("attachment_item_key", ""),
+            "highlighted_passage_count": result.get("highlighted_passage_count", 0),
+            "note_count": result.get("note_count", 0),
+        },
+        success=True
+    )
     return result
 
 @app.post("/api/papers/citations")
@@ -3937,6 +8719,21 @@ async def get_citation_graph_job(job_id: str, current_user: dict = Depends(_requ
     job = CITATION_GRAPH_JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Citation graph job not found.")
+    return job
+
+@app.post("/api/papers/semantic-cluster/jobs", response_model=SemanticClusterJobCreated)
+async def create_semantic_cluster_job(payload: SemanticClusterRequest, current_user: dict = Depends(_require_session)):
+    normalized_total = min(len(payload.papers), MAX_TOP_PAPERS, max(int(payload.assignment_limit or MAX_TOP_PAPERS), 0))
+    job_id = _create_semantic_cluster_job(normalized_total)
+    _write_audit_log("semantic_cluster_create", user_id=current_user["user_id"], detail={"paper_count": len(payload.papers), "assignment_limit": payload.assignment_limit, "job_id": job_id}, success=True)
+    asyncio.create_task(_run_semantic_cluster_job(job_id, payload))
+    return SemanticClusterJobCreated(job_id=job_id, status="queued")
+
+@app.get("/api/papers/semantic-cluster/jobs/{job_id}")
+async def get_semantic_cluster_job(job_id: str, current_user: dict = Depends(_require_session)):
+    job = SEMANTIC_CLUSTER_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Semantic cluster job not found.")
     return job
 
 @app.post("/api/update-account")
