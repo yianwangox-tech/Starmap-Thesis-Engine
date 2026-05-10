@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import base64
 import html
+import logging
 from pathlib import Path
 from http.client import IncompleteRead
 from urllib import error, parse, request
@@ -27,6 +28,7 @@ from datetime import date, timedelta
 from difflib import SequenceMatcher
 
 app = FastAPI(title="StarMap Backend API")
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -6480,6 +6482,20 @@ def _load_cached_zotero_items(account_key: str, collection_key: str) -> List[dic
             items.append(item)
     return items
 
+def _remove_cached_zotero_item(account_key: str, collection_key: str, item_key: str):
+    normalized_collection_key = str(collection_key or "")
+    normalized_item_key = str(item_key or "").strip()
+    if not account_key or not normalized_item_key:
+        return
+    conn = _db_connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM zotero_cache_items WHERE account_key = ? AND collection_key = ? AND item_key = ?",
+        (account_key, normalized_collection_key, normalized_item_key)
+    )
+    conn.commit()
+    conn.close()
+
 def _replace_zotero_cache_items(account_key: str, collection_key: str, items: List[dict], library_version: int):
     conn = _db_connect()
     cursor = conn.cursor()
@@ -6805,6 +6821,55 @@ def _delete_zotero_items(user_id: str, api_key: str, item_keys: List[str], libra
     _http_delete(url, headers=headers, timeout=60)
     return len(normalized_keys)
 
+def _delete_zotero_export_children_best_effort(user_id: str, api_key: str, item_keys: List[str], library_version: int) -> dict:
+    normalized_keys = [str(key or "").strip() for key in item_keys if str(key or "").strip()]
+    if not normalized_keys:
+        return {"deleted_count": 0, "failed_keys": [], "warning": ""}
+    try:
+        deleted_count = _delete_zotero_items(user_id, api_key, normalized_keys, library_version)
+        return {"deleted_count": deleted_count, "failed_keys": [], "warning": ""}
+    except HTTPException as batch_exc:
+        logger.warning(
+            "Batch delete of prior StarMap Zotero export children failed for user_id=%s item_keys=%s status=%s detail=%s",
+            user_id,
+            normalized_keys,
+            getattr(batch_exc, "status_code", ""),
+            getattr(batch_exc, "detail", "")
+        )
+
+    deleted_count = 0
+    failed_keys: List[str] = []
+    for item_key in normalized_keys:
+        try:
+            _, headers = _get_zotero_item(user_id, item_key, api_key)
+            latest_version = _extract_zotero_library_version(headers)
+            _delete_zotero_items(user_id, api_key, [item_key], latest_version)
+            deleted_count += 1
+        except HTTPException as item_exc:
+            if getattr(item_exc, "status_code", None) == 404:
+                deleted_count += 1
+                continue
+            failed_keys.append(item_key)
+            logger.warning(
+                "Per-item delete of prior StarMap Zotero export child failed for user_id=%s item_key=%s status=%s detail=%s",
+                user_id,
+                item_key,
+                getattr(item_exc, "status_code", ""),
+                getattr(item_exc, "detail", "")
+            )
+
+    warning = ""
+    if failed_keys:
+        warning = (
+            f"Zotero could not automatically remove {len(failed_keys)} previous StarMap export item"
+            f"{'' if len(failed_keys) == 1 else 's'}."
+        )
+    return {
+        "deleted_count": deleted_count,
+        "failed_keys": failed_keys,
+        "warning": warning
+    }
+
 def _ensure_parent_in_zotero_collection(item: dict, user_id: str, api_key: str, collection_key: str = ""):
     collection_key = _trim_text(collection_key, 120)
     if not collection_key:
@@ -7118,6 +7183,15 @@ def _paper_to_zotero_item(paper: PaperItem, collection_key: str = "") -> dict:
         payload["extra"] = _trim_text(paper.notes, 2000)
     return payload
 
+def _create_zotero_parent_item_for_paper(paper: PaperItem, sync_payload: ZoteroSyncRequest) -> Tuple[str, bool]:
+    parent_item = _paper_to_zotero_item(paper, sync_payload.collection_key)
+    parent_item["tags"] = [
+        {"tag": "StarMap Export"},
+        {"tag": "Read A Paper PDF"}
+    ]
+    created_items = _create_zotero_items([parent_item], sync_payload.zotero_user_id, sync_payload.zotero_api_key)
+    return (created_items[0].get("key") or "", True)
+
 def _extract_zotero_successful_entries(response: dict) -> List[dict]:
     successful = response.get("successful") or {}
     rows = []
@@ -7257,6 +7331,10 @@ def _build_read_paper_paper_note_html(paper_level: ReadPaperPaperLevelExport) ->
     ]
     return "".join(block for block in blocks if block)
 
+def _raise_zotero_export_step_error(step_label: str, exc: HTTPException):
+    detail = _trim_text(str(getattr(exc, "detail", "") or ""), 1200) or "No upstream detail returned."
+    raise HTTPException(status_code=exc.status_code, detail=f"Zotero export failed during {step_label}: {detail}")
+
 def _upload_zotero_attachment_file(user_id: str, api_key: str, attachment_key: str, filename: str, file_bytes: bytes, content_type: str = "application/pdf") -> dict:
     if not user_id or not attachment_key:
         raise HTTPException(status_code=400, detail="Zotero attachment upload requires a user ID and attachment key.")
@@ -7313,37 +7391,85 @@ def _export_read_paper_to_zotero(payload: ReadPaperZoteroExportRequest) -> dict:
     if not pdf_bytes:
         raise HTTPException(status_code=422, detail="The supplied PDF payload was empty.")
 
-    existing_item = _find_existing_zotero_item_for_paper(payload.paper, sync_payload)
+    account_key = _zotero_account_cache_key(sync_payload)
+    try:
+        existing_item = _find_existing_zotero_item_for_paper(payload.paper, sync_payload)
+    except HTTPException as exc:
+        _raise_zotero_export_step_error("matching the paper against existing Zotero items", exc)
     created_parent = False
+    stale_parent_key = ""
     if existing_item:
-        _ensure_parent_in_zotero_collection(existing_item, sync_payload.zotero_user_id, sync_payload.zotero_api_key, sync_payload.collection_key)
-        parent_key = existing_item.get("key") or (existing_item.get("data") or {}).get("key") or ""
+        stale_parent_key = existing_item.get("key") or (existing_item.get("data") or {}).get("key") or ""
+        try:
+            _ensure_parent_in_zotero_collection(existing_item, sync_payload.zotero_user_id, sync_payload.zotero_api_key, sync_payload.collection_key)
+        except HTTPException as exc:
+            if exc.status_code == 404 and stale_parent_key:
+                _remove_cached_zotero_item(account_key, "", stale_parent_key)
+                if sync_payload.collection_key:
+                    _remove_cached_zotero_item(account_key, sync_payload.collection_key, stale_parent_key)
+                existing_item = None
+            else:
+                _raise_zotero_export_step_error("ensuring the existing Zotero parent item is in the selected collection", exc)
+        if existing_item:
+            parent_key = existing_item.get("key") or (existing_item.get("data") or {}).get("key") or ""
+        else:
+            try:
+                parent_key, created_parent = _create_zotero_parent_item_for_paper(payload.paper, sync_payload)
+            except HTTPException as exc:
+                _raise_zotero_export_step_error("creating the Zotero parent item after removing a stale cached match", exc)
     else:
-        parent_item = _paper_to_zotero_item(payload.paper, sync_payload.collection_key)
-        parent_item["tags"] = [
-            {"tag": "StarMap Export"},
-            {"tag": "Read A Paper PDF"}
-        ]
-        created_items = _create_zotero_items([parent_item], sync_payload.zotero_user_id, sync_payload.zotero_api_key)
-        parent_key = created_items[0].get("key") or ""
-        created_parent = True
+        try:
+            parent_key, created_parent = _create_zotero_parent_item_for_paper(payload.paper, sync_payload)
+        except HTTPException as exc:
+            _raise_zotero_export_step_error("creating the Zotero parent item", exc)
     if not parent_key:
         raise HTTPException(status_code=502, detail="Could not determine the Zotero parent item key for this export.")
 
-    existing_children, child_headers = _get_zotero_child_items_with_meta(parent_key=parent_key, user_id=sync_payload.zotero_user_id, api_key=sync_payload.zotero_api_key)
+    try:
+        existing_children, child_headers = _get_zotero_child_items_with_meta(parent_key=parent_key, user_id=sync_payload.zotero_user_id, api_key=sync_payload.zotero_api_key)
+    except HTTPException as exc:
+        if exc.status_code == 404 and stale_parent_key:
+            _remove_cached_zotero_item(account_key, "", stale_parent_key)
+            if sync_payload.collection_key:
+                _remove_cached_zotero_item(account_key, sync_payload.collection_key, stale_parent_key)
+            try:
+                parent_key, created_parent = _create_zotero_parent_item_for_paper(payload.paper, sync_payload)
+                existing_children, child_headers = [], {}
+            except HTTPException as create_exc:
+                _raise_zotero_export_step_error("creating a fresh Zotero parent item after the previous cached match was not found", create_exc)
+        else:
+            _raise_zotero_export_step_error("loading existing child items under the Zotero parent item", exc)
     export_child_keys = [
         child.get("key") or (child.get("data") or {}).get("key") or ""
         for child in existing_children
         if _is_starmap_read_paper_export_child(child)
     ]
     deleted_export_children = 0
+    cleanup_warning = ""
     if export_child_keys:
-        deleted_export_children = _delete_zotero_items(
+        cleanup_result = _delete_zotero_export_children_best_effort(
             sync_payload.zotero_user_id,
             sync_payload.zotero_api_key,
             export_child_keys,
             int(child_headers.get("last-modified-version") or 0)
         )
+        deleted_export_children = int(cleanup_result.get("deleted_count") or 0)
+        cleanup_warning = _trim_text(cleanup_result.get("warning"), 800)
+        if cleanup_result.get("failed_keys"):
+            cleanup_warning = _trim_text(
+                (
+                    f"{cleanup_warning} A duplicate export may still exist in Zotero. "
+                    f"Please open Zotero and manually delete the older duplicate item(s) or StarMap export attachment/note under "
+                    f"\"{_trim_text(payload.paper.title, MAX_PAPER_TITLE_LENGTH) or 'Untitled'}\"."
+                ),
+                800
+            )
+            logger.warning(
+                "Continuing Zotero export after partial cleanup failure for user_id=%s paper=%s failed_child_keys=%s",
+                sync_payload.zotero_user_id,
+                _trim_text(payload.paper.title, MAX_PAPER_TITLE_LENGTH),
+                cleanup_result.get("failed_keys") or []
+            )
 
     attachment_filename = _sanitize_zotero_filename(payload.pdf_filename or payload.paper.filename or f"{payload.paper.title or 'starmap_marked'}.pdf")
     attachment_item = {
@@ -7356,18 +7482,24 @@ def _export_read_paper_to_zotero(payload: ReadPaperZoteroExportRequest) -> dict:
         "note": "<p>Uploaded from StarMap Read A Paper PDF.</p>",
         "tags": [{"tag": "StarMap Read A Paper Export"}]
     }
-    attachment_created = _create_zotero_items([attachment_item], sync_payload.zotero_user_id, sync_payload.zotero_api_key)
+    try:
+        attachment_created = _create_zotero_items([attachment_item], sync_payload.zotero_user_id, sync_payload.zotero_api_key)
+    except HTTPException as exc:
+        _raise_zotero_export_step_error("creating the Zotero PDF attachment item", exc)
     attachment_key = attachment_created[0].get("key") or ""
     if not attachment_key:
         raise HTTPException(status_code=502, detail="Zotero accepted the attachment item but did not return its key.")
-    upload_result = _upload_zotero_attachment_file(
-        sync_payload.zotero_user_id,
-        sync_payload.zotero_api_key,
-        attachment_key,
-        attachment_filename,
-        pdf_bytes,
-        "application/pdf"
-    )
+    try:
+        upload_result = _upload_zotero_attachment_file(
+            sync_payload.zotero_user_id,
+            sync_payload.zotero_api_key,
+            attachment_key,
+            attachment_filename,
+            pdf_bytes,
+            "application/pdf"
+        )
+    except HTTPException as exc:
+        _raise_zotero_export_step_error("uploading the annotated PDF file to the Zotero attachment", exc)
 
     note_items = []
     for index, passage in enumerate(payload.marked_passages or [], start=1):
@@ -7390,7 +7522,10 @@ def _export_read_paper_to_zotero(payload: ReadPaperZoteroExportRequest) -> dict:
         })
     created_note_keys = []
     if note_items:
-        created_note_keys = [item.get("key") or "" for item in _create_zotero_items(note_items, sync_payload.zotero_user_id, sync_payload.zotero_api_key)]
+        try:
+            created_note_keys = [item.get("key") or "" for item in _create_zotero_items(note_items, sync_payload.zotero_user_id, sync_payload.zotero_api_key)]
+        except HTTPException as exc:
+            _raise_zotero_export_step_error("creating the Zotero note items for marked passages and critique", exc)
 
     return {
         "parent_item_key": parent_key,
@@ -7402,6 +7537,8 @@ def _export_read_paper_to_zotero(payload: ReadPaperZoteroExportRequest) -> dict:
         "note_keys": [key for key in created_note_keys if key],
         "note_count": len([key for key in created_note_keys if key]),
         "deleted_previous_export_children": deleted_export_children,
+        "cleanup_warning": cleanup_warning,
+        "cleanup_duplicate_title": _trim_text(payload.paper.title, MAX_PAPER_TITLE_LENGTH),
         "notes_preserve_passage_mapping": True,
         "passage_mapping_mode": "Each Zotero child note stores the quoted passage, page number, and normalized highlight coordinates.",
         "native_zotero_annotation_objects_created": False
@@ -8586,22 +8723,41 @@ async def zotero_upload(payload: ZoteroUploadRequest, current_user: dict = Depen
 async def zotero_read_paper_export(payload: ReadPaperZoteroExportRequest, current_user: dict = Depends(_require_session)):
     try:
         result = _export_read_paper_to_zotero(payload)
-    except HTTPException:
+    except HTTPException as exc:
+        logger.warning(
+            "Read A Paper Zotero export failed with HTTPException for user_id=%s paper=%s status=%s detail=%s",
+            current_user.get("user_id"),
+            _trim_text(payload.paper.title, MAX_PAPER_TITLE_LENGTH),
+            exc.status_code,
+            getattr(exc, "detail", "")
+        )
         raise
     except Exception as exc:
+        logger.exception(
+            "Read A Paper Zotero export crashed for user_id=%s paper=%s",
+            current_user.get("user_id"),
+            _trim_text(payload.paper.title, MAX_PAPER_TITLE_LENGTH)
+        )
         raise HTTPException(status_code=502, detail=f"Read A Paper Zotero export failed: {exc}")
-    _write_audit_log(
-        "zotero_read_paper_export",
-        user_id=current_user["user_id"],
-        detail={
-            "paper_title": _trim_text(payload.paper.title, MAX_PAPER_TITLE_LENGTH),
-            "parent_item_key": result.get("parent_item_key", ""),
-            "attachment_item_key": result.get("attachment_item_key", ""),
-            "highlighted_passage_count": result.get("highlighted_passage_count", 0),
-            "note_count": result.get("note_count", 0),
-        },
-        success=True
-    )
+    try:
+        _write_audit_log(
+            "zotero_read_paper_export",
+            user_id=current_user["user_id"],
+            detail={
+                "paper_title": _trim_text(payload.paper.title, MAX_PAPER_TITLE_LENGTH),
+                "parent_item_key": result.get("parent_item_key", ""),
+                "attachment_item_key": result.get("attachment_item_key", ""),
+                "highlighted_passage_count": result.get("highlighted_passage_count", 0),
+                "note_count": result.get("note_count", 0),
+            },
+            success=True
+        )
+    except Exception:
+        logger.exception(
+            "Read A Paper Zotero export succeeded but audit log write failed for user_id=%s paper=%s",
+            current_user.get("user_id"),
+            _trim_text(payload.paper.title, MAX_PAPER_TITLE_LENGTH)
+        )
     return result
 
 @app.post("/api/papers/citations")
