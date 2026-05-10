@@ -4,6 +4,13 @@ StarMap System is a thesis-centered literature analysis workspace for academic r
 
 The product is designed for users who do not just want to store papers, but want to actively shape a research repository around a live argument: define the target thesis, build a focused seed library, identify core papers, inspect citation structure, monitor new literature, and keep writing-ready references close at hand.
 
+## Documentation
+
+StarMap now ships with two complementary English technical documents aimed at different readers:
+
+- [StarMap Primary Guide for Research Leads and New Contributors](./StarMap_Primary_Guide_for_Research_Leads_and_New_Contributors.md) explains the system from the research workflow and architecture perspective.
+- [StarMap Companion Reference for Implementers and Auditors](./StarMap_Companion_Reference_for_Implementers_and_Auditors.md) covers lower-level implementation details, function-level algorithm notes, defaults, thresholds, and local weight ledgers.
+
 ## What StarMap Is For
 
 StarMap works best when one project represents one research direction. A project stores the thesis title, target abstract, and current draft content, then uses that context to rank papers, explain match quality, support clustering, and guide watch recommendations.
