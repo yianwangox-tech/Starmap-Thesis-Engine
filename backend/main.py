@@ -24,7 +24,7 @@ import logging
 from pathlib import Path
 from http.client import IncompleteRead
 from urllib import error, parse, request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
 app = FastAPI(title="StarMap Backend API")
@@ -97,6 +97,14 @@ MAX_READ_PAPER_FINDING_DETAIL_LENGTH = 1400
 MAX_READ_PAPER_QUESTIONS_TO_PRESS = 6
 READ_PAPER_MAX_PAPERS = 12
 READ_PAPER_MAX_FINDINGS_PER_SECTION = 6
+MAX_ATLAS_CLIENT_KEY_LENGTH = 240
+MAX_ATLAS_PAPER_KEY_LENGTH = 300
+MAX_ATLAS_LABEL_LENGTH = 240
+MAX_ATLAS_NOTE_LENGTH = 4000
+MAX_ATLAS_KIND_LENGTH = 80
+MAX_ATLAS_SURFACE_LENGTH = 80
+MAX_ATLAS_COLOR_LENGTH = 40
+MAX_ATLAS_META_JSON_LENGTH = 20000
 MAX_CHALLENGE_EXPANSION_REFERENCES = 12
 MAX_CHALLENGE_EXPANSION_CITED_BY = 12
 MAX_CHALLENGE_EXPANSION_CANDIDATES = 18
@@ -555,6 +563,79 @@ def _ensure_stardust_schema(cursor):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_openalex ON challenge_stardust_papers (openalex_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_graph_cache_stardust_id ON challenge_stardust_graph_cache (stardust_id)")
 
+def _ensure_atlas_schema(cursor):
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS atlas_anchor (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            client_key TEXT NOT NULL,
+            paper_key TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            authors TEXT NOT NULL DEFAULT '',
+            year TEXT NOT NULL DEFAULT '',
+            label TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            anchor_kind TEXT NOT NULL DEFAULT 'marked',
+            pinned INTEGER NOT NULL DEFAULT 1,
+            created_from_surface TEXT NOT NULL DEFAULT '',
+            meta_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            UNIQUE (project_id, client_key)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS atlas_trail (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            client_key TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            root_anchor_id INTEGER,
+            root_paper_key TEXT NOT NULL DEFAULT '',
+            color TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_from_surface TEXT NOT NULL DEFAULT '',
+            meta_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (root_anchor_id) REFERENCES atlas_anchor (id),
+            UNIQUE (project_id, client_key)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS atlas_relation (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            client_key TEXT NOT NULL,
+            trail_id INTEGER,
+            source_anchor_id INTEGER,
+            source_paper_key TEXT NOT NULL DEFAULT '',
+            target_paper_key TEXT NOT NULL DEFAULT '',
+            relation_kind TEXT NOT NULL DEFAULT 'manual',
+            note TEXT NOT NULL DEFAULT '',
+            confidence REAL,
+            created_from_surface TEXT NOT NULL DEFAULT '',
+            meta_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (trail_id) REFERENCES atlas_trail (id),
+            FOREIGN KEY (source_anchor_id) REFERENCES atlas_anchor (id),
+            UNIQUE (project_id, client_key)
+        )'''
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_anchor_project_id ON atlas_anchor (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_anchor_paper_key ON atlas_anchor (project_id, paper_key)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_trail_project_id ON atlas_trail (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_relation_project_id ON atlas_relation (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_relation_trail_id ON atlas_relation (trail_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_relation_source_target ON atlas_relation (project_id, source_paper_key, target_paper_key)")
+
 def init_db():
     conn = sqlite3.connect(str(DB_FILE))
     cursor = conn.cursor()
@@ -593,6 +674,7 @@ def init_db():
     _ensure_projects_schema(cursor)
     _ensure_claims_schema(cursor)
     _ensure_stardust_schema(cursor)
+    _ensure_atlas_schema(cursor)
     cursor.execute("UPDATE claim_evidence_items SET stance = 'setup' WHERE LOWER(COALESCE(stance, '')) IN ('method', 'methods', 'methodology')")
     cursor.execute("UPDATE claim_evidence_items SET stance = 'pending' WHERE LOWER(COALESCE(stance, '')) IN ('background', 'context', 'foundation')")
     cursor.execute("SELECT id, top_papers FROM projects")
@@ -1102,6 +1184,934 @@ def _validate_paper_list(papers: List["PaperItem"]):
         paper.citation_key = _trim_text(paper.citation_key, 120) or generate_citation_key(paper.model_dump())
         if not paper.filename or not paper.title:
             raise HTTPException(status_code=422, detail="Every paper must include a filename and title.")
+
+def _coerce_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+def _parse_client_timestamp(value) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        timestamp = int(value)
+        return timestamp if timestamp > 0 else None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        numeric = int(float(text))
+        return numeric if numeric > 0 else None
+    except Exception:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp())
+    except Exception:
+        return None
+
+def _atlas_meta_json(raw_meta) -> str:
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
+    try:
+        serialized = _stable_json_dumps(meta)
+    except Exception:
+        return "{}"
+    if len(serialized) > MAX_ATLAS_META_JSON_LENGTH:
+        return '{"truncated":true}'
+    return serialized
+
+def _parse_atlas_meta_json(raw_value) -> Dict[str, Any]:
+    try:
+        parsed = json.loads(raw_value or "{}")
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+def _normalize_atlas_anchor_import(item: AtlasAnchorImportItem, now_ts: int) -> Optional[Dict[str, Any]]:
+    client_key = _trim_text(item.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    paper_key = _trim_text(item.paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    if not client_key or not paper_key:
+        return None
+    created_at = _parse_client_timestamp(item.created_at) or now_ts
+    updated_at = _parse_client_timestamp(item.updated_at) or created_at
+    return {
+        "client_key": client_key,
+        "paper_key": paper_key,
+        "title": _trim_text(item.title, MAX_PAPER_TITLE_LENGTH),
+        "authors": _trim_text(item.authors, MAX_PAPER_AUTHORS_LENGTH),
+        "year": _trim_text(item.year, 40),
+        "label": _trim_text(item.label, MAX_ATLAS_LABEL_LENGTH),
+        "note": _trim_text(item.note, MAX_ATLAS_NOTE_LENGTH),
+        "anchor_kind": _trim_text(item.anchor_kind, MAX_ATLAS_KIND_LENGTH).lower() or "marked",
+        "pinned": 1 if _coerce_bool(item.pinned, default=True) else 0,
+        "created_from_surface": _trim_text(item.created_from_surface, MAX_ATLAS_SURFACE_LENGTH),
+        "meta_json": _atlas_meta_json(item.meta),
+        "created_at": created_at,
+        "updated_at": max(updated_at, created_at),
+        "archived_at": _parse_client_timestamp(item.archived_at),
+    }
+
+def _normalize_atlas_trail_import(item: AtlasTrailImportItem, now_ts: int) -> Optional[Dict[str, Any]]:
+    client_key = _trim_text(item.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if not client_key:
+        return None
+    created_at = _parse_client_timestamp(item.created_at) or now_ts
+    updated_at = _parse_client_timestamp(item.updated_at) or created_at
+    return {
+        "client_key": client_key,
+        "name": _trim_text(item.name, MAX_ATLAS_LABEL_LENGTH) or "Untitled Trail",
+        "root_paper_key": _trim_text(item.root_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH),
+        "root_anchor_client_key": _trim_text(item.root_anchor_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+        "color": _trim_text(item.color, MAX_ATLAS_COLOR_LENGTH),
+        "note": _trim_text(item.note, MAX_ATLAS_NOTE_LENGTH),
+        "created_from_surface": _trim_text(item.created_from_surface, MAX_ATLAS_SURFACE_LENGTH),
+        "meta_json": _atlas_meta_json(item.meta),
+        "created_at": created_at,
+        "updated_at": max(updated_at, created_at),
+        "archived_at": _parse_client_timestamp(item.archived_at),
+    }
+
+def _normalize_atlas_relation_import(item: AtlasRelationImportItem, now_ts: int) -> Optional[Dict[str, Any]]:
+    client_key = _trim_text(item.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    source_paper_key = _trim_text(item.source_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    target_paper_key = _trim_text(item.target_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    if not client_key or not source_paper_key or not target_paper_key or source_paper_key == target_paper_key:
+        return None
+    created_at = _parse_client_timestamp(item.created_at) or now_ts
+    updated_at = _parse_client_timestamp(item.updated_at) or created_at
+    confidence = item.confidence
+    if confidence is not None:
+        try:
+            confidence = float(confidence)
+        except Exception:
+            confidence = None
+    return {
+        "client_key": client_key,
+        "trail_client_key": _trim_text(item.trail_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+        "source_anchor_client_key": _trim_text(item.source_anchor_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+        "source_paper_key": source_paper_key,
+        "target_paper_key": target_paper_key,
+        "relation_kind": _trim_text(item.relation_kind, MAX_ATLAS_KIND_LENGTH).lower() or "manual",
+        "note": _trim_text(item.note, MAX_ATLAS_NOTE_LENGTH),
+        "confidence": confidence,
+        "created_from_surface": _trim_text(item.created_from_surface, MAX_ATLAS_SURFACE_LENGTH),
+        "meta_json": _atlas_meta_json(item.meta),
+        "created_at": created_at,
+        "updated_at": max(updated_at, created_at),
+        "archived_at": _parse_client_timestamp(item.archived_at),
+    }
+
+def _select_preferred_anchor_id_by_paper_key(rows: List[sqlite3.Row]) -> Dict[str, int]:
+    ordered_rows = sorted(
+        rows,
+        key=lambda row: (
+            0 if str(row["anchor_kind"] or "") == "project_mark" else 1,
+            int(row["created_at"] or 0),
+            int(row["id"] or 0),
+        )
+    )
+    preferred: Dict[str, int] = {}
+    for row in ordered_rows:
+        paper_key = _trim_text(row["paper_key"], MAX_ATLAS_PAPER_KEY_LENGTH)
+        if paper_key and paper_key not in preferred:
+            preferred[paper_key] = int(row["id"])
+    return preferred
+
+def _serialize_atlas_anchor_row(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "project_id": int(row["project_id"]),
+        "client_key": row["client_key"],
+        "paper_key": row["paper_key"],
+        "title": row["title"],
+        "authors": row["authors"],
+        "year": row["year"],
+        "label": row["label"],
+        "note": row["note"],
+        "anchor_kind": row["anchor_kind"],
+        "pinned": bool(row["pinned"]),
+        "created_from_surface": row["created_from_surface"],
+        "meta": _parse_atlas_meta_json(row["meta_json"]),
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
+        "archived_at": int(row["archived_at"]) if row["archived_at"] is not None else None,
+    }
+
+def _serialize_atlas_trail_row(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "project_id": int(row["project_id"]),
+        "client_key": row["client_key"],
+        "name": row["name"],
+        "root_anchor_id": int(row["root_anchor_id"]) if row["root_anchor_id"] is not None else None,
+        "root_paper_key": row["root_paper_key"],
+        "color": row["color"],
+        "note": row["note"],
+        "created_from_surface": row["created_from_surface"],
+        "meta": _parse_atlas_meta_json(row["meta_json"]),
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
+        "archived_at": int(row["archived_at"]) if row["archived_at"] is not None else None,
+    }
+
+def _serialize_atlas_relation_row(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "project_id": int(row["project_id"]),
+        "client_key": row["client_key"],
+        "trail_id": int(row["trail_id"]) if row["trail_id"] is not None else None,
+        "source_anchor_id": int(row["source_anchor_id"]) if row["source_anchor_id"] is not None else None,
+        "source_paper_key": row["source_paper_key"],
+        "target_paper_key": row["target_paper_key"],
+        "relation_kind": row["relation_kind"],
+        "note": row["note"],
+        "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
+        "created_from_surface": row["created_from_surface"],
+        "meta": _parse_atlas_meta_json(row["meta_json"]),
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
+        "archived_at": int(row["archived_at"]) if row["archived_at"] is not None else None,
+    }
+
+def _load_project_atlas_snapshot(project_id: int) -> Dict[str, Any]:
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM atlas_anchor WHERE project_id = ? ORDER BY created_at ASC, id ASC", (project_id,))
+        anchors = [_serialize_atlas_anchor_row(row) for row in cursor.fetchall()]
+        cursor.execute("SELECT * FROM atlas_trail WHERE project_id = ? ORDER BY created_at ASC, id ASC", (project_id,))
+        trails = [_serialize_atlas_trail_row(row) for row in cursor.fetchall()]
+        cursor.execute("SELECT * FROM atlas_relation WHERE project_id = ? ORDER BY created_at ASC, id ASC", (project_id,))
+        relations = [_serialize_atlas_relation_row(row) for row in cursor.fetchall()]
+        return {
+            "anchors": anchors,
+            "trails": trails,
+            "relations": relations,
+            "counts": {
+                "anchors": len(anchors),
+                "trails": len(trails),
+                "relations": len(relations),
+            },
+        }
+    finally:
+        conn.close()
+
+def _import_legacy_atlas_payload(project_id: int, payload: AtlasLegacyImportRequest) -> Dict[str, Any]:
+    now_ts = _now_ts()
+    normalized_anchors: List[Dict[str, Any]] = []
+    normalized_trails: List[Dict[str, Any]] = []
+    normalized_relations: List[Dict[str, Any]] = []
+    seen_anchor_keys = set()
+    seen_trail_keys = set()
+    seen_relation_keys = set()
+
+    for item in payload.anchors[:500]:
+        normalized = _normalize_atlas_anchor_import(item, now_ts)
+        if not normalized or normalized["client_key"] in seen_anchor_keys:
+            continue
+        seen_anchor_keys.add(normalized["client_key"])
+        normalized_anchors.append(normalized)
+
+    for item in payload.trails[:300]:
+        normalized = _normalize_atlas_trail_import(item, now_ts)
+        if not normalized or normalized["client_key"] in seen_trail_keys:
+            continue
+        seen_trail_keys.add(normalized["client_key"])
+        normalized_trails.append(normalized)
+
+    for item in payload.relations[:1000]:
+        normalized = _normalize_atlas_relation_import(item, now_ts)
+        if not normalized or normalized["client_key"] in seen_relation_keys:
+            continue
+        seen_relation_keys.add(normalized["client_key"])
+        normalized_relations.append(normalized)
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        for anchor in normalized_anchors:
+            cursor.execute(
+                '''INSERT INTO atlas_anchor (
+                    project_id, client_key, paper_key, title, authors, year, label, note,
+                    anchor_kind, pinned, created_from_surface, meta_json, created_at, updated_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, client_key) DO UPDATE SET
+                    paper_key = excluded.paper_key,
+                    title = excluded.title,
+                    authors = excluded.authors,
+                    year = excluded.year,
+                    label = excluded.label,
+                    note = excluded.note,
+                    anchor_kind = excluded.anchor_kind,
+                    pinned = excluded.pinned,
+                    created_from_surface = excluded.created_from_surface,
+                    meta_json = excluded.meta_json,
+                    created_at = MIN(atlas_anchor.created_at, excluded.created_at),
+                    updated_at = MAX(atlas_anchor.updated_at, excluded.updated_at),
+                    archived_at = excluded.archived_at''',
+                (
+                    project_id,
+                    anchor["client_key"],
+                    anchor["paper_key"],
+                    anchor["title"],
+                    anchor["authors"],
+                    anchor["year"],
+                    anchor["label"],
+                    anchor["note"],
+                    anchor["anchor_kind"],
+                    anchor["pinned"],
+                    anchor["created_from_surface"],
+                    anchor["meta_json"],
+                    anchor["created_at"],
+                    anchor["updated_at"],
+                    anchor["archived_at"],
+                )
+            )
+
+        cursor.execute("SELECT * FROM atlas_anchor WHERE project_id = ?", (project_id,))
+        anchor_rows = cursor.fetchall()
+        anchor_id_by_client_key = {
+            _trim_text(row["client_key"], MAX_ATLAS_CLIENT_KEY_LENGTH): int(row["id"])
+            for row in anchor_rows
+            if _trim_text(row["client_key"], MAX_ATLAS_CLIENT_KEY_LENGTH)
+        }
+        preferred_anchor_id_by_paper_key = _select_preferred_anchor_id_by_paper_key(anchor_rows)
+
+        for trail in normalized_trails:
+            root_anchor_id = None
+            if trail["root_anchor_client_key"]:
+                root_anchor_id = anchor_id_by_client_key.get(trail["root_anchor_client_key"])
+            if root_anchor_id is None and trail["root_paper_key"]:
+                root_anchor_id = preferred_anchor_id_by_paper_key.get(trail["root_paper_key"])
+            cursor.execute(
+                '''INSERT INTO atlas_trail (
+                    project_id, client_key, name, root_anchor_id, root_paper_key, color, note,
+                    created_from_surface, meta_json, created_at, updated_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, client_key) DO UPDATE SET
+                    name = excluded.name,
+                    root_anchor_id = excluded.root_anchor_id,
+                    root_paper_key = excluded.root_paper_key,
+                    color = excluded.color,
+                    note = excluded.note,
+                    created_from_surface = excluded.created_from_surface,
+                    meta_json = excluded.meta_json,
+                    created_at = MIN(atlas_trail.created_at, excluded.created_at),
+                    updated_at = MAX(atlas_trail.updated_at, excluded.updated_at),
+                    archived_at = excluded.archived_at''',
+                (
+                    project_id,
+                    trail["client_key"],
+                    trail["name"],
+                    root_anchor_id,
+                    trail["root_paper_key"],
+                    trail["color"],
+                    trail["note"],
+                    trail["created_from_surface"],
+                    trail["meta_json"],
+                    trail["created_at"],
+                    trail["updated_at"],
+                    trail["archived_at"],
+                )
+            )
+
+        cursor.execute("SELECT id, client_key FROM atlas_trail WHERE project_id = ?", (project_id,))
+        trail_id_by_client_key = {
+            _trim_text(row["client_key"], MAX_ATLAS_CLIENT_KEY_LENGTH): int(row["id"])
+            for row in cursor.fetchall()
+            if _trim_text(row["client_key"], MAX_ATLAS_CLIENT_KEY_LENGTH)
+        }
+
+        for relation in normalized_relations:
+            trail_id = trail_id_by_client_key.get(relation["trail_client_key"]) if relation["trail_client_key"] else None
+            source_anchor_id = None
+            if relation["source_anchor_client_key"]:
+                source_anchor_id = anchor_id_by_client_key.get(relation["source_anchor_client_key"])
+            if source_anchor_id is None:
+                source_anchor_id = preferred_anchor_id_by_paper_key.get(relation["source_paper_key"])
+            cursor.execute(
+                '''INSERT INTO atlas_relation (
+                    project_id, client_key, trail_id, source_anchor_id, source_paper_key, target_paper_key,
+                    relation_kind, note, confidence, created_from_surface, meta_json, created_at, updated_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, client_key) DO UPDATE SET
+                    trail_id = excluded.trail_id,
+                    source_anchor_id = excluded.source_anchor_id,
+                    source_paper_key = excluded.source_paper_key,
+                    target_paper_key = excluded.target_paper_key,
+                    relation_kind = excluded.relation_kind,
+                    note = excluded.note,
+                    confidence = excluded.confidence,
+                    created_from_surface = excluded.created_from_surface,
+                    meta_json = excluded.meta_json,
+                    created_at = MIN(atlas_relation.created_at, excluded.created_at),
+                    updated_at = MAX(atlas_relation.updated_at, excluded.updated_at),
+                    archived_at = excluded.archived_at''',
+                (
+                    project_id,
+                    relation["client_key"],
+                    trail_id,
+                    source_anchor_id,
+                    relation["source_paper_key"],
+                    relation["target_paper_key"],
+                    relation["relation_kind"],
+                    relation["note"],
+                    relation["confidence"],
+                    relation["created_from_surface"],
+                    relation["meta_json"],
+                    relation["created_at"],
+                    relation["updated_at"],
+                    relation["archived_at"],
+                )
+            )
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    snapshot = _load_project_atlas_snapshot(project_id)
+    return {
+        "migration_version": _trim_text(payload.migration_version, 120) or "legacy_localstorage_v1",
+        "processed": {
+            "anchors": len(normalized_anchors),
+            "trails": len(normalized_trails),
+            "relations": len(normalized_relations),
+        },
+        "counts": snapshot["counts"],
+    }
+
+def _upsert_project_atlas_anchor(project_id: int, payload: AtlasAnchorUpsertRequest) -> Dict[str, Any]:
+    now_ts = _now_ts()
+    normalized_paper_key = _trim_text(payload.paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    existing_client_key = _trim_text(payload.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if not normalized_paper_key:
+        raise HTTPException(status_code=422, detail="paper_key is required.")
+
+    if not existing_client_key:
+        existing_client_key = f"anchor:{normalized_paper_key}"[:MAX_ATLAS_CLIENT_KEY_LENGTH]
+
+    normalized = _normalize_atlas_anchor_import(
+        AtlasAnchorImportItem(
+            client_key=existing_client_key,
+            paper_key=normalized_paper_key,
+            title=payload.title,
+            authors=payload.authors,
+            year=payload.year,
+            label=payload.label,
+            note=payload.note,
+            anchor_kind=payload.anchor_kind,
+            pinned=payload.pinned,
+            created_from_surface=payload.created_from_surface,
+            created_at=now_ts,
+            updated_at=now_ts,
+            meta=payload.meta or {},
+        ),
+        now_ts
+    )
+    if not normalized:
+        raise HTTPException(status_code=422, detail="Could not normalize this anchor payload.")
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            '''INSERT INTO atlas_anchor (
+                project_id, client_key, paper_key, title, authors, year, label, note,
+                anchor_kind, pinned, created_from_surface, meta_json, created_at, updated_at, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id, client_key) DO UPDATE SET
+                paper_key = excluded.paper_key,
+                title = excluded.title,
+                authors = excluded.authors,
+                year = excluded.year,
+                label = excluded.label,
+                note = excluded.note,
+                anchor_kind = excluded.anchor_kind,
+                pinned = excluded.pinned,
+                created_from_surface = excluded.created_from_surface,
+                meta_json = excluded.meta_json,
+                created_at = MIN(atlas_anchor.created_at, excluded.created_at),
+                updated_at = MAX(atlas_anchor.updated_at, excluded.updated_at),
+                archived_at = excluded.archived_at''',
+            (
+                project_id,
+                normalized["client_key"],
+                normalized["paper_key"],
+                normalized["title"],
+                normalized["authors"],
+                normalized["year"],
+                normalized["label"],
+                normalized["note"],
+                normalized["anchor_kind"],
+                normalized["pinned"],
+                normalized["created_from_surface"],
+                normalized["meta_json"],
+                normalized["created_at"],
+                normalized["updated_at"],
+                normalized["archived_at"],
+            )
+        )
+        conn.commit()
+        cursor.execute(
+            "SELECT * FROM atlas_anchor WHERE project_id = ? AND client_key = ? LIMIT 1",
+            (project_id, normalized["client_key"])
+        )
+        row = cursor.fetchone()
+        return _serialize_atlas_anchor_row(row) if row else {}
+    finally:
+        conn.close()
+
+def _build_atlas_client_key(prefix: str) -> str:
+    normalized_prefix = _trim_text(prefix, 40) or "atlas"
+    return f"{normalized_prefix}:{uuid.uuid4().hex}"[:MAX_ATLAS_CLIENT_KEY_LENGTH]
+
+def _build_default_atlas_trail_name(color: str = "") -> str:
+    normalized_color = _trim_text(color, MAX_ATLAS_COLOR_LENGTH).lower()
+    color_name_map = {
+        "#ea580c": "Red",
+        "#2563eb": "Blue",
+        "#0f766e": "Teal",
+        "#db2777": "Pink",
+        "#7c3aed": "Purple",
+        "#16a34a": "Green",
+        "#ca8a04": "Gold",
+    }
+    return f"Chain {color_name_map.get(normalized_color, 'Trail')}"
+
+def _get_project_atlas_primary_anchor_id(cursor, project_id: int, paper_key: str = "") -> Optional[int]:
+    normalized_paper_key = _trim_text(paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    if not normalized_paper_key:
+        return None
+    cursor.execute(
+        '''SELECT id FROM atlas_anchor
+           WHERE project_id = ? AND paper_key = ?
+           ORDER BY pinned DESC, updated_at DESC, id DESC
+           LIMIT 1''',
+        (project_id, normalized_paper_key)
+    )
+    row = cursor.fetchone()
+    return int(row["id"]) if row and row["id"] is not None else None
+
+def _get_project_atlas_anchor_id_by_client_key(cursor, project_id: int, client_key: str = "") -> Optional[int]:
+    normalized_client_key = _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if not normalized_client_key:
+        return None
+    cursor.execute(
+        "SELECT id FROM atlas_anchor WHERE project_id = ? AND client_key = ? LIMIT 1",
+        (project_id, normalized_client_key)
+    )
+    row = cursor.fetchone()
+    return int(row["id"]) if row and row["id"] is not None else None
+
+def _get_project_atlas_trail_row(cursor, project_id: int, trail_id: int = 0, client_key: str = "") -> Optional[sqlite3.Row]:
+    normalized_trail_id = int(trail_id or 0)
+    normalized_client_key = _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if normalized_trail_id > 0:
+        cursor.execute(
+            "SELECT * FROM atlas_trail WHERE project_id = ? AND id = ? LIMIT 1",
+            (project_id, normalized_trail_id)
+        )
+        row = cursor.fetchone()
+        if row:
+            return row
+    if normalized_client_key:
+        cursor.execute(
+            "SELECT * FROM atlas_trail WHERE project_id = ? AND client_key = ? LIMIT 1",
+            (project_id, normalized_client_key)
+        )
+        return cursor.fetchone()
+    return None
+
+def _upsert_project_atlas_trail(project_id: int, payload: AtlasTrailUpsertRequest) -> Dict[str, Any]:
+    now_ts = _now_ts()
+    normalized_trail_id = int(payload.id or 0) if payload.id else 0
+    normalized_client_key = _trim_text(payload.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    normalized_name = _trim_text(payload.name, MAX_ATLAS_LABEL_LENGTH)
+    normalized_root_paper_key = _trim_text(payload.root_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    normalized_root_anchor_id = int(payload.root_anchor_id or 0) if payload.root_anchor_id else 0
+    normalized_root_anchor_client_key = _trim_text(payload.root_anchor_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    normalized_color = _trim_text(payload.color, MAX_ATLAS_COLOR_LENGTH)
+    normalized_note = _trim_text(payload.note, MAX_ATLAS_NOTE_LENGTH)
+    normalized_created_from_surface = _trim_text(payload.created_from_surface, MAX_ATLAS_SURFACE_LENGTH) or "workspace_trail_browser"
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        existing_row = _get_project_atlas_trail_row(
+            cursor,
+            project_id,
+            trail_id=normalized_trail_id,
+            client_key=normalized_client_key
+        )
+        if normalized_trail_id > 0 and existing_row is None:
+            raise HTTPException(status_code=404, detail="The selected trail could not be found.")
+
+        next_client_key = normalized_client_key or (existing_row["client_key"] if existing_row else _build_atlas_client_key("trail"))
+        next_root_paper_key = normalized_root_paper_key or (existing_row["root_paper_key"] if existing_row else "")
+        next_name = normalized_name or (existing_row["name"] if existing_row else _build_default_atlas_trail_name(normalized_color))
+        next_color = normalized_color or (existing_row["color"] if existing_row else "")
+        next_note = normalized_note if normalized_note else (existing_row["note"] if existing_row else "")
+        next_created_from_surface = normalized_created_from_surface or (existing_row["created_from_surface"] if existing_row else "workspace_trail_browser")
+
+        root_anchor_id = normalized_root_anchor_id or _get_project_atlas_anchor_id_by_client_key(
+            cursor, project_id, normalized_root_anchor_client_key
+        )
+        if root_anchor_id is None:
+            root_anchor_id = int(existing_row["root_anchor_id"]) if existing_row and existing_row["root_anchor_id"] is not None else None
+        if root_anchor_id is None and next_root_paper_key:
+            root_anchor_id = _get_project_atlas_primary_anchor_id(cursor, project_id, next_root_paper_key)
+
+        existing_meta = _parse_atlas_meta_json(existing_row["meta_json"]) if existing_row else {}
+        next_meta = {
+            **(existing_meta or {}),
+            **(payload.meta or {})
+        }
+        created_at = int(existing_row["created_at"]) if existing_row and existing_row["created_at"] is not None else now_ts
+
+        cursor.execute(
+            '''INSERT INTO atlas_trail (
+                project_id, client_key, name, root_anchor_id, root_paper_key, color, note,
+                created_from_surface, meta_json, created_at, updated_at, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id, client_key) DO UPDATE SET
+                name = excluded.name,
+                root_anchor_id = excluded.root_anchor_id,
+                root_paper_key = excluded.root_paper_key,
+                color = excluded.color,
+                note = excluded.note,
+                created_from_surface = excluded.created_from_surface,
+                meta_json = excluded.meta_json,
+                created_at = MIN(atlas_trail.created_at, excluded.created_at),
+                updated_at = MAX(atlas_trail.updated_at, excluded.updated_at),
+                archived_at = excluded.archived_at''',
+            (
+                project_id,
+                next_client_key,
+                next_name,
+                root_anchor_id,
+                next_root_paper_key,
+                next_color,
+                next_note,
+                next_created_from_surface,
+                _atlas_meta_json(next_meta),
+                created_at,
+                now_ts,
+                None,
+            )
+        )
+        conn.commit()
+        row = _get_project_atlas_trail_row(cursor, project_id, client_key=next_client_key)
+        return _serialize_atlas_trail_row(row) if row else {}
+    finally:
+        conn.close()
+
+def _upsert_project_atlas_relation(project_id: int, payload: AtlasRelationUpsertRequest) -> Dict[str, Any]:
+    now_ts = _now_ts()
+    normalized_source_key = _trim_text(payload.source_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    normalized_target_key = _trim_text(payload.target_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    if not normalized_source_key or not normalized_target_key:
+        raise HTTPException(status_code=422, detail="source_paper_key and target_paper_key are required.")
+    if normalized_source_key == normalized_target_key:
+        raise HTTPException(status_code=422, detail="Directed relations require two different papers.")
+
+    normalized_client_key = _trim_text(payload.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH) or _build_atlas_client_key("relation")
+    normalized_relation_kind = _trim_text(payload.relation_kind, MAX_ATLAS_KIND_LENGTH).lower() or "manual"
+    normalized_trail_client_key = _trim_text(payload.trail_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    normalized_trail_name = _trim_text(payload.trail_name, MAX_ATLAS_LABEL_LENGTH)
+    normalized_trail_root_paper_key = _trim_text(payload.trail_root_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH) or normalized_source_key
+    normalized_trail_color = _trim_text(payload.trail_color, MAX_ATLAS_COLOR_LENGTH)
+    normalized_created_from_surface = _trim_text(payload.created_from_surface, MAX_ATLAS_SURFACE_LENGTH) or "workspace_relation_composer"
+    normalized_note = _trim_text(payload.note, MAX_ATLAS_NOTE_LENGTH)
+    normalized_confidence = payload.confidence
+    if normalized_confidence is not None:
+        try:
+            normalized_confidence = float(normalized_confidence)
+        except Exception:
+            normalized_confidence = None
+
+    normalized_source_anchor_id = int(payload.source_anchor_id or 0) if payload.source_anchor_id else 0
+    normalized_source_anchor_client_key = _trim_text(payload.source_anchor_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        source_anchor_id = normalized_source_anchor_id or _get_project_atlas_anchor_id_by_client_key(
+            cursor, project_id, normalized_source_anchor_client_key
+        )
+        if source_anchor_id is None:
+            source_anchor_id = _get_project_atlas_primary_anchor_id(cursor, project_id, normalized_source_key)
+
+        resolved_trail_row = _get_project_atlas_trail_row(
+            cursor,
+            project_id,
+            trail_id=int(payload.trail_id or 0),
+            client_key=normalized_trail_client_key
+        )
+        if int(payload.trail_id or 0) > 0 and resolved_trail_row is None:
+            raise HTTPException(status_code=404, detail="The selected trail could not be found.")
+
+        if resolved_trail_row is None and (normalized_trail_client_key or normalized_trail_name):
+            next_trail_client_key = normalized_trail_client_key or _build_atlas_client_key("trail")
+            root_anchor_id = source_anchor_id or _get_project_atlas_primary_anchor_id(
+                cursor, project_id, normalized_trail_root_paper_key
+            )
+            cursor.execute(
+                '''INSERT INTO atlas_trail (
+                    project_id, client_key, name, root_anchor_id, root_paper_key, color, note,
+                    created_from_surface, meta_json, created_at, updated_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, client_key) DO UPDATE SET
+                    name = excluded.name,
+                    root_anchor_id = excluded.root_anchor_id,
+                    root_paper_key = excluded.root_paper_key,
+                    color = excluded.color,
+                    note = excluded.note,
+                    created_from_surface = excluded.created_from_surface,
+                    meta_json = excluded.meta_json,
+                    created_at = MIN(atlas_trail.created_at, excluded.created_at),
+                    updated_at = MAX(atlas_trail.updated_at, excluded.updated_at),
+                    archived_at = excluded.archived_at''',
+                (
+                    project_id,
+                    next_trail_client_key,
+                    normalized_trail_name or _build_default_atlas_trail_name(normalized_trail_color),
+                    root_anchor_id,
+                    normalized_trail_root_paper_key,
+                    normalized_trail_color,
+                    "",
+                    normalized_created_from_surface,
+                    _atlas_meta_json({}),
+                    now_ts,
+                    now_ts,
+                    None,
+                )
+            )
+            resolved_trail_row = _get_project_atlas_trail_row(cursor, project_id, client_key=next_trail_client_key)
+
+        if not _trim_text(payload.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH):
+            cursor.execute(
+                '''SELECT client_key FROM atlas_relation
+                   WHERE project_id = ?
+                     AND source_paper_key = ?
+                     AND target_paper_key = ?
+                     AND relation_kind = ?
+                     AND COALESCE(trail_id, 0) = ?
+                   ORDER BY updated_at DESC, id DESC
+                   LIMIT 1''',
+                (
+                    project_id,
+                    normalized_source_key,
+                    normalized_target_key,
+                    normalized_relation_kind,
+                    int(resolved_trail_row["id"]) if resolved_trail_row and resolved_trail_row["id"] is not None else 0,
+                )
+            )
+            existing_relation_row = cursor.fetchone()
+            if existing_relation_row and existing_relation_row["client_key"]:
+                normalized_client_key = _trim_text(existing_relation_row["client_key"], MAX_ATLAS_CLIENT_KEY_LENGTH) or normalized_client_key
+
+        normalized = _normalize_atlas_relation_import(
+            AtlasRelationImportItem(
+                client_key=normalized_client_key,
+                trail_client_key=resolved_trail_row["client_key"] if resolved_trail_row else "",
+                source_anchor_client_key=normalized_source_anchor_client_key,
+                source_paper_key=normalized_source_key,
+                target_paper_key=normalized_target_key,
+                relation_kind=normalized_relation_kind,
+                note=normalized_note,
+                confidence=normalized_confidence,
+                created_from_surface=normalized_created_from_surface,
+                created_at=now_ts,
+                updated_at=now_ts,
+                meta=payload.meta or {},
+            ),
+            now_ts
+        )
+        if not normalized:
+            raise HTTPException(status_code=422, detail="Could not normalize this relation payload.")
+
+        cursor.execute(
+            '''INSERT INTO atlas_relation (
+                project_id, client_key, trail_id, source_anchor_id, source_paper_key, target_paper_key,
+                relation_kind, note, confidence, created_from_surface, meta_json, created_at, updated_at, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id, client_key) DO UPDATE SET
+                trail_id = excluded.trail_id,
+                source_anchor_id = excluded.source_anchor_id,
+                source_paper_key = excluded.source_paper_key,
+                target_paper_key = excluded.target_paper_key,
+                relation_kind = excluded.relation_kind,
+                note = excluded.note,
+                confidence = excluded.confidence,
+                created_from_surface = excluded.created_from_surface,
+                meta_json = excluded.meta_json,
+                created_at = MIN(atlas_relation.created_at, excluded.created_at),
+                updated_at = MAX(atlas_relation.updated_at, excluded.updated_at),
+                archived_at = excluded.archived_at''',
+            (
+                project_id,
+                normalized["client_key"],
+                int(resolved_trail_row["id"]) if resolved_trail_row and resolved_trail_row["id"] is not None else None,
+                source_anchor_id,
+                normalized["source_paper_key"],
+                normalized["target_paper_key"],
+                normalized["relation_kind"],
+                normalized["note"],
+                normalized["confidence"],
+                normalized["created_from_surface"],
+                normalized["meta_json"],
+                normalized["created_at"],
+                normalized["updated_at"],
+                normalized["archived_at"],
+            )
+        )
+        conn.commit()
+        cursor.execute(
+            "SELECT * FROM atlas_relation WHERE project_id = ? AND client_key = ? LIMIT 1",
+            (project_id, normalized["client_key"])
+        )
+        row = cursor.fetchone()
+        return _serialize_atlas_relation_row(row) if row else {}
+    finally:
+        conn.close()
+
+def _delete_project_atlas_relations(project_id: int, relation_id: int = 0, client_key: str = "") -> Dict[str, int]:
+    normalized_relation_id = int(relation_id or 0)
+    normalized_client_key = _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if normalized_relation_id <= 0 and not normalized_client_key:
+        raise HTTPException(status_code=422, detail="relation_id or client_key is required.")
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        if normalized_relation_id > 0:
+            cursor.execute(
+                "SELECT trail_id FROM atlas_relation WHERE project_id = ? AND id = ?",
+                (project_id, normalized_relation_id)
+            )
+        else:
+            cursor.execute(
+                "SELECT trail_id FROM atlas_relation WHERE project_id = ? AND client_key = ?",
+                (project_id, normalized_client_key)
+            )
+        trail_ids = {
+            int(row["trail_id"])
+            for row in cursor.fetchall()
+            if row and row["trail_id"] is not None and int(row["trail_id"]) > 0
+        }
+
+        if normalized_relation_id > 0:
+            cursor.execute(
+                "DELETE FROM atlas_relation WHERE project_id = ? AND id = ?",
+                (project_id, normalized_relation_id)
+            )
+        else:
+            cursor.execute(
+                "DELETE FROM atlas_relation WHERE project_id = ? AND client_key = ?",
+                (project_id, normalized_client_key)
+            )
+        deleted_count = int(cursor.rowcount or 0)
+
+        deleted_trail_count = 0
+        for trail_id in trail_ids:
+            cursor.execute(
+                "SELECT 1 FROM atlas_relation WHERE project_id = ? AND trail_id = ? LIMIT 1",
+                (project_id, trail_id)
+            )
+            if cursor.fetchone():
+                continue
+            cursor.execute(
+                "DELETE FROM atlas_trail WHERE project_id = ? AND id = ?",
+                (project_id, trail_id)
+            )
+            deleted_trail_count += int(cursor.rowcount or 0)
+
+        conn.commit()
+        return {
+            "deleted_count": deleted_count,
+            "deleted_trail_count": deleted_trail_count,
+        }
+    finally:
+        conn.close()
+
+def _delete_project_atlas_trails(project_id: int, trail_id: int = 0, client_key: str = "") -> Dict[str, int]:
+    normalized_trail_id = int(trail_id or 0)
+    normalized_client_key = _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if normalized_trail_id <= 0 and not normalized_client_key:
+        raise HTTPException(status_code=422, detail="trail_id or client_key is required.")
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        trail_row = _get_project_atlas_trail_row(
+            cursor,
+            project_id,
+            trail_id=normalized_trail_id,
+            client_key=normalized_client_key
+        )
+        if not trail_row:
+            return {
+                "deleted_count": 0,
+                "deleted_relation_count": 0,
+            }
+
+        resolved_trail_id = int(trail_row["id"])
+        cursor.execute(
+            "DELETE FROM atlas_relation WHERE project_id = ? AND trail_id = ?",
+            (project_id, resolved_trail_id)
+        )
+        deleted_relation_count = int(cursor.rowcount or 0)
+        cursor.execute(
+            "DELETE FROM atlas_trail WHERE project_id = ? AND id = ?",
+            (project_id, resolved_trail_id)
+        )
+        deleted_count = int(cursor.rowcount or 0)
+        conn.commit()
+        return {
+            "deleted_count": deleted_count,
+            "deleted_relation_count": deleted_relation_count,
+        }
+    finally:
+        conn.close()
+
+def _delete_project_atlas_anchors(project_id: int, paper_key: str = "", client_key: str = "") -> int:
+    normalized_paper_key = _trim_text(paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    normalized_client_key = _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if not normalized_paper_key and not normalized_client_key:
+        raise HTTPException(status_code=422, detail="paper_key or client_key is required.")
+
+    conn = _db_connect()
+    cursor = conn.cursor()
+    try:
+        if normalized_client_key:
+            cursor.execute(
+                "DELETE FROM atlas_anchor WHERE project_id = ? AND client_key = ?",
+                (project_id, normalized_client_key)
+            )
+        else:
+            cursor.execute(
+                "DELETE FROM atlas_anchor WHERE project_id = ? AND paper_key = ?",
+                (project_id, normalized_paper_key)
+            )
+        deleted = int(cursor.rowcount or 0)
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
 
 def _normalize_claim_type(raw_value: str) -> str:
     value = _trim_text(str(raw_value or "").lower(), MAX_CLAIM_TYPE_LENGTH)
@@ -3790,6 +4800,98 @@ class ProjectUpdate(BaseModel):
 # 新增：用于覆盖更新论文列表的请求模型 (删除功能依赖此模型)
 class UpdatePapersRequest(BaseModel):
     top_papers: List[PaperItem]
+
+class AtlasAnchorImportItem(BaseModel):
+    client_key: str
+    paper_key: str = ""
+    title: str = ""
+    authors: str = ""
+    year: str = ""
+    label: str = ""
+    note: str = ""
+    anchor_kind: str = "marked"
+    pinned: bool = True
+    created_from_surface: str = ""
+    created_at: Optional[Any] = None
+    updated_at: Optional[Any] = None
+    archived_at: Optional[Any] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AtlasTrailImportItem(BaseModel):
+    client_key: str
+    name: str = ""
+    root_paper_key: str = ""
+    root_anchor_client_key: str = ""
+    color: str = ""
+    note: str = ""
+    created_from_surface: str = ""
+    created_at: Optional[Any] = None
+    updated_at: Optional[Any] = None
+    archived_at: Optional[Any] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AtlasRelationImportItem(BaseModel):
+    client_key: str
+    trail_client_key: str = ""
+    source_anchor_client_key: str = ""
+    source_paper_key: str = ""
+    target_paper_key: str = ""
+    relation_kind: str = "manual"
+    note: str = ""
+    confidence: Optional[float] = None
+    created_from_surface: str = ""
+    created_at: Optional[Any] = None
+    updated_at: Optional[Any] = None
+    archived_at: Optional[Any] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AtlasLegacyImportRequest(BaseModel):
+    migration_version: str = "legacy_localstorage_v1"
+    anchors: List[AtlasAnchorImportItem] = Field(default_factory=list)
+    trails: List[AtlasTrailImportItem] = Field(default_factory=list)
+    relations: List[AtlasRelationImportItem] = Field(default_factory=list)
+
+class AtlasAnchorUpsertRequest(BaseModel):
+    client_key: str = ""
+    paper_key: str
+    title: str = ""
+    authors: str = ""
+    year: str = ""
+    label: str = ""
+    note: str = ""
+    anchor_kind: str = "project_mark"
+    pinned: bool = True
+    created_from_surface: str = "workspace_node_inspector"
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AtlasTrailUpsertRequest(BaseModel):
+    id: Optional[int] = None
+    client_key: str = ""
+    name: str = ""
+    root_paper_key: str = ""
+    root_anchor_id: Optional[int] = None
+    root_anchor_client_key: str = ""
+    color: str = ""
+    note: str = ""
+    created_from_surface: str = "workspace_trail_browser"
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AtlasRelationUpsertRequest(BaseModel):
+    client_key: str = ""
+    source_paper_key: str
+    target_paper_key: str
+    relation_kind: str = "manual"
+    trail_id: Optional[int] = None
+    trail_client_key: str = ""
+    trail_name: str = ""
+    trail_root_paper_key: str = ""
+    trail_color: str = ""
+    source_anchor_id: Optional[int] = None
+    source_anchor_client_key: str = ""
+    note: str = ""
+    confidence: Optional[float] = None
+    created_from_surface: str = "workspace_relation_composer"
+    meta: Dict[str, Any] = Field(default_factory=dict)
 
 class PaperLookupRequest(BaseModel):
     title: str
@@ -7682,6 +8784,168 @@ async def get_project(project_id: int, current_user: dict = Depends(_require_ses
     project_data.pop("target_keywords", None)
     return project_data
 
+@app.get("/api/projects/{project_id}/atlas")
+async def get_project_atlas(project_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    return _load_project_atlas_snapshot(project_id)
+
+@app.post("/api/projects/{project_id}/atlas/anchors")
+async def upsert_project_atlas_anchor(project_id: int, payload: AtlasAnchorUpsertRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_anchor_upsert")
+    try:
+        anchor = _upsert_project_atlas_anchor(project_id, payload)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_anchor_upsert",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "paper_key": anchor.get("paper_key"),
+                "client_key": anchor.get("client_key"),
+                "anchor_kind": anchor.get("anchor_kind"),
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas anchor saved",
+            "anchor": anchor,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
+@app.post("/api/projects/{project_id}/atlas/trails")
+async def upsert_project_atlas_trail(project_id: int, payload: AtlasTrailUpsertRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_trail_upsert")
+    try:
+        trail = _upsert_project_atlas_trail(project_id, payload)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_trail_upsert",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "trail_id": trail.get("id"),
+                "client_key": trail.get("client_key"),
+                "name": trail.get("name"),
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas trail saved",
+            "trail": trail,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
+@app.delete("/api/projects/{project_id}/atlas/trails")
+async def delete_project_atlas_trail(project_id: int, trail_id: int = 0, client_key: str = "", current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_trail_delete")
+    try:
+        deleted = _delete_project_atlas_trails(project_id, trail_id=trail_id, client_key=client_key)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_trail_delete",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "trail_id": int(trail_id or 0),
+                "client_key": _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+                **deleted,
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas trail removed",
+            **deleted,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
+@app.delete("/api/projects/{project_id}/atlas/anchors")
+async def delete_project_atlas_anchor(project_id: int, paper_key: str = "", client_key: str = "", current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_anchor_delete")
+    try:
+        deleted = _delete_project_atlas_anchors(project_id, paper_key=paper_key, client_key=client_key)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_anchor_delete",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "paper_key": _trim_text(paper_key, MAX_ATLAS_PAPER_KEY_LENGTH),
+                "client_key": _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+                "deleted_count": deleted,
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas anchor removed",
+            "deleted_count": deleted,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
+@app.post("/api/projects/{project_id}/atlas/relations")
+async def upsert_project_atlas_relation(project_id: int, payload: AtlasRelationUpsertRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_relation_upsert")
+    try:
+        relation = _upsert_project_atlas_relation(project_id, payload)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_relation_upsert",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "source_paper_key": relation.get("source_paper_key"),
+                "target_paper_key": relation.get("target_paper_key"),
+                "client_key": relation.get("client_key"),
+                "trail_id": relation.get("trail_id"),
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas relation saved",
+            "relation": relation,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
+@app.delete("/api/projects/{project_id}/atlas/relations")
+async def delete_project_atlas_relation(project_id: int, relation_id: int = 0, client_key: str = "", current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_relation_delete")
+    try:
+        deleted = _delete_project_atlas_relations(project_id, relation_id=relation_id, client_key=client_key)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_relation_delete",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "relation_id": int(relation_id or 0),
+                "client_key": _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+                **deleted,
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas relation removed",
+            **deleted,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
 @app.post("/api/projects/{project_id}/read-paper/analyze")
 async def analyze_project_read_paper_selection(project_id: int, payload: ReadPaperAnalyzeRequest, current_user: dict = Depends(_require_session)):
     project_data = _get_owned_project(project_id, current_user["user_id"])
@@ -7800,6 +9064,30 @@ async def update_project_papers(project_id: int, request: UpdatePapersRequest, c
         return {"message": "Papers updated successfully"}
     finally:
         conn.close()
+        lock.release()
+
+@app.post("/api/projects/{project_id}/atlas/import-legacy")
+async def import_project_legacy_atlas(project_id: int, payload: AtlasLegacyImportRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_import_legacy")
+    try:
+        result = _import_legacy_atlas_payload(project_id, payload)
+        _write_audit_log(
+            "atlas_import_legacy",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "migration_version": result.get("migration_version"),
+                "processed": result.get("processed"),
+                "counts": result.get("counts"),
+            },
+            success=True
+        )
+        return {
+            "message": "Legacy atlas state imported",
+            **result,
+        }
+    finally:
         lock.release()
 
 @app.post("/api/projects/{project_id}/claims")
