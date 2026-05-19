@@ -118,7 +118,8 @@ CLAIM_STANCE_VALUES = {"support", "challenge", "setup", "pending"}
 READ_PAPER_SELECTION_VALUES = {"paper", "cluster"}
 STARDUST_STATUS_VALUES = {"draft", "ready", "building", "failed", "archived"}
 STARDUST_GRAPH_MODE_VALUES = {"directed", "mutual", "full"}
-MAX_STARDUSTS_PER_PROJECT = 5
+STARDUST_KIND_VALUES = {"challenge", "support"}
+MAX_STARDUSTS_PER_PROJECT = 10
 CACHE_SOFT_LIMIT_BYTES = 128 * 1024 * 1024
 CACHE_TARGET_LIMIT_BYTES = 96 * 1024 * 1024
 CACHE_HARD_LIMIT_BYTES = 192 * 1024 * 1024
@@ -489,6 +490,7 @@ def _ensure_stardust_schema(cursor):
             claim_id INTEGER NOT NULL,
             seed_evidence_id INTEGER NOT NULL,
             seed_paper_key TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'challenge',
             name TEXT NOT NULL,
             sub_target_thesis TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'draft',
@@ -506,6 +508,8 @@ def _ensure_stardust_schema(cursor):
     stardust_columns = {row[1] for row in cursor.fetchall()}
     if "source_summary_json" not in stardust_columns:
         cursor.execute("ALTER TABLE challenge_stardusts ADD COLUMN source_summary_json TEXT NOT NULL DEFAULT '{}'")
+    if "kind" not in stardust_columns:
+        cursor.execute("ALTER TABLE challenge_stardusts ADD COLUMN kind TEXT NOT NULL DEFAULT 'challenge'")
     cursor.execute(
         '''CREATE TABLE IF NOT EXISTS challenge_stardust_papers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -525,7 +529,10 @@ def _ensure_stardust_schema(cursor):
             referenced_openalex_ids_json TEXT NOT NULL DEFAULT '[]',
             relationship_type TEXT NOT NULL DEFAULT '',
             discovery_source TEXT NOT NULL DEFAULT '',
+            source_stage TEXT NOT NULL DEFAULT '',
             hop_distance INTEGER NOT NULL DEFAULT 0,
+            via_paper_key TEXT NOT NULL DEFAULT '',
+            via_paper_title TEXT NOT NULL DEFAULT '',
             challenge_score REAL NOT NULL DEFAULT 0,
             seed_similarity REAL NOT NULL DEFAULT 0,
             claim_relevance REAL NOT NULL DEFAULT 0,
@@ -540,6 +547,14 @@ def _ensure_stardust_schema(cursor):
             UNIQUE (stardust_id, paper_key)
         )'''
     )
+    cursor.execute("PRAGMA table_info(challenge_stardust_papers)")
+    stardust_paper_columns = {row[1] for row in cursor.fetchall()}
+    if "source_stage" not in stardust_paper_columns:
+        cursor.execute("ALTER TABLE challenge_stardust_papers ADD COLUMN source_stage TEXT NOT NULL DEFAULT ''")
+    if "via_paper_key" not in stardust_paper_columns:
+        cursor.execute("ALTER TABLE challenge_stardust_papers ADD COLUMN via_paper_key TEXT NOT NULL DEFAULT ''")
+    if "via_paper_title" not in stardust_paper_columns:
+        cursor.execute("ALTER TABLE challenge_stardust_papers ADD COLUMN via_paper_title TEXT NOT NULL DEFAULT ''")
     cursor.execute(
         '''CREATE TABLE IF NOT EXISTS challenge_stardust_graph_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3519,6 +3534,62 @@ def _build_stardust_semantic_queries(project_data: dict, claim_row: dict, eviden
             break
     return queries
 
+def _normalize_stardust_source_stage(raw_stage: Optional[str]) -> str:
+    value = _trim_text(raw_stage or "", 40).lower()
+    if value in {"hop_1", "hop_2", "semantic_fallback"}:
+        return value
+    return "semantic_fallback" if value else ""
+
+def _stardust_source_stage_priority(source_stage: str, hop_distance: int) -> tuple[int, int]:
+    normalized_stage = _normalize_stardust_source_stage(source_stage)
+    stage_rank = {
+        "hop_1": 0,
+        "hop_2": 1,
+        "semantic_fallback": 2,
+        "": 3,
+    }.get(normalized_stage, 3)
+    return (max(0, _safe_int(hop_distance, 0)), stage_rank)
+
+def _resolve_stardust_candidate_primary_key(signature_to_primary: Dict[str, str], work: dict) -> str:
+    identity_signatures = list(dict.fromkeys(_paper_identity_signatures(work) + [_paper_identity_key(work)]))
+    return next((signature_to_primary.get(signature) for signature in identity_signatures if signature_to_primary.get(signature)), "") or ""
+
+def _score_and_sort_stardust_candidates(
+    candidates_by_key: Dict[str, dict],
+    focus_claim_text: str,
+    focus_tokens: List[str],
+    focus_phrases: List[str],
+    seed_tokens: List[str],
+    seed_phrases: List[str],
+    seed_context_label: str,
+    creation_mode: str,
+) -> List[dict]:
+    scored_candidates = [
+        _score_stardust_candidate(
+            candidate,
+            focus_claim_text,
+            focus_tokens,
+            focus_phrases,
+            seed_tokens,
+            seed_phrases,
+            seed_context_label,
+            creation_mode=creation_mode,
+        )
+        for candidate in candidates_by_key.values()
+    ]
+    scored_candidates.sort(
+        key=lambda item: (
+            float(item.get("challenge_score") or 0),
+            float(item.get("semantic_overlap") or 0),
+            float(item.get("claim_relevance") or 0),
+            float(item.get("seed_similarity") or 0),
+            float(item.get("quality_score") or 0),
+            _safe_int(item.get("citation_count"), 0)
+        ),
+        reverse=True
+    )
+    return scored_candidates
+
 def _register_stardust_candidate(
     candidates_by_key: Dict[str, dict],
     signature_to_primary: Dict[str, str],
@@ -3528,6 +3599,9 @@ def _register_stardust_candidate(
     discovery_source: str,
     relationship_type: str,
     hop_distance: int,
+    source_stage: str = "",
+    via_paper_key: str = "",
+    via_paper_title: str = "",
     skipped: dict,
 ) -> bool:
     candidate_key = _paper_identity_key(work)
@@ -3565,6 +3639,9 @@ def _register_stardust_candidate(
             "_relationship_types": [],
             "_matched_queries": [],
             "hop_distance": max(1, _safe_int(hop_distance, 1)),
+            "source_stage": _normalize_stardust_source_stage(source_stage),
+            "via_paper_key": _trim_text(via_paper_key, 300),
+            "via_paper_title": _trim_text(via_paper_title, MAX_PAPER_TITLE_LENGTH),
         }
         candidates_by_key[candidate_key] = candidate
         for signature in identity_signatures:
@@ -3594,7 +3671,15 @@ def _register_stardust_candidate(
     matched_query = _trim_text(work.get("matched_query"), 240)
     if matched_query and matched_query not in candidate["_matched_queries"]:
         candidate["_matched_queries"].append(matched_query)
-    candidate["hop_distance"] = min(max(1, _safe_int(candidate.get("hop_distance"), 1)), max(1, _safe_int(hop_distance, 1)))
+    incoming_hop_distance = max(1, _safe_int(hop_distance, 1))
+    current_hop_distance = max(1, _safe_int(candidate.get("hop_distance"), 1))
+    candidate["hop_distance"] = min(current_hop_distance, incoming_hop_distance)
+    normalized_source_stage = _normalize_stardust_source_stage(source_stage)
+    current_source_stage = _normalize_stardust_source_stage(candidate.get("source_stage"))
+    if _stardust_source_stage_priority(normalized_source_stage, incoming_hop_distance) < _stardust_source_stage_priority(current_source_stage, current_hop_distance):
+        candidate["source_stage"] = normalized_source_stage
+        candidate["via_paper_key"] = _trim_text(via_paper_key, 300)
+        candidate["via_paper_title"] = _trim_text(via_paper_title, MAX_PAPER_TITLE_LENGTH)
     return True
 
 def _annotate_existing_stardust_candidates_with_relationship(
@@ -3605,6 +3690,9 @@ def _annotate_existing_stardust_candidates_with_relationship(
     *,
     discovery_source: str = "hop_1_overlap",
     hop_distance: int = 1,
+    source_stage: str = "",
+    via_paper_key: str = "",
+    via_paper_title: str = "",
 ) -> int:
     annotated_count = 0
     for work in works or []:
@@ -3638,12 +3726,30 @@ def _annotate_existing_stardust_candidates_with_relationship(
             candidate["_discovery_sources"].append(discovery_source)
         if relationship_type and relationship_type not in candidate["_relationship_types"]:
             candidate["_relationship_types"].append(relationship_type)
-        candidate["hop_distance"] = min(max(1, _safe_int(candidate.get("hop_distance"), 1)), max(1, _safe_int(hop_distance, 1)))
+        incoming_hop_distance = max(1, _safe_int(hop_distance, 1))
+        current_hop_distance = max(1, _safe_int(candidate.get("hop_distance"), 1))
+        candidate["hop_distance"] = min(current_hop_distance, incoming_hop_distance)
+        normalized_source_stage = _normalize_stardust_source_stage(source_stage)
+        current_source_stage = _normalize_stardust_source_stage(candidate.get("source_stage"))
+        if _stardust_source_stage_priority(normalized_source_stage, incoming_hop_distance) < _stardust_source_stage_priority(current_source_stage, current_hop_distance):
+            candidate["source_stage"] = normalized_source_stage
+            candidate["via_paper_key"] = _trim_text(via_paper_key, 300)
+            candidate["via_paper_title"] = _trim_text(via_paper_title, MAX_PAPER_TITLE_LENGTH)
         if not was_already_linked:
             annotated_count += 1
     return annotated_count
 
-def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_tokens: List[str], focus_phrases: List[str], seed_tokens: List[str], seed_phrases: List[str], seed_context_label: str = "seed paper") -> dict:
+def _score_stardust_candidate(
+    candidate: dict,
+    focus_claim_text: str,
+    focus_tokens: List[str],
+    focus_phrases: List[str],
+    seed_tokens: List[str],
+    seed_phrases: List[str],
+    seed_context_label: str = "seed paper",
+    *,
+    creation_mode: str = "challenge_paper",
+) -> dict:
     metrics = _build_claim_candidate_metrics(
         {
             **candidate,
@@ -3655,6 +3761,8 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
         focus_phrases,
         False
     )
+    stardust_kind = "support" if creation_mode == "support_paper" else "challenge"
+    support_hint = float(metrics.get("support_hint") or 0)
     challenge_hint = float(metrics.get("challenge_hint") or 0)
     claim_relevance = float(metrics.get("claim_relevance") or 0)
     quality_score = float(metrics.get("quality_score") or 0)
@@ -3662,13 +3770,20 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
     discovery_sources = list(candidate.get("_discovery_sources") or [])
     relationship_types = list(candidate.get("_relationship_types") or [])
     hop_distance = max(1, _safe_int(candidate.get("hop_distance"), 1))
+    source_stage = _normalize_stardust_source_stage(candidate.get("source_stage"))
+    via_paper_title = _trim_text(candidate.get("via_paper_title"), 160)
     semantic_overlap = min(
         (seed_similarity * 0.58) +
         (claim_relevance * 0.42),
         1.0
     )
     citation_bonus = min((math.log1p(max(_safe_int(candidate.get("citation_count"), 0), 0)) / math.log1p(250)), 1.0) * 0.02
-    semantic_bonus = 0.045 if "semantic_supplement" in discovery_sources else 0.0
+    if creation_mode in {"challenge_paper", "support_paper"}:
+        stage_bonus = 0.055 if source_stage == "hop_1" else (0.026 if source_stage == "hop_2" else 0.01)
+        semantic_bonus = 0.014 if "semantic_supplement" in discovery_sources else 0.0
+    else:
+        stage_bonus = 0.0
+        semantic_bonus = 0.045 if "semantic_supplement" in discovery_sources else 0.0
     semantic_linked_bonus = 0.0
     if semantic_overlap >= 0.24:
         if "cited_by" in relationship_types and "reference" in relationship_types:
@@ -3677,24 +3792,38 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
             semantic_linked_bonus = 0.038
         elif "reference" in relationship_types:
             semantic_linked_bonus = 0.03
+    stance_hint = support_hint if stardust_kind == "support" else challenge_hint
     score = min(
         (semantic_overlap * 0.50) +
-        (challenge_hint * 0.20) +
+        (stance_hint * 0.20) +
         (claim_relevance * 0.12) +
         (quality_score * 0.10) +
+        stage_bonus +
         semantic_bonus +
         semantic_linked_bonus +
         citation_bonus,
         1.0
     )
-    include = bool(
-        score >= 0.27 and (
-            semantic_overlap >= 0.24
-            or claim_relevance >= 0.28
-            or seed_similarity >= 0.22
-            or ("semantic_supplement" in discovery_sources and semantic_overlap >= 0.30)
+    if creation_mode in {"challenge_paper", "support_paper"}:
+        include = bool(
+            score >= 0.27 and (
+                semantic_overlap >= 0.24
+                or claim_relevance >= 0.28
+                or seed_similarity >= 0.22
+                or (source_stage == "hop_1" and (claim_relevance >= 0.20 or seed_similarity >= 0.18 or stance_hint >= 0.14))
+                or (source_stage == "hop_2" and (claim_relevance >= 0.22 or seed_similarity >= 0.20 or stance_hint >= 0.15))
+                or ("semantic_supplement" in discovery_sources and semantic_overlap >= 0.30)
+            )
         )
-    )
+    else:
+        include = bool(
+            score >= 0.27 and (
+                semantic_overlap >= 0.24
+                or claim_relevance >= 0.28
+                or seed_similarity >= 0.22
+                or ("semantic_supplement" in discovery_sources and semantic_overlap >= 0.30)
+            )
+        )
     reasons: List[str] = []
     seed_context = _trim_text(seed_context_label, 80) or "seed paper"
     if semantic_overlap >= 0.3:
@@ -3703,8 +3832,14 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
         reasons.append("it matches the sub-target thesis closely")
     elif seed_similarity >= 0.22:
         reasons.append(f"it overlaps clearly with the {seed_context}")
-    if "semantic_supplement" in discovery_sources:
-        reasons.append("semantic retrieval surfaced it as a challenge-adjacent candidate")
+    if source_stage == "hop_1":
+        reasons.append(f"it sits in the direct citation neighborhood of the {seed_context}")
+    elif source_stage == "hop_2" and via_paper_title:
+        reasons.append(f"it was reached on a second hop through {via_paper_title}")
+    elif source_stage == "hop_2":
+        reasons.append(f"it stayed relevant even on a second-hop expansion from the {seed_context}")
+    elif "semantic_supplement" in discovery_sources:
+        reasons.append("semantic retrieval surfaced it after the local citation neighborhood stayed too sparse")
     if "cited_by" in relationship_types and "reference" in relationship_types:
         reasons.append(f"it is semantically aligned and also linked to the {seed_context} in both citation directions")
     elif "cited_by" in relationship_types:
@@ -3713,21 +3848,35 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
         reasons.append(f"it is semantically aligned and is also referenced by the {seed_context}")
     elif hop_distance == 1:
         reasons.append(f"it still sits in the immediate citation neighborhood of the {seed_context}")
-    if challenge_hint >= 0.16:
+    if stardust_kind == "support" and support_hint >= 0.16:
+        reasons.append("its language reinforces the claim direction, mechanism, or empirical pattern")
+    elif stardust_kind == "challenge" and challenge_hint >= 0.16:
         reasons.append("its language suggests limits, null effects, or boundary conditions")
     if not reasons:
-        reasons.append("it remained one of the strongest challenge-adjacent candidates in this seed trail")
-    why_matched = f"This paper was kept because {'; '.join(reasons[:3])}."
+        reasons.append(
+            "it remained one of the strongest support-adjacent candidates in this seed trail"
+            if stardust_kind == "support"
+            else "it remained one of the strongest challenge-adjacent candidates in this seed trail"
+        )
+    why_prefix = "This paper was kept because"
+    why_matched = f"{why_prefix} {'; '.join(reasons[:3])}."
     caveat = ""
     return {
         **candidate,
         "relationship_type": "+".join(sorted(relationship_types)) or "semantic_match",
         "discovery_source": "+".join(sorted(discovery_sources)) or "semantic_supplement",
+        "source_stage": source_stage or ("semantic_fallback" if "semantic_supplement" in discovery_sources else ""),
+        "via_paper_key": _trim_text(candidate.get("via_paper_key"), 300),
+        "via_paper_title": via_paper_title,
         "challenge_score": round(score, 4),
+        "stardust_score": round(score, 4),
         "semantic_overlap": round(semantic_overlap, 4),
         "seed_similarity": round(seed_similarity, 4),
         "claim_relevance": round(claim_relevance, 4),
         "quality_score": round(quality_score, 4),
+        "support_hint": round(support_hint, 4),
+        "challenge_hint": round(challenge_hint, 4),
+        "kind": stardust_kind,
         "why_matched": _trim_text(why_matched, MAX_EVIDENCE_WHY_MATCHED_LENGTH),
         "caveat": _trim_text(caveat, MAX_EVIDENCE_CAVEAT_LENGTH),
         "include": include,
@@ -3735,10 +3884,13 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
 
 def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_row: dict, payload: ChallengeStardustCreateRequest) -> dict:
     creation_mode = _normalize_stardust_creation_mode(payload.mode)
+    stardust_kind = "support" if creation_mode == "support_paper" else "challenge"
     seed_context_label = "seed paper"
-    if creation_mode == "challenge_paper":
-        if _normalize_claim_stance((evidence_row or {}).get("stance")) != "challenge":
-            raise HTTPException(status_code=409, detail="Challenge Stardust can only be created from a paper in the challenge column.")
+    if creation_mode in {"challenge_paper", "support_paper"}:
+        required_stance = "support" if creation_mode == "support_paper" else "challenge"
+        if _normalize_claim_stance((evidence_row or {}).get("stance")) != required_stance:
+            label = "Support Stardust" if creation_mode == "support_paper" else "Challenge Stardust"
+            raise HTTPException(status_code=409, detail=f"{label} can only be created from a paper in the {required_stance} column.")
 
         seed_paper = _resolve_project_paper_for_evidence(project_data, evidence_row)
         if not seed_paper:
@@ -3755,7 +3907,7 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
 
         seed_openalex_id = _trim_text(enriched_seed.get("openalex_id"), 300)
         if not seed_openalex_id:
-            raise HTTPException(status_code=404, detail="The seed challenge paper could not be resolved on OpenAlex.")
+            raise HTTPException(status_code=404, detail="The seed evidence paper could not be resolved on OpenAlex.")
     else:
         seed_claim_text = _trim_text(payload.seed_claim_text, MAX_CLAIM_TEXT_LENGTH)
         enriched_seed = {
@@ -3786,7 +3938,19 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
 
     hop1_references: List[dict] = []
     hop1_cited_by: List[dict] = []
-    if creation_mode == "challenge_paper":
+    hop1_primary_to_work: Dict[str, dict] = {}
+    hop1_registered_count = 0
+    hop2_seed_keys: List[str] = []
+    hop2_reference_fetch_count = 0
+    hop2_cited_by_fetch_count = 0
+    semantic_queries: List[str] = []
+    semantic_result_count = 0
+    semantic_fallback_used = False
+    semantic_fallback_candidate_count = 0
+    hop1_reference_overlap_count = 0
+    hop1_cited_by_overlap_count = 0
+    used_hop1_fallback = False
+    if creation_mode in {"challenge_paper", "support_paper"}:
         try:
             hop1_references = _fetch_openalex_works_by_ids(
                 enriched_seed.get("referenced_openalex_ids") or [],
@@ -3825,79 +3989,248 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
     seed_tokens = _claim_tokens(seed_text)
     seed_phrases = _claim_phrases(seed_text)
 
-    semantic_queries = _build_stardust_semantic_queries(project_data, claim_row, evidence_row or {}, enriched_seed, payload.sub_target_thesis)
-    semantic_result_count = 0
-    for query in semantic_queries:
-        try:
-            semantic_results = _search_openalex_works(
-                query,
-                payload.openalex_api_key,
-                payload.contact_email,
-                MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY
-            )
-        except HTTPException as exc:
-            partial_failures.append({
-                "stage": "semantic_supplement",
-                "query": _trim_text(query, 140),
-                "detail": _trim_text(str(exc.detail), 200),
-            })
-            continue
-        semantic_result_count += len(semantic_results)
-        for work in semantic_results:
-            _register_stardust_candidate(
-                candidates_by_key,
-                signature_to_primary,
-                project_signature_set,
-                work,
-                discovery_source="semantic_supplement",
-                relationship_type="semantic_match",
-                hop_distance=3,
-                skipped=skipped,
-            )
-
-    hop1_reference_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
-        candidates_by_key,
-        signature_to_primary,
-        hop1_references,
-        "reference",
-    )
-    hop1_cited_by_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
-        candidates_by_key,
-        signature_to_primary,
-        hop1_cited_by,
-        "cited_by",
-    )
-
-    used_hop1_fallback = False
-    if creation_mode == "challenge_paper" and not candidates_by_key:
-        used_hop1_fallback = True
+    if creation_mode in {"challenge_paper", "support_paper"}:
         for relationship_type, works in (("reference", hop1_references), ("cited_by", hop1_cited_by)):
             for work in works:
+                if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                    break
+                before_count = len(candidates_by_key)
                 _register_stardust_candidate(
                     candidates_by_key,
                     signature_to_primary,
                     project_signature_set,
                     work,
-                    discovery_source="hop_1_fallback",
+                    discovery_source="hop_1_seed",
                     relationship_type=relationship_type,
                     hop_distance=1,
+                    source_stage="hop_1",
+                    skipped=skipped,
+                )
+                primary_key = _resolve_stardust_candidate_primary_key(signature_to_primary, work)
+                if primary_key and primary_key not in hop1_primary_to_work:
+                    hop1_primary_to_work[primary_key] = work
+                if len(candidates_by_key) > before_count:
+                    hop1_registered_count += 1
+            if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                break
+
+        preliminary_scored = _score_and_sort_stardust_candidates(
+            candidates_by_key,
+            focus_claim_text,
+            focus_tokens,
+            focus_phrases,
+            seed_tokens,
+            seed_phrases,
+            seed_context_label,
+            creation_mode,
+        )
+        hop2_seed_candidates: List[dict] = []
+        for item in preliminary_scored:
+            if _normalize_stardust_source_stage(item.get("source_stage")) != "hop_1":
+                continue
+            if not item.get("openalex_id") and not item.get("referenced_openalex_ids"):
+                continue
+            strong_enough = bool(item.get("include")) or float(item.get("challenge_score") or 0) >= 0.24 or (
+                float(item.get("claim_relevance") or 0) >= 0.20 and float(item.get("seed_similarity") or 0) >= 0.18
+            )
+            if not strong_enough:
+                continue
+            hop2_seed_candidates.append(item)
+            if len(hop2_seed_candidates) >= MAX_STARDUST_HOP2_SEEDS:
+                break
+
+        for hop2_seed in hop2_seed_candidates:
+            if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                break
+            via_paper_key = _trim_text(hop2_seed.get("paper_key"), 300)
+            via_paper_title = _trim_text(hop2_seed.get("title"), MAX_PAPER_TITLE_LENGTH)
+            if via_paper_key and via_paper_key not in hop2_seed_keys:
+                hop2_seed_keys.append(via_paper_key)
+            via_work = hop1_primary_to_work.get(via_paper_key) or {}
+            via_references = list(via_work.get("referenced_openalex_ids") or hop2_seed.get("referenced_openalex_ids") or [])
+            if via_references:
+                try:
+                    hop2_reference_works = _fetch_openalex_works_by_ids(
+                        via_references,
+                        payload.openalex_api_key,
+                        payload.contact_email,
+                        MAX_STARDUST_HOP2_REFERENCES_PER_SEED
+                    )
+                    hop2_reference_fetch_count += len(hop2_reference_works)
+                    for work in hop2_reference_works:
+                        if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                            break
+                        _register_stardust_candidate(
+                            candidates_by_key,
+                            signature_to_primary,
+                            project_signature_set,
+                            work,
+                            discovery_source="hop_2_expand",
+                            relationship_type="reference",
+                            hop_distance=2,
+                            source_stage="hop_2",
+                            via_paper_key=via_paper_key,
+                            via_paper_title=via_paper_title,
+                            skipped=skipped,
+                        )
+                except HTTPException as exc:
+                    partial_failures.append({
+                        "stage": "hop_2_references",
+                        "via_paper_title": _trim_text(via_paper_title, 120),
+                        "detail": _trim_text(str(exc.detail), 200),
+                    })
+            via_openalex_id = _trim_text(via_work.get("openalex_id") or hop2_seed.get("openalex_id"), 300)
+            if via_openalex_id and len(candidates_by_key) < MAX_STARDUST_CANDIDATE_POOL:
+                try:
+                    hop2_cited_by_works = _fetch_openalex_cited_by_works(
+                        via_openalex_id,
+                        payload.openalex_api_key,
+                        payload.contact_email,
+                        MAX_STARDUST_HOP2_CITED_BY_PER_SEED
+                    )
+                    hop2_cited_by_fetch_count += len(hop2_cited_by_works)
+                    for work in hop2_cited_by_works:
+                        if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                            break
+                        _register_stardust_candidate(
+                            candidates_by_key,
+                            signature_to_primary,
+                            project_signature_set,
+                            work,
+                            discovery_source="hop_2_expand",
+                            relationship_type="cited_by",
+                            hop_distance=2,
+                            source_stage="hop_2",
+                            via_paper_key=via_paper_key,
+                            via_paper_title=via_paper_title,
+                            skipped=skipped,
+                        )
+                except HTTPException as exc:
+                    partial_failures.append({
+                        "stage": "hop_2_cited_by",
+                        "via_paper_title": _trim_text(via_paper_title, 120),
+                        "detail": _trim_text(str(exc.detail), 200),
+                    })
+
+        local_scored = _score_and_sort_stardust_candidates(
+            candidates_by_key,
+            focus_claim_text,
+            focus_tokens,
+            focus_phrases,
+            seed_tokens,
+            seed_phrases,
+            seed_context_label,
+            creation_mode,
+        )
+        local_included = [item for item in local_scored if item.get("include")]
+        if len(local_included) < min(payload.max_papers, 18) and len(candidates_by_key) < MAX_STARDUST_CANDIDATE_POOL:
+            semantic_fallback_used = True
+            semantic_queries = _build_stardust_semantic_queries(project_data, claim_row, evidence_row or {}, enriched_seed, payload.sub_target_thesis)
+            before_semantic_count = len(candidates_by_key)
+            for query in semantic_queries:
+                if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                    break
+                try:
+                    semantic_results = _search_openalex_works(
+                        query,
+                        payload.openalex_api_key,
+                        payload.contact_email,
+                        MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY
+                    )
+                except HTTPException as exc:
+                    partial_failures.append({
+                        "stage": "semantic_fallback",
+                        "query": _trim_text(query, 140),
+                        "detail": _trim_text(str(exc.detail), 200),
+                    })
+                    continue
+                semantic_result_count += len(semantic_results)
+                for work in semantic_results:
+                    if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                        break
+                    _register_stardust_candidate(
+                        candidates_by_key,
+                        signature_to_primary,
+                        project_signature_set,
+                        work,
+                        discovery_source="semantic_supplement",
+                        relationship_type="semantic_match",
+                        hop_distance=3,
+                        source_stage="semantic_fallback",
+                        skipped=skipped,
+                    )
+            semantic_fallback_candidate_count = max(0, len(candidates_by_key) - before_semantic_count)
+    else:
+        semantic_queries = _build_stardust_semantic_queries(project_data, claim_row, evidence_row or {}, enriched_seed, payload.sub_target_thesis)
+        for query in semantic_queries:
+            try:
+                semantic_results = _search_openalex_works(
+                    query,
+                    payload.openalex_api_key,
+                    payload.contact_email,
+                    MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY
+                )
+            except HTTPException as exc:
+                partial_failures.append({
+                    "stage": "semantic_supplement",
+                    "query": _trim_text(query, 140),
+                    "detail": _trim_text(str(exc.detail), 200),
+                })
+                continue
+            semantic_result_count += len(semantic_results)
+            for work in semantic_results:
+                _register_stardust_candidate(
+                    candidates_by_key,
+                    signature_to_primary,
+                    project_signature_set,
+                    work,
+                    discovery_source="semantic_supplement",
+                    relationship_type="semantic_match",
+                    hop_distance=3,
+                    source_stage="semantic_fallback",
                     skipped=skipped,
                 )
 
-    scored_candidates = [
-        _score_stardust_candidate(candidate, focus_claim_text, focus_tokens, focus_phrases, seed_tokens, seed_phrases, seed_context_label)
-        for candidate in candidates_by_key.values()
-    ]
-    scored_candidates.sort(
-        key=lambda item: (
-            float(item.get("challenge_score") or 0),
-            float(item.get("semantic_overlap") or 0),
-            float(item.get("claim_relevance") or 0),
-            float(item.get("seed_similarity") or 0),
-            float(item.get("quality_score") or 0),
-            _safe_int(item.get("citation_count"), 0)
-        ),
-        reverse=True
+        hop1_reference_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
+            candidates_by_key,
+            signature_to_primary,
+            hop1_references,
+            "reference",
+            source_stage="hop_1",
+        )
+        hop1_cited_by_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
+            candidates_by_key,
+            signature_to_primary,
+            hop1_cited_by,
+            "cited_by",
+            source_stage="hop_1",
+        )
+
+        if not candidates_by_key:
+            used_hop1_fallback = True
+            for relationship_type, works in (("reference", hop1_references), ("cited_by", hop1_cited_by)):
+                for work in works:
+                    _register_stardust_candidate(
+                        candidates_by_key,
+                        signature_to_primary,
+                        project_signature_set,
+                        work,
+                        discovery_source="hop_1_fallback",
+                        relationship_type=relationship_type,
+                        hop_distance=1,
+                        source_stage="hop_1",
+                        skipped=skipped,
+                    )
+
+    scored_candidates = _score_and_sort_stardust_candidates(
+        candidates_by_key,
+        focus_claim_text,
+        focus_tokens,
+        focus_phrases,
+        seed_tokens,
+        seed_phrases,
+        seed_context_label,
+        creation_mode,
     )
     included_candidates = [item for item in scored_candidates if item.get("include")]
     if not included_candidates:
@@ -3920,6 +4253,7 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
         item.pop("_matched_queries", None)
 
     source_summary = {
+        "kind": stardust_kind,
         "creation_mode": creation_mode,
         "seed_claim_text": _trim_text(payload.seed_claim_text, MAX_CLAIM_TEXT_LENGTH) if creation_mode == "claim_only" else "",
         "seed_label": _trim_text(payload.seed_claim_text, 220) if creation_mode == "claim_only" else _trim_text(enriched_seed.get("title"), 220),
@@ -3938,6 +4272,19 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
         "stored_count": len(included_candidates),
         "partial_failures": partial_failures[:12],
     }
+    if creation_mode in {"challenge_paper", "support_paper"}:
+        source_summary.update({
+            "seed_expansion_strategy": "hop_1_then_hop_2_then_semantic_fallback",
+            "hop1_candidate_count": len([item for item in scored_candidates if _normalize_stardust_source_stage(item.get("source_stage")) == "hop_1"]),
+            "hop1_registered_count": hop1_registered_count,
+            "hop2_seed_count": len(hop2_seed_keys),
+            "hop2_reference_fetch_count": hop2_reference_fetch_count,
+            "hop2_cited_by_fetch_count": hop2_cited_by_fetch_count,
+            "hop2_candidate_count": len([item for item in scored_candidates if _normalize_stardust_source_stage(item.get("source_stage")) == "hop_2"]),
+            "semantic_fallback_used": semantic_fallback_used,
+            "semantic_fallback_candidate_count": semantic_fallback_candidate_count,
+            "semantic_fallback_stored_count": len([item for item in included_candidates if _normalize_stardust_source_stage(item.get("source_stage")) == "semantic_fallback"]),
+        })
     return {
         "seed_paper": enriched_seed,
         "papers": included_candidates,
@@ -4318,9 +4665,13 @@ def _normalize_stardust_graph_mode(raw_mode: Optional[str]) -> str:
     value = _trim_text(raw_mode or "directed", 40).lower() or "directed"
     return value if value in STARDUST_GRAPH_MODE_VALUES else "directed"
 
+def _normalize_stardust_kind(raw_kind: Optional[str]) -> str:
+    value = _trim_text(raw_kind or "challenge", 40).lower() or "challenge"
+    return value if value in STARDUST_KIND_VALUES else "challenge"
+
 def _normalize_stardust_creation_mode(raw_mode: Optional[str]) -> str:
     value = _trim_text(raw_mode or "challenge_paper", 40).lower() or "challenge_paper"
-    return value if value in {"challenge_paper", "claim_only"} else "challenge_paper"
+    return value if value in {"challenge_paper", "support_paper", "claim_only"} else "challenge_paper"
 
 def _validate_stardust_create_payload(payload: ChallengeStardustCreateRequest) -> ChallengeStardustCreateRequest:
     payload.claim_id = max(1, int(payload.claim_id or 0))
@@ -4337,8 +4688,9 @@ def _validate_stardust_create_payload(payload: ChallengeStardustCreateRequest) -
         raise HTTPException(status_code=400, detail="Stardust name cannot be empty.")
     if not payload.sub_target_thesis:
         raise HTTPException(status_code=400, detail="Sub target thesis cannot be empty.")
-    if payload.mode == "challenge_paper" and payload.seed_evidence_id <= 0:
-        raise HTTPException(status_code=400, detail="A seed challenge paper is required for this Stardust mode.")
+    if payload.mode in {"challenge_paper", "support_paper"} and payload.seed_evidence_id <= 0:
+        required_label = "challenge" if payload.mode == "challenge_paper" else "support"
+        raise HTTPException(status_code=400, detail=f"A seed {required_label} paper is required for this Stardust mode.")
     if payload.mode == "claim_only" and not payload.seed_claim_text:
         raise HTTPException(status_code=400, detail="A seed claim is required for claim-seed Stardust mode.")
     return _apply_runtime_defaults_to_lookup(payload)
@@ -4420,6 +4772,7 @@ def _serialize_stardust_row(conn: sqlite3.Connection, row: dict, include_childre
     except Exception:
         item["source_summary"] = {}
     item.pop("source_summary_json", None)
+    item["kind"] = _normalize_stardust_kind(item.get("kind") or item.get("source_summary", {}).get("kind"))
     item["creation_mode"] = _normalize_stardust_creation_mode(
         item.get("source_summary", {}).get("creation_mode") or ("challenge_paper" if int(item.get("seed_evidence_id") or 0) > 0 else "claim_only")
     )
@@ -4440,6 +4793,9 @@ def _serialize_stardust_paper_row(row: dict) -> dict:
     item["selected_for_import"] = bool(item.get("selected_for_import"))
     item["hidden"] = bool(item.get("hidden"))
     item["hop_distance"] = int(item.get("hop_distance") or 0)
+    item["source_stage"] = _normalize_stardust_source_stage(item.get("source_stage"))
+    item["via_paper_key"] = _trim_text(item.get("via_paper_key"), 300)
+    item["via_paper_title"] = _trim_text(item.get("via_paper_title"), MAX_PAPER_TITLE_LENGTH)
     return item
 
 def _load_stardust_papers(conn: sqlite3.Connection, stardust_id: int, include_hidden: bool = True) -> List[dict]:
@@ -4467,7 +4823,7 @@ def _get_owned_stardust(project_id: int, stardust_id: int, user_id: int) -> dict
     row = cursor.fetchone()
     conn.close()
     if not row:
-        raise HTTPException(status_code=404, detail="Challenge Stardust not found.")
+        raise HTTPException(status_code=404, detail="Stardust not found.")
     return dict(row)
 
 def _delete_stardust_records(conn: sqlite3.Connection, stardust_id: int):
@@ -4500,7 +4856,10 @@ def _insert_stardust_papers(conn: sqlite3.Connection, stardust_id: int, papers: 
             json.dumps(paper.get("referenced_openalex_ids") or [], ensure_ascii=False),
             _trim_text(paper.get("relationship_type"), 120),
             _trim_text(paper.get("discovery_source"), 120),
+            _trim_text(paper.get("source_stage"), 40),
             max(0, min(_safe_int(paper.get("hop_distance"), 0), 9)),
+            _trim_text(paper.get("via_paper_key"), 300),
+            _trim_text(paper.get("via_paper_title"), MAX_PAPER_TITLE_LENGTH),
             round(max(0.0, min(float(paper.get("challenge_score") or 0), 1.0)), 4),
             round(max(0.0, min(float(paper.get("seed_similarity") or 0), 1.0)), 4),
             round(max(0.0, min(float(paper.get("claim_relevance") or 0), 1.0)), 4),
@@ -4516,10 +4875,11 @@ def _insert_stardust_papers(conn: sqlite3.Connection, stardust_id: int, papers: 
         '''INSERT INTO challenge_stardust_papers (
             stardust_id, paper_key, title, abstract, current_content, authors, year, doi,
             openalex_id, paper_url, source_url, publication_venue, citation_count,
-            referenced_openalex_ids_json, relationship_type, discovery_source, hop_distance,
+            referenced_openalex_ids_json, relationship_type, discovery_source, source_stage, hop_distance,
+            via_paper_key, via_paper_title,
             challenge_score, seed_similarity, claim_relevance, quality_score, why_matched,
             caveat, selected_for_import, hidden, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
         rows
     )
 
@@ -9180,14 +9540,16 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
     payload = _validate_stardust_create_payload(payload)
     claim = _get_owned_claim(project_id, payload.claim_id, current_user["user_id"])
     creation_mode = _normalize_stardust_creation_mode(payload.mode)
+    stardust_kind = "support" if creation_mode == "support_paper" else "challenge"
     if payload.seed_claim_text and int(payload.seed_evidence_id or 0) <= 0:
         creation_mode = "claim_only"
         payload.mode = "claim_only"
+        stardust_kind = "challenge"
 
     conn = _db_connect(row_factory=True)
     cursor = conn.cursor()
     evidence_row = None
-    if creation_mode == "challenge_paper":
+    if creation_mode in {"challenge_paper", "support_paper"}:
         cursor.execute(
             "SELECT * FROM claim_evidence_items WHERE id = ? AND claim_id = ? AND project_id = ?",
             (payload.seed_evidence_id, payload.claim_id, project_id)
@@ -9196,6 +9558,11 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         if not evidence_row:
             conn.close()
             raise HTTPException(status_code=404, detail="Seed evidence item not found.")
+        evidence_stance = _normalize_claim_stance(evidence_row["stance"])
+        if evidence_stance in {"support", "challenge"}:
+            creation_mode = f"{evidence_stance}_paper"
+            payload.mode = creation_mode
+            stardust_kind = evidence_stance
 
     replaced_stardust_id = None
     if payload.replace_stardust_id:
@@ -9206,7 +9573,7 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         replace_row = cursor.fetchone()
         if not replace_row:
             conn.close()
-            raise HTTPException(status_code=404, detail="The Challenge Stardust chosen for replacement was not found.")
+            raise HTTPException(status_code=404, detail="The Stardust chosen for replacement was not found.")
         replaced_stardust_id = int(replace_row["id"])
 
     cursor.execute(
@@ -9218,7 +9585,7 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         conn.close()
         raise HTTPException(
             status_code=409,
-            detail=f"This project already has {MAX_STARDUSTS_PER_PROJECT} Challenge Stardusts. Replace an existing one before creating a new one."
+            detail=f"This project already has {MAX_STARDUSTS_PER_PROJECT} stored Stardusts. Replace an existing one before creating a new one."
         )
     conn.close()
 
@@ -9233,14 +9600,15 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
     now = _now_ts()
     cursor.execute(
         '''INSERT INTO challenge_stardusts (
-            project_id, claim_id, seed_evidence_id, seed_paper_key, name, sub_target_thesis,
+            project_id, claim_id, seed_evidence_id, seed_paper_key, kind, name, sub_target_thesis,
             status, paper_count, graph_cache_signature, source_summary_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
         (
             project_id,
             payload.claim_id,
-            payload.seed_evidence_id if creation_mode == "challenge_paper" else 0,
+            payload.seed_evidence_id if creation_mode in {"challenge_paper", "support_paper"} else 0,
             _trim_text(evidence_row["paper_key"], 300) if evidence_row else "__claim_seed__",
+            stardust_kind,
             payload.name,
             payload.sub_target_thesis,
             "ready",
@@ -9266,8 +9634,9 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         detail={
             "stardust_id": stardust_id,
             "claim_id": int(claim["id"]),
+            "kind": stardust_kind,
             "creation_mode": creation_mode,
-            "seed_evidence_id": payload.seed_evidence_id if creation_mode == "challenge_paper" else 0,
+            "seed_evidence_id": payload.seed_evidence_id if creation_mode in {"challenge_paper", "support_paper"} else 0,
             "replaced_stardust_id": replaced_stardust_id,
             "stored_count": len(papers),
         },
@@ -9524,7 +9893,7 @@ async def patch_project_stardust_paper(project_id: int, stardust_id: int, paper_
     row = cursor.fetchone()
     if not row:
         conn.close()
-        raise HTTPException(status_code=404, detail="Challenge Stardust paper not found.")
+        raise HTTPException(status_code=404, detail="Stardust paper not found.")
 
     cursor.execute(
         f"UPDATE challenge_stardust_papers SET {', '.join(fields)} WHERE id = ? AND stardust_id = ?",
