@@ -24,7 +24,7 @@ import logging
 from pathlib import Path
 from http.client import IncompleteRead
 from urllib import error, parse, request
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
 app = FastAPI(title="StarMap Backend API")
@@ -97,6 +97,14 @@ MAX_READ_PAPER_FINDING_DETAIL_LENGTH = 1400
 MAX_READ_PAPER_QUESTIONS_TO_PRESS = 6
 READ_PAPER_MAX_PAPERS = 12
 READ_PAPER_MAX_FINDINGS_PER_SECTION = 6
+MAX_ATLAS_CLIENT_KEY_LENGTH = 240
+MAX_ATLAS_PAPER_KEY_LENGTH = 300
+MAX_ATLAS_LABEL_LENGTH = 240
+MAX_ATLAS_NOTE_LENGTH = 4000
+MAX_ATLAS_KIND_LENGTH = 80
+MAX_ATLAS_SURFACE_LENGTH = 80
+MAX_ATLAS_COLOR_LENGTH = 40
+MAX_ATLAS_META_JSON_LENGTH = 20000
 MAX_CHALLENGE_EXPANSION_REFERENCES = 12
 MAX_CHALLENGE_EXPANSION_CITED_BY = 12
 MAX_CHALLENGE_EXPANSION_CANDIDATES = 18
@@ -110,7 +118,8 @@ CLAIM_STANCE_VALUES = {"support", "challenge", "setup", "pending"}
 READ_PAPER_SELECTION_VALUES = {"paper", "cluster"}
 STARDUST_STATUS_VALUES = {"draft", "ready", "building", "failed", "archived"}
 STARDUST_GRAPH_MODE_VALUES = {"directed", "mutual", "full"}
-MAX_STARDUSTS_PER_PROJECT = 5
+STARDUST_KIND_VALUES = {"challenge", "support"}
+MAX_STARDUSTS_PER_PROJECT = 10
 CACHE_SOFT_LIMIT_BYTES = 128 * 1024 * 1024
 CACHE_TARGET_LIMIT_BYTES = 96 * 1024 * 1024
 CACHE_HARD_LIMIT_BYTES = 192 * 1024 * 1024
@@ -481,6 +490,7 @@ def _ensure_stardust_schema(cursor):
             claim_id INTEGER NOT NULL,
             seed_evidence_id INTEGER NOT NULL,
             seed_paper_key TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'challenge',
             name TEXT NOT NULL,
             sub_target_thesis TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'draft',
@@ -498,6 +508,8 @@ def _ensure_stardust_schema(cursor):
     stardust_columns = {row[1] for row in cursor.fetchall()}
     if "source_summary_json" not in stardust_columns:
         cursor.execute("ALTER TABLE challenge_stardusts ADD COLUMN source_summary_json TEXT NOT NULL DEFAULT '{}'")
+    if "kind" not in stardust_columns:
+        cursor.execute("ALTER TABLE challenge_stardusts ADD COLUMN kind TEXT NOT NULL DEFAULT 'challenge'")
     cursor.execute(
         '''CREATE TABLE IF NOT EXISTS challenge_stardust_papers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -517,7 +529,10 @@ def _ensure_stardust_schema(cursor):
             referenced_openalex_ids_json TEXT NOT NULL DEFAULT '[]',
             relationship_type TEXT NOT NULL DEFAULT '',
             discovery_source TEXT NOT NULL DEFAULT '',
+            source_stage TEXT NOT NULL DEFAULT '',
             hop_distance INTEGER NOT NULL DEFAULT 0,
+            via_paper_key TEXT NOT NULL DEFAULT '',
+            via_paper_title TEXT NOT NULL DEFAULT '',
             challenge_score REAL NOT NULL DEFAULT 0,
             seed_similarity REAL NOT NULL DEFAULT 0,
             claim_relevance REAL NOT NULL DEFAULT 0,
@@ -532,6 +547,14 @@ def _ensure_stardust_schema(cursor):
             UNIQUE (stardust_id, paper_key)
         )'''
     )
+    cursor.execute("PRAGMA table_info(challenge_stardust_papers)")
+    stardust_paper_columns = {row[1] for row in cursor.fetchall()}
+    if "source_stage" not in stardust_paper_columns:
+        cursor.execute("ALTER TABLE challenge_stardust_papers ADD COLUMN source_stage TEXT NOT NULL DEFAULT ''")
+    if "via_paper_key" not in stardust_paper_columns:
+        cursor.execute("ALTER TABLE challenge_stardust_papers ADD COLUMN via_paper_key TEXT NOT NULL DEFAULT ''")
+    if "via_paper_title" not in stardust_paper_columns:
+        cursor.execute("ALTER TABLE challenge_stardust_papers ADD COLUMN via_paper_title TEXT NOT NULL DEFAULT ''")
     cursor.execute(
         '''CREATE TABLE IF NOT EXISTS challenge_stardust_graph_cache (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -554,6 +577,79 @@ def _ensure_stardust_schema(cursor):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_score ON challenge_stardust_papers (stardust_id, challenge_score DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_openalex ON challenge_stardust_papers (openalex_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_graph_cache_stardust_id ON challenge_stardust_graph_cache (stardust_id)")
+
+def _ensure_atlas_schema(cursor):
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS atlas_anchor (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            client_key TEXT NOT NULL,
+            paper_key TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            authors TEXT NOT NULL DEFAULT '',
+            year TEXT NOT NULL DEFAULT '',
+            label TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            anchor_kind TEXT NOT NULL DEFAULT 'marked',
+            pinned INTEGER NOT NULL DEFAULT 1,
+            created_from_surface TEXT NOT NULL DEFAULT '',
+            meta_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            UNIQUE (project_id, client_key)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS atlas_trail (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            client_key TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            root_anchor_id INTEGER,
+            root_paper_key TEXT NOT NULL DEFAULT '',
+            color TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_from_surface TEXT NOT NULL DEFAULT '',
+            meta_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (root_anchor_id) REFERENCES atlas_anchor (id),
+            UNIQUE (project_id, client_key)
+        )'''
+    )
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS atlas_relation (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            client_key TEXT NOT NULL,
+            trail_id INTEGER,
+            source_anchor_id INTEGER,
+            source_paper_key TEXT NOT NULL DEFAULT '',
+            target_paper_key TEXT NOT NULL DEFAULT '',
+            relation_kind TEXT NOT NULL DEFAULT 'manual',
+            note TEXT NOT NULL DEFAULT '',
+            confidence REAL,
+            created_from_surface TEXT NOT NULL DEFAULT '',
+            meta_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            FOREIGN KEY (project_id) REFERENCES projects (id),
+            FOREIGN KEY (trail_id) REFERENCES atlas_trail (id),
+            FOREIGN KEY (source_anchor_id) REFERENCES atlas_anchor (id),
+            UNIQUE (project_id, client_key)
+        )'''
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_anchor_project_id ON atlas_anchor (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_anchor_paper_key ON atlas_anchor (project_id, paper_key)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_trail_project_id ON atlas_trail (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_relation_project_id ON atlas_relation (project_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_relation_trail_id ON atlas_relation (trail_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_atlas_relation_source_target ON atlas_relation (project_id, source_paper_key, target_paper_key)")
 
 def init_db():
     conn = sqlite3.connect(str(DB_FILE))
@@ -593,6 +689,7 @@ def init_db():
     _ensure_projects_schema(cursor)
     _ensure_claims_schema(cursor)
     _ensure_stardust_schema(cursor)
+    _ensure_atlas_schema(cursor)
     cursor.execute("UPDATE claim_evidence_items SET stance = 'setup' WHERE LOWER(COALESCE(stance, '')) IN ('method', 'methods', 'methodology')")
     cursor.execute("UPDATE claim_evidence_items SET stance = 'pending' WHERE LOWER(COALESCE(stance, '')) IN ('background', 'context', 'foundation')")
     cursor.execute("SELECT id, top_papers FROM projects")
@@ -1102,6 +1199,934 @@ def _validate_paper_list(papers: List["PaperItem"]):
         paper.citation_key = _trim_text(paper.citation_key, 120) or generate_citation_key(paper.model_dump())
         if not paper.filename or not paper.title:
             raise HTTPException(status_code=422, detail="Every paper must include a filename and title.")
+
+def _coerce_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+def _parse_client_timestamp(value) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        timestamp = int(value)
+        return timestamp if timestamp > 0 else None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        numeric = int(float(text))
+        return numeric if numeric > 0 else None
+    except Exception:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp())
+    except Exception:
+        return None
+
+def _atlas_meta_json(raw_meta) -> str:
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
+    try:
+        serialized = _stable_json_dumps(meta)
+    except Exception:
+        return "{}"
+    if len(serialized) > MAX_ATLAS_META_JSON_LENGTH:
+        return '{"truncated":true}'
+    return serialized
+
+def _parse_atlas_meta_json(raw_value) -> Dict[str, Any]:
+    try:
+        parsed = json.loads(raw_value or "{}")
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+def _normalize_atlas_anchor_import(item: AtlasAnchorImportItem, now_ts: int) -> Optional[Dict[str, Any]]:
+    client_key = _trim_text(item.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    paper_key = _trim_text(item.paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    if not client_key or not paper_key:
+        return None
+    created_at = _parse_client_timestamp(item.created_at) or now_ts
+    updated_at = _parse_client_timestamp(item.updated_at) or created_at
+    return {
+        "client_key": client_key,
+        "paper_key": paper_key,
+        "title": _trim_text(item.title, MAX_PAPER_TITLE_LENGTH),
+        "authors": _trim_text(item.authors, MAX_PAPER_AUTHORS_LENGTH),
+        "year": _trim_text(item.year, 40),
+        "label": _trim_text(item.label, MAX_ATLAS_LABEL_LENGTH),
+        "note": _trim_text(item.note, MAX_ATLAS_NOTE_LENGTH),
+        "anchor_kind": _trim_text(item.anchor_kind, MAX_ATLAS_KIND_LENGTH).lower() or "marked",
+        "pinned": 1 if _coerce_bool(item.pinned, default=True) else 0,
+        "created_from_surface": _trim_text(item.created_from_surface, MAX_ATLAS_SURFACE_LENGTH),
+        "meta_json": _atlas_meta_json(item.meta),
+        "created_at": created_at,
+        "updated_at": max(updated_at, created_at),
+        "archived_at": _parse_client_timestamp(item.archived_at),
+    }
+
+def _normalize_atlas_trail_import(item: AtlasTrailImportItem, now_ts: int) -> Optional[Dict[str, Any]]:
+    client_key = _trim_text(item.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if not client_key:
+        return None
+    created_at = _parse_client_timestamp(item.created_at) or now_ts
+    updated_at = _parse_client_timestamp(item.updated_at) or created_at
+    return {
+        "client_key": client_key,
+        "name": _trim_text(item.name, MAX_ATLAS_LABEL_LENGTH) or "Untitled Trail",
+        "root_paper_key": _trim_text(item.root_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH),
+        "root_anchor_client_key": _trim_text(item.root_anchor_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+        "color": _trim_text(item.color, MAX_ATLAS_COLOR_LENGTH),
+        "note": _trim_text(item.note, MAX_ATLAS_NOTE_LENGTH),
+        "created_from_surface": _trim_text(item.created_from_surface, MAX_ATLAS_SURFACE_LENGTH),
+        "meta_json": _atlas_meta_json(item.meta),
+        "created_at": created_at,
+        "updated_at": max(updated_at, created_at),
+        "archived_at": _parse_client_timestamp(item.archived_at),
+    }
+
+def _normalize_atlas_relation_import(item: AtlasRelationImportItem, now_ts: int) -> Optional[Dict[str, Any]]:
+    client_key = _trim_text(item.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    source_paper_key = _trim_text(item.source_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    target_paper_key = _trim_text(item.target_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    if not client_key or not source_paper_key or not target_paper_key or source_paper_key == target_paper_key:
+        return None
+    created_at = _parse_client_timestamp(item.created_at) or now_ts
+    updated_at = _parse_client_timestamp(item.updated_at) or created_at
+    confidence = item.confidence
+    if confidence is not None:
+        try:
+            confidence = float(confidence)
+        except Exception:
+            confidence = None
+    return {
+        "client_key": client_key,
+        "trail_client_key": _trim_text(item.trail_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+        "source_anchor_client_key": _trim_text(item.source_anchor_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+        "source_paper_key": source_paper_key,
+        "target_paper_key": target_paper_key,
+        "relation_kind": _trim_text(item.relation_kind, MAX_ATLAS_KIND_LENGTH).lower() or "manual",
+        "note": _trim_text(item.note, MAX_ATLAS_NOTE_LENGTH),
+        "confidence": confidence,
+        "created_from_surface": _trim_text(item.created_from_surface, MAX_ATLAS_SURFACE_LENGTH),
+        "meta_json": _atlas_meta_json(item.meta),
+        "created_at": created_at,
+        "updated_at": max(updated_at, created_at),
+        "archived_at": _parse_client_timestamp(item.archived_at),
+    }
+
+def _select_preferred_anchor_id_by_paper_key(rows: List[sqlite3.Row]) -> Dict[str, int]:
+    ordered_rows = sorted(
+        rows,
+        key=lambda row: (
+            0 if str(row["anchor_kind"] or "") == "project_mark" else 1,
+            int(row["created_at"] or 0),
+            int(row["id"] or 0),
+        )
+    )
+    preferred: Dict[str, int] = {}
+    for row in ordered_rows:
+        paper_key = _trim_text(row["paper_key"], MAX_ATLAS_PAPER_KEY_LENGTH)
+        if paper_key and paper_key not in preferred:
+            preferred[paper_key] = int(row["id"])
+    return preferred
+
+def _serialize_atlas_anchor_row(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "project_id": int(row["project_id"]),
+        "client_key": row["client_key"],
+        "paper_key": row["paper_key"],
+        "title": row["title"],
+        "authors": row["authors"],
+        "year": row["year"],
+        "label": row["label"],
+        "note": row["note"],
+        "anchor_kind": row["anchor_kind"],
+        "pinned": bool(row["pinned"]),
+        "created_from_surface": row["created_from_surface"],
+        "meta": _parse_atlas_meta_json(row["meta_json"]),
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
+        "archived_at": int(row["archived_at"]) if row["archived_at"] is not None else None,
+    }
+
+def _serialize_atlas_trail_row(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "project_id": int(row["project_id"]),
+        "client_key": row["client_key"],
+        "name": row["name"],
+        "root_anchor_id": int(row["root_anchor_id"]) if row["root_anchor_id"] is not None else None,
+        "root_paper_key": row["root_paper_key"],
+        "color": row["color"],
+        "note": row["note"],
+        "created_from_surface": row["created_from_surface"],
+        "meta": _parse_atlas_meta_json(row["meta_json"]),
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
+        "archived_at": int(row["archived_at"]) if row["archived_at"] is not None else None,
+    }
+
+def _serialize_atlas_relation_row(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "project_id": int(row["project_id"]),
+        "client_key": row["client_key"],
+        "trail_id": int(row["trail_id"]) if row["trail_id"] is not None else None,
+        "source_anchor_id": int(row["source_anchor_id"]) if row["source_anchor_id"] is not None else None,
+        "source_paper_key": row["source_paper_key"],
+        "target_paper_key": row["target_paper_key"],
+        "relation_kind": row["relation_kind"],
+        "note": row["note"],
+        "confidence": float(row["confidence"]) if row["confidence"] is not None else None,
+        "created_from_surface": row["created_from_surface"],
+        "meta": _parse_atlas_meta_json(row["meta_json"]),
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
+        "archived_at": int(row["archived_at"]) if row["archived_at"] is not None else None,
+    }
+
+def _load_project_atlas_snapshot(project_id: int) -> Dict[str, Any]:
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM atlas_anchor WHERE project_id = ? ORDER BY created_at ASC, id ASC", (project_id,))
+        anchors = [_serialize_atlas_anchor_row(row) for row in cursor.fetchall()]
+        cursor.execute("SELECT * FROM atlas_trail WHERE project_id = ? ORDER BY created_at ASC, id ASC", (project_id,))
+        trails = [_serialize_atlas_trail_row(row) for row in cursor.fetchall()]
+        cursor.execute("SELECT * FROM atlas_relation WHERE project_id = ? ORDER BY created_at ASC, id ASC", (project_id,))
+        relations = [_serialize_atlas_relation_row(row) for row in cursor.fetchall()]
+        return {
+            "anchors": anchors,
+            "trails": trails,
+            "relations": relations,
+            "counts": {
+                "anchors": len(anchors),
+                "trails": len(trails),
+                "relations": len(relations),
+            },
+        }
+    finally:
+        conn.close()
+
+def _import_legacy_atlas_payload(project_id: int, payload: AtlasLegacyImportRequest) -> Dict[str, Any]:
+    now_ts = _now_ts()
+    normalized_anchors: List[Dict[str, Any]] = []
+    normalized_trails: List[Dict[str, Any]] = []
+    normalized_relations: List[Dict[str, Any]] = []
+    seen_anchor_keys = set()
+    seen_trail_keys = set()
+    seen_relation_keys = set()
+
+    for item in payload.anchors[:500]:
+        normalized = _normalize_atlas_anchor_import(item, now_ts)
+        if not normalized or normalized["client_key"] in seen_anchor_keys:
+            continue
+        seen_anchor_keys.add(normalized["client_key"])
+        normalized_anchors.append(normalized)
+
+    for item in payload.trails[:300]:
+        normalized = _normalize_atlas_trail_import(item, now_ts)
+        if not normalized or normalized["client_key"] in seen_trail_keys:
+            continue
+        seen_trail_keys.add(normalized["client_key"])
+        normalized_trails.append(normalized)
+
+    for item in payload.relations[:1000]:
+        normalized = _normalize_atlas_relation_import(item, now_ts)
+        if not normalized or normalized["client_key"] in seen_relation_keys:
+            continue
+        seen_relation_keys.add(normalized["client_key"])
+        normalized_relations.append(normalized)
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        for anchor in normalized_anchors:
+            cursor.execute(
+                '''INSERT INTO atlas_anchor (
+                    project_id, client_key, paper_key, title, authors, year, label, note,
+                    anchor_kind, pinned, created_from_surface, meta_json, created_at, updated_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, client_key) DO UPDATE SET
+                    paper_key = excluded.paper_key,
+                    title = excluded.title,
+                    authors = excluded.authors,
+                    year = excluded.year,
+                    label = excluded.label,
+                    note = excluded.note,
+                    anchor_kind = excluded.anchor_kind,
+                    pinned = excluded.pinned,
+                    created_from_surface = excluded.created_from_surface,
+                    meta_json = excluded.meta_json,
+                    created_at = MIN(atlas_anchor.created_at, excluded.created_at),
+                    updated_at = MAX(atlas_anchor.updated_at, excluded.updated_at),
+                    archived_at = excluded.archived_at''',
+                (
+                    project_id,
+                    anchor["client_key"],
+                    anchor["paper_key"],
+                    anchor["title"],
+                    anchor["authors"],
+                    anchor["year"],
+                    anchor["label"],
+                    anchor["note"],
+                    anchor["anchor_kind"],
+                    anchor["pinned"],
+                    anchor["created_from_surface"],
+                    anchor["meta_json"],
+                    anchor["created_at"],
+                    anchor["updated_at"],
+                    anchor["archived_at"],
+                )
+            )
+
+        cursor.execute("SELECT * FROM atlas_anchor WHERE project_id = ?", (project_id,))
+        anchor_rows = cursor.fetchall()
+        anchor_id_by_client_key = {
+            _trim_text(row["client_key"], MAX_ATLAS_CLIENT_KEY_LENGTH): int(row["id"])
+            for row in anchor_rows
+            if _trim_text(row["client_key"], MAX_ATLAS_CLIENT_KEY_LENGTH)
+        }
+        preferred_anchor_id_by_paper_key = _select_preferred_anchor_id_by_paper_key(anchor_rows)
+
+        for trail in normalized_trails:
+            root_anchor_id = None
+            if trail["root_anchor_client_key"]:
+                root_anchor_id = anchor_id_by_client_key.get(trail["root_anchor_client_key"])
+            if root_anchor_id is None and trail["root_paper_key"]:
+                root_anchor_id = preferred_anchor_id_by_paper_key.get(trail["root_paper_key"])
+            cursor.execute(
+                '''INSERT INTO atlas_trail (
+                    project_id, client_key, name, root_anchor_id, root_paper_key, color, note,
+                    created_from_surface, meta_json, created_at, updated_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, client_key) DO UPDATE SET
+                    name = excluded.name,
+                    root_anchor_id = excluded.root_anchor_id,
+                    root_paper_key = excluded.root_paper_key,
+                    color = excluded.color,
+                    note = excluded.note,
+                    created_from_surface = excluded.created_from_surface,
+                    meta_json = excluded.meta_json,
+                    created_at = MIN(atlas_trail.created_at, excluded.created_at),
+                    updated_at = MAX(atlas_trail.updated_at, excluded.updated_at),
+                    archived_at = excluded.archived_at''',
+                (
+                    project_id,
+                    trail["client_key"],
+                    trail["name"],
+                    root_anchor_id,
+                    trail["root_paper_key"],
+                    trail["color"],
+                    trail["note"],
+                    trail["created_from_surface"],
+                    trail["meta_json"],
+                    trail["created_at"],
+                    trail["updated_at"],
+                    trail["archived_at"],
+                )
+            )
+
+        cursor.execute("SELECT id, client_key FROM atlas_trail WHERE project_id = ?", (project_id,))
+        trail_id_by_client_key = {
+            _trim_text(row["client_key"], MAX_ATLAS_CLIENT_KEY_LENGTH): int(row["id"])
+            for row in cursor.fetchall()
+            if _trim_text(row["client_key"], MAX_ATLAS_CLIENT_KEY_LENGTH)
+        }
+
+        for relation in normalized_relations:
+            trail_id = trail_id_by_client_key.get(relation["trail_client_key"]) if relation["trail_client_key"] else None
+            source_anchor_id = None
+            if relation["source_anchor_client_key"]:
+                source_anchor_id = anchor_id_by_client_key.get(relation["source_anchor_client_key"])
+            if source_anchor_id is None:
+                source_anchor_id = preferred_anchor_id_by_paper_key.get(relation["source_paper_key"])
+            cursor.execute(
+                '''INSERT INTO atlas_relation (
+                    project_id, client_key, trail_id, source_anchor_id, source_paper_key, target_paper_key,
+                    relation_kind, note, confidence, created_from_surface, meta_json, created_at, updated_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, client_key) DO UPDATE SET
+                    trail_id = excluded.trail_id,
+                    source_anchor_id = excluded.source_anchor_id,
+                    source_paper_key = excluded.source_paper_key,
+                    target_paper_key = excluded.target_paper_key,
+                    relation_kind = excluded.relation_kind,
+                    note = excluded.note,
+                    confidence = excluded.confidence,
+                    created_from_surface = excluded.created_from_surface,
+                    meta_json = excluded.meta_json,
+                    created_at = MIN(atlas_relation.created_at, excluded.created_at),
+                    updated_at = MAX(atlas_relation.updated_at, excluded.updated_at),
+                    archived_at = excluded.archived_at''',
+                (
+                    project_id,
+                    relation["client_key"],
+                    trail_id,
+                    source_anchor_id,
+                    relation["source_paper_key"],
+                    relation["target_paper_key"],
+                    relation["relation_kind"],
+                    relation["note"],
+                    relation["confidence"],
+                    relation["created_from_surface"],
+                    relation["meta_json"],
+                    relation["created_at"],
+                    relation["updated_at"],
+                    relation["archived_at"],
+                )
+            )
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    snapshot = _load_project_atlas_snapshot(project_id)
+    return {
+        "migration_version": _trim_text(payload.migration_version, 120) or "legacy_localstorage_v1",
+        "processed": {
+            "anchors": len(normalized_anchors),
+            "trails": len(normalized_trails),
+            "relations": len(normalized_relations),
+        },
+        "counts": snapshot["counts"],
+    }
+
+def _upsert_project_atlas_anchor(project_id: int, payload: AtlasAnchorUpsertRequest) -> Dict[str, Any]:
+    now_ts = _now_ts()
+    normalized_paper_key = _trim_text(payload.paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    existing_client_key = _trim_text(payload.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if not normalized_paper_key:
+        raise HTTPException(status_code=422, detail="paper_key is required.")
+
+    if not existing_client_key:
+        existing_client_key = f"anchor:{normalized_paper_key}"[:MAX_ATLAS_CLIENT_KEY_LENGTH]
+
+    normalized = _normalize_atlas_anchor_import(
+        AtlasAnchorImportItem(
+            client_key=existing_client_key,
+            paper_key=normalized_paper_key,
+            title=payload.title,
+            authors=payload.authors,
+            year=payload.year,
+            label=payload.label,
+            note=payload.note,
+            anchor_kind=payload.anchor_kind,
+            pinned=payload.pinned,
+            created_from_surface=payload.created_from_surface,
+            created_at=now_ts,
+            updated_at=now_ts,
+            meta=payload.meta or {},
+        ),
+        now_ts
+    )
+    if not normalized:
+        raise HTTPException(status_code=422, detail="Could not normalize this anchor payload.")
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            '''INSERT INTO atlas_anchor (
+                project_id, client_key, paper_key, title, authors, year, label, note,
+                anchor_kind, pinned, created_from_surface, meta_json, created_at, updated_at, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id, client_key) DO UPDATE SET
+                paper_key = excluded.paper_key,
+                title = excluded.title,
+                authors = excluded.authors,
+                year = excluded.year,
+                label = excluded.label,
+                note = excluded.note,
+                anchor_kind = excluded.anchor_kind,
+                pinned = excluded.pinned,
+                created_from_surface = excluded.created_from_surface,
+                meta_json = excluded.meta_json,
+                created_at = MIN(atlas_anchor.created_at, excluded.created_at),
+                updated_at = MAX(atlas_anchor.updated_at, excluded.updated_at),
+                archived_at = excluded.archived_at''',
+            (
+                project_id,
+                normalized["client_key"],
+                normalized["paper_key"],
+                normalized["title"],
+                normalized["authors"],
+                normalized["year"],
+                normalized["label"],
+                normalized["note"],
+                normalized["anchor_kind"],
+                normalized["pinned"],
+                normalized["created_from_surface"],
+                normalized["meta_json"],
+                normalized["created_at"],
+                normalized["updated_at"],
+                normalized["archived_at"],
+            )
+        )
+        conn.commit()
+        cursor.execute(
+            "SELECT * FROM atlas_anchor WHERE project_id = ? AND client_key = ? LIMIT 1",
+            (project_id, normalized["client_key"])
+        )
+        row = cursor.fetchone()
+        return _serialize_atlas_anchor_row(row) if row else {}
+    finally:
+        conn.close()
+
+def _build_atlas_client_key(prefix: str) -> str:
+    normalized_prefix = _trim_text(prefix, 40) or "atlas"
+    return f"{normalized_prefix}:{uuid.uuid4().hex}"[:MAX_ATLAS_CLIENT_KEY_LENGTH]
+
+def _build_default_atlas_trail_name(color: str = "") -> str:
+    normalized_color = _trim_text(color, MAX_ATLAS_COLOR_LENGTH).lower()
+    color_name_map = {
+        "#ea580c": "Red",
+        "#2563eb": "Blue",
+        "#0f766e": "Teal",
+        "#db2777": "Pink",
+        "#7c3aed": "Purple",
+        "#16a34a": "Green",
+        "#ca8a04": "Gold",
+    }
+    return f"Chain {color_name_map.get(normalized_color, 'Trail')}"
+
+def _get_project_atlas_primary_anchor_id(cursor, project_id: int, paper_key: str = "") -> Optional[int]:
+    normalized_paper_key = _trim_text(paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    if not normalized_paper_key:
+        return None
+    cursor.execute(
+        '''SELECT id FROM atlas_anchor
+           WHERE project_id = ? AND paper_key = ?
+           ORDER BY pinned DESC, updated_at DESC, id DESC
+           LIMIT 1''',
+        (project_id, normalized_paper_key)
+    )
+    row = cursor.fetchone()
+    return int(row["id"]) if row and row["id"] is not None else None
+
+def _get_project_atlas_anchor_id_by_client_key(cursor, project_id: int, client_key: str = "") -> Optional[int]:
+    normalized_client_key = _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if not normalized_client_key:
+        return None
+    cursor.execute(
+        "SELECT id FROM atlas_anchor WHERE project_id = ? AND client_key = ? LIMIT 1",
+        (project_id, normalized_client_key)
+    )
+    row = cursor.fetchone()
+    return int(row["id"]) if row and row["id"] is not None else None
+
+def _get_project_atlas_trail_row(cursor, project_id: int, trail_id: int = 0, client_key: str = "") -> Optional[sqlite3.Row]:
+    normalized_trail_id = int(trail_id or 0)
+    normalized_client_key = _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if normalized_trail_id > 0:
+        cursor.execute(
+            "SELECT * FROM atlas_trail WHERE project_id = ? AND id = ? LIMIT 1",
+            (project_id, normalized_trail_id)
+        )
+        row = cursor.fetchone()
+        if row:
+            return row
+    if normalized_client_key:
+        cursor.execute(
+            "SELECT * FROM atlas_trail WHERE project_id = ? AND client_key = ? LIMIT 1",
+            (project_id, normalized_client_key)
+        )
+        return cursor.fetchone()
+    return None
+
+def _upsert_project_atlas_trail(project_id: int, payload: AtlasTrailUpsertRequest) -> Dict[str, Any]:
+    now_ts = _now_ts()
+    normalized_trail_id = int(payload.id or 0) if payload.id else 0
+    normalized_client_key = _trim_text(payload.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    normalized_name = _trim_text(payload.name, MAX_ATLAS_LABEL_LENGTH)
+    normalized_root_paper_key = _trim_text(payload.root_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    normalized_root_anchor_id = int(payload.root_anchor_id or 0) if payload.root_anchor_id else 0
+    normalized_root_anchor_client_key = _trim_text(payload.root_anchor_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    normalized_color = _trim_text(payload.color, MAX_ATLAS_COLOR_LENGTH)
+    normalized_note = _trim_text(payload.note, MAX_ATLAS_NOTE_LENGTH)
+    normalized_created_from_surface = _trim_text(payload.created_from_surface, MAX_ATLAS_SURFACE_LENGTH) or "workspace_trail_browser"
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        existing_row = _get_project_atlas_trail_row(
+            cursor,
+            project_id,
+            trail_id=normalized_trail_id,
+            client_key=normalized_client_key
+        )
+        if normalized_trail_id > 0 and existing_row is None:
+            raise HTTPException(status_code=404, detail="The selected trail could not be found.")
+
+        next_client_key = normalized_client_key or (existing_row["client_key"] if existing_row else _build_atlas_client_key("trail"))
+        next_root_paper_key = normalized_root_paper_key or (existing_row["root_paper_key"] if existing_row else "")
+        next_name = normalized_name or (existing_row["name"] if existing_row else _build_default_atlas_trail_name(normalized_color))
+        next_color = normalized_color or (existing_row["color"] if existing_row else "")
+        next_note = normalized_note if normalized_note else (existing_row["note"] if existing_row else "")
+        next_created_from_surface = normalized_created_from_surface or (existing_row["created_from_surface"] if existing_row else "workspace_trail_browser")
+
+        root_anchor_id = normalized_root_anchor_id or _get_project_atlas_anchor_id_by_client_key(
+            cursor, project_id, normalized_root_anchor_client_key
+        )
+        if root_anchor_id is None:
+            root_anchor_id = int(existing_row["root_anchor_id"]) if existing_row and existing_row["root_anchor_id"] is not None else None
+        if root_anchor_id is None and next_root_paper_key:
+            root_anchor_id = _get_project_atlas_primary_anchor_id(cursor, project_id, next_root_paper_key)
+
+        existing_meta = _parse_atlas_meta_json(existing_row["meta_json"]) if existing_row else {}
+        next_meta = {
+            **(existing_meta or {}),
+            **(payload.meta or {})
+        }
+        created_at = int(existing_row["created_at"]) if existing_row and existing_row["created_at"] is not None else now_ts
+
+        cursor.execute(
+            '''INSERT INTO atlas_trail (
+                project_id, client_key, name, root_anchor_id, root_paper_key, color, note,
+                created_from_surface, meta_json, created_at, updated_at, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id, client_key) DO UPDATE SET
+                name = excluded.name,
+                root_anchor_id = excluded.root_anchor_id,
+                root_paper_key = excluded.root_paper_key,
+                color = excluded.color,
+                note = excluded.note,
+                created_from_surface = excluded.created_from_surface,
+                meta_json = excluded.meta_json,
+                created_at = MIN(atlas_trail.created_at, excluded.created_at),
+                updated_at = MAX(atlas_trail.updated_at, excluded.updated_at),
+                archived_at = excluded.archived_at''',
+            (
+                project_id,
+                next_client_key,
+                next_name,
+                root_anchor_id,
+                next_root_paper_key,
+                next_color,
+                next_note,
+                next_created_from_surface,
+                _atlas_meta_json(next_meta),
+                created_at,
+                now_ts,
+                None,
+            )
+        )
+        conn.commit()
+        row = _get_project_atlas_trail_row(cursor, project_id, client_key=next_client_key)
+        return _serialize_atlas_trail_row(row) if row else {}
+    finally:
+        conn.close()
+
+def _upsert_project_atlas_relation(project_id: int, payload: AtlasRelationUpsertRequest) -> Dict[str, Any]:
+    now_ts = _now_ts()
+    normalized_source_key = _trim_text(payload.source_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    normalized_target_key = _trim_text(payload.target_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    if not normalized_source_key or not normalized_target_key:
+        raise HTTPException(status_code=422, detail="source_paper_key and target_paper_key are required.")
+    if normalized_source_key == normalized_target_key:
+        raise HTTPException(status_code=422, detail="Directed relations require two different papers.")
+
+    normalized_client_key = _trim_text(payload.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH) or _build_atlas_client_key("relation")
+    normalized_relation_kind = _trim_text(payload.relation_kind, MAX_ATLAS_KIND_LENGTH).lower() or "manual"
+    normalized_trail_client_key = _trim_text(payload.trail_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    normalized_trail_name = _trim_text(payload.trail_name, MAX_ATLAS_LABEL_LENGTH)
+    normalized_trail_root_paper_key = _trim_text(payload.trail_root_paper_key, MAX_ATLAS_PAPER_KEY_LENGTH) or normalized_source_key
+    normalized_trail_color = _trim_text(payload.trail_color, MAX_ATLAS_COLOR_LENGTH)
+    normalized_created_from_surface = _trim_text(payload.created_from_surface, MAX_ATLAS_SURFACE_LENGTH) or "workspace_relation_composer"
+    normalized_note = _trim_text(payload.note, MAX_ATLAS_NOTE_LENGTH)
+    normalized_confidence = payload.confidence
+    if normalized_confidence is not None:
+        try:
+            normalized_confidence = float(normalized_confidence)
+        except Exception:
+            normalized_confidence = None
+
+    normalized_source_anchor_id = int(payload.source_anchor_id or 0) if payload.source_anchor_id else 0
+    normalized_source_anchor_client_key = _trim_text(payload.source_anchor_client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        source_anchor_id = normalized_source_anchor_id or _get_project_atlas_anchor_id_by_client_key(
+            cursor, project_id, normalized_source_anchor_client_key
+        )
+        if source_anchor_id is None:
+            source_anchor_id = _get_project_atlas_primary_anchor_id(cursor, project_id, normalized_source_key)
+
+        resolved_trail_row = _get_project_atlas_trail_row(
+            cursor,
+            project_id,
+            trail_id=int(payload.trail_id or 0),
+            client_key=normalized_trail_client_key
+        )
+        if int(payload.trail_id or 0) > 0 and resolved_trail_row is None:
+            raise HTTPException(status_code=404, detail="The selected trail could not be found.")
+
+        if resolved_trail_row is None and (normalized_trail_client_key or normalized_trail_name):
+            next_trail_client_key = normalized_trail_client_key or _build_atlas_client_key("trail")
+            root_anchor_id = source_anchor_id or _get_project_atlas_primary_anchor_id(
+                cursor, project_id, normalized_trail_root_paper_key
+            )
+            cursor.execute(
+                '''INSERT INTO atlas_trail (
+                    project_id, client_key, name, root_anchor_id, root_paper_key, color, note,
+                    created_from_surface, meta_json, created_at, updated_at, archived_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, client_key) DO UPDATE SET
+                    name = excluded.name,
+                    root_anchor_id = excluded.root_anchor_id,
+                    root_paper_key = excluded.root_paper_key,
+                    color = excluded.color,
+                    note = excluded.note,
+                    created_from_surface = excluded.created_from_surface,
+                    meta_json = excluded.meta_json,
+                    created_at = MIN(atlas_trail.created_at, excluded.created_at),
+                    updated_at = MAX(atlas_trail.updated_at, excluded.updated_at),
+                    archived_at = excluded.archived_at''',
+                (
+                    project_id,
+                    next_trail_client_key,
+                    normalized_trail_name or _build_default_atlas_trail_name(normalized_trail_color),
+                    root_anchor_id,
+                    normalized_trail_root_paper_key,
+                    normalized_trail_color,
+                    "",
+                    normalized_created_from_surface,
+                    _atlas_meta_json({}),
+                    now_ts,
+                    now_ts,
+                    None,
+                )
+            )
+            resolved_trail_row = _get_project_atlas_trail_row(cursor, project_id, client_key=next_trail_client_key)
+
+        if not _trim_text(payload.client_key, MAX_ATLAS_CLIENT_KEY_LENGTH):
+            cursor.execute(
+                '''SELECT client_key FROM atlas_relation
+                   WHERE project_id = ?
+                     AND source_paper_key = ?
+                     AND target_paper_key = ?
+                     AND relation_kind = ?
+                     AND COALESCE(trail_id, 0) = ?
+                   ORDER BY updated_at DESC, id DESC
+                   LIMIT 1''',
+                (
+                    project_id,
+                    normalized_source_key,
+                    normalized_target_key,
+                    normalized_relation_kind,
+                    int(resolved_trail_row["id"]) if resolved_trail_row and resolved_trail_row["id"] is not None else 0,
+                )
+            )
+            existing_relation_row = cursor.fetchone()
+            if existing_relation_row and existing_relation_row["client_key"]:
+                normalized_client_key = _trim_text(existing_relation_row["client_key"], MAX_ATLAS_CLIENT_KEY_LENGTH) or normalized_client_key
+
+        normalized = _normalize_atlas_relation_import(
+            AtlasRelationImportItem(
+                client_key=normalized_client_key,
+                trail_client_key=resolved_trail_row["client_key"] if resolved_trail_row else "",
+                source_anchor_client_key=normalized_source_anchor_client_key,
+                source_paper_key=normalized_source_key,
+                target_paper_key=normalized_target_key,
+                relation_kind=normalized_relation_kind,
+                note=normalized_note,
+                confidence=normalized_confidence,
+                created_from_surface=normalized_created_from_surface,
+                created_at=now_ts,
+                updated_at=now_ts,
+                meta=payload.meta or {},
+            ),
+            now_ts
+        )
+        if not normalized:
+            raise HTTPException(status_code=422, detail="Could not normalize this relation payload.")
+
+        cursor.execute(
+            '''INSERT INTO atlas_relation (
+                project_id, client_key, trail_id, source_anchor_id, source_paper_key, target_paper_key,
+                relation_kind, note, confidence, created_from_surface, meta_json, created_at, updated_at, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(project_id, client_key) DO UPDATE SET
+                trail_id = excluded.trail_id,
+                source_anchor_id = excluded.source_anchor_id,
+                source_paper_key = excluded.source_paper_key,
+                target_paper_key = excluded.target_paper_key,
+                relation_kind = excluded.relation_kind,
+                note = excluded.note,
+                confidence = excluded.confidence,
+                created_from_surface = excluded.created_from_surface,
+                meta_json = excluded.meta_json,
+                created_at = MIN(atlas_relation.created_at, excluded.created_at),
+                updated_at = MAX(atlas_relation.updated_at, excluded.updated_at),
+                archived_at = excluded.archived_at''',
+            (
+                project_id,
+                normalized["client_key"],
+                int(resolved_trail_row["id"]) if resolved_trail_row and resolved_trail_row["id"] is not None else None,
+                source_anchor_id,
+                normalized["source_paper_key"],
+                normalized["target_paper_key"],
+                normalized["relation_kind"],
+                normalized["note"],
+                normalized["confidence"],
+                normalized["created_from_surface"],
+                normalized["meta_json"],
+                normalized["created_at"],
+                normalized["updated_at"],
+                normalized["archived_at"],
+            )
+        )
+        conn.commit()
+        cursor.execute(
+            "SELECT * FROM atlas_relation WHERE project_id = ? AND client_key = ? LIMIT 1",
+            (project_id, normalized["client_key"])
+        )
+        row = cursor.fetchone()
+        return _serialize_atlas_relation_row(row) if row else {}
+    finally:
+        conn.close()
+
+def _delete_project_atlas_relations(project_id: int, relation_id: int = 0, client_key: str = "") -> Dict[str, int]:
+    normalized_relation_id = int(relation_id or 0)
+    normalized_client_key = _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if normalized_relation_id <= 0 and not normalized_client_key:
+        raise HTTPException(status_code=422, detail="relation_id or client_key is required.")
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        if normalized_relation_id > 0:
+            cursor.execute(
+                "SELECT trail_id FROM atlas_relation WHERE project_id = ? AND id = ?",
+                (project_id, normalized_relation_id)
+            )
+        else:
+            cursor.execute(
+                "SELECT trail_id FROM atlas_relation WHERE project_id = ? AND client_key = ?",
+                (project_id, normalized_client_key)
+            )
+        trail_ids = {
+            int(row["trail_id"])
+            for row in cursor.fetchall()
+            if row and row["trail_id"] is not None and int(row["trail_id"]) > 0
+        }
+
+        if normalized_relation_id > 0:
+            cursor.execute(
+                "DELETE FROM atlas_relation WHERE project_id = ? AND id = ?",
+                (project_id, normalized_relation_id)
+            )
+        else:
+            cursor.execute(
+                "DELETE FROM atlas_relation WHERE project_id = ? AND client_key = ?",
+                (project_id, normalized_client_key)
+            )
+        deleted_count = int(cursor.rowcount or 0)
+
+        deleted_trail_count = 0
+        for trail_id in trail_ids:
+            cursor.execute(
+                "SELECT 1 FROM atlas_relation WHERE project_id = ? AND trail_id = ? LIMIT 1",
+                (project_id, trail_id)
+            )
+            if cursor.fetchone():
+                continue
+            cursor.execute(
+                "DELETE FROM atlas_trail WHERE project_id = ? AND id = ?",
+                (project_id, trail_id)
+            )
+            deleted_trail_count += int(cursor.rowcount or 0)
+
+        conn.commit()
+        return {
+            "deleted_count": deleted_count,
+            "deleted_trail_count": deleted_trail_count,
+        }
+    finally:
+        conn.close()
+
+def _delete_project_atlas_trails(project_id: int, trail_id: int = 0, client_key: str = "") -> Dict[str, int]:
+    normalized_trail_id = int(trail_id or 0)
+    normalized_client_key = _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if normalized_trail_id <= 0 and not normalized_client_key:
+        raise HTTPException(status_code=422, detail="trail_id or client_key is required.")
+
+    conn = _db_connect(row_factory=True)
+    cursor = conn.cursor()
+    try:
+        trail_row = _get_project_atlas_trail_row(
+            cursor,
+            project_id,
+            trail_id=normalized_trail_id,
+            client_key=normalized_client_key
+        )
+        if not trail_row:
+            return {
+                "deleted_count": 0,
+                "deleted_relation_count": 0,
+            }
+
+        resolved_trail_id = int(trail_row["id"])
+        cursor.execute(
+            "DELETE FROM atlas_relation WHERE project_id = ? AND trail_id = ?",
+            (project_id, resolved_trail_id)
+        )
+        deleted_relation_count = int(cursor.rowcount or 0)
+        cursor.execute(
+            "DELETE FROM atlas_trail WHERE project_id = ? AND id = ?",
+            (project_id, resolved_trail_id)
+        )
+        deleted_count = int(cursor.rowcount or 0)
+        conn.commit()
+        return {
+            "deleted_count": deleted_count,
+            "deleted_relation_count": deleted_relation_count,
+        }
+    finally:
+        conn.close()
+
+def _delete_project_atlas_anchors(project_id: int, paper_key: str = "", client_key: str = "") -> int:
+    normalized_paper_key = _trim_text(paper_key, MAX_ATLAS_PAPER_KEY_LENGTH)
+    normalized_client_key = _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH)
+    if not normalized_paper_key and not normalized_client_key:
+        raise HTTPException(status_code=422, detail="paper_key or client_key is required.")
+
+    conn = _db_connect()
+    cursor = conn.cursor()
+    try:
+        if normalized_client_key:
+            cursor.execute(
+                "DELETE FROM atlas_anchor WHERE project_id = ? AND client_key = ?",
+                (project_id, normalized_client_key)
+            )
+        else:
+            cursor.execute(
+                "DELETE FROM atlas_anchor WHERE project_id = ? AND paper_key = ?",
+                (project_id, normalized_paper_key)
+            )
+        deleted = int(cursor.rowcount or 0)
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
 
 def _normalize_claim_type(raw_value: str) -> str:
     value = _trim_text(str(raw_value or "").lower(), MAX_CLAIM_TYPE_LENGTH)
@@ -2509,6 +3534,62 @@ def _build_stardust_semantic_queries(project_data: dict, claim_row: dict, eviden
             break
     return queries
 
+def _normalize_stardust_source_stage(raw_stage: Optional[str]) -> str:
+    value = _trim_text(raw_stage or "", 40).lower()
+    if value in {"hop_1", "hop_2", "semantic_fallback"}:
+        return value
+    return "semantic_fallback" if value else ""
+
+def _stardust_source_stage_priority(source_stage: str, hop_distance: int) -> tuple[int, int]:
+    normalized_stage = _normalize_stardust_source_stage(source_stage)
+    stage_rank = {
+        "hop_1": 0,
+        "hop_2": 1,
+        "semantic_fallback": 2,
+        "": 3,
+    }.get(normalized_stage, 3)
+    return (max(0, _safe_int(hop_distance, 0)), stage_rank)
+
+def _resolve_stardust_candidate_primary_key(signature_to_primary: Dict[str, str], work: dict) -> str:
+    identity_signatures = list(dict.fromkeys(_paper_identity_signatures(work) + [_paper_identity_key(work)]))
+    return next((signature_to_primary.get(signature) for signature in identity_signatures if signature_to_primary.get(signature)), "") or ""
+
+def _score_and_sort_stardust_candidates(
+    candidates_by_key: Dict[str, dict],
+    focus_claim_text: str,
+    focus_tokens: List[str],
+    focus_phrases: List[str],
+    seed_tokens: List[str],
+    seed_phrases: List[str],
+    seed_context_label: str,
+    creation_mode: str,
+) -> List[dict]:
+    scored_candidates = [
+        _score_stardust_candidate(
+            candidate,
+            focus_claim_text,
+            focus_tokens,
+            focus_phrases,
+            seed_tokens,
+            seed_phrases,
+            seed_context_label,
+            creation_mode=creation_mode,
+        )
+        for candidate in candidates_by_key.values()
+    ]
+    scored_candidates.sort(
+        key=lambda item: (
+            float(item.get("challenge_score") or 0),
+            float(item.get("semantic_overlap") or 0),
+            float(item.get("claim_relevance") or 0),
+            float(item.get("seed_similarity") or 0),
+            float(item.get("quality_score") or 0),
+            _safe_int(item.get("citation_count"), 0)
+        ),
+        reverse=True
+    )
+    return scored_candidates
+
 def _register_stardust_candidate(
     candidates_by_key: Dict[str, dict],
     signature_to_primary: Dict[str, str],
@@ -2518,6 +3599,9 @@ def _register_stardust_candidate(
     discovery_source: str,
     relationship_type: str,
     hop_distance: int,
+    source_stage: str = "",
+    via_paper_key: str = "",
+    via_paper_title: str = "",
     skipped: dict,
 ) -> bool:
     candidate_key = _paper_identity_key(work)
@@ -2555,6 +3639,9 @@ def _register_stardust_candidate(
             "_relationship_types": [],
             "_matched_queries": [],
             "hop_distance": max(1, _safe_int(hop_distance, 1)),
+            "source_stage": _normalize_stardust_source_stage(source_stage),
+            "via_paper_key": _trim_text(via_paper_key, 300),
+            "via_paper_title": _trim_text(via_paper_title, MAX_PAPER_TITLE_LENGTH),
         }
         candidates_by_key[candidate_key] = candidate
         for signature in identity_signatures:
@@ -2584,7 +3671,15 @@ def _register_stardust_candidate(
     matched_query = _trim_text(work.get("matched_query"), 240)
     if matched_query and matched_query not in candidate["_matched_queries"]:
         candidate["_matched_queries"].append(matched_query)
-    candidate["hop_distance"] = min(max(1, _safe_int(candidate.get("hop_distance"), 1)), max(1, _safe_int(hop_distance, 1)))
+    incoming_hop_distance = max(1, _safe_int(hop_distance, 1))
+    current_hop_distance = max(1, _safe_int(candidate.get("hop_distance"), 1))
+    candidate["hop_distance"] = min(current_hop_distance, incoming_hop_distance)
+    normalized_source_stage = _normalize_stardust_source_stage(source_stage)
+    current_source_stage = _normalize_stardust_source_stage(candidate.get("source_stage"))
+    if _stardust_source_stage_priority(normalized_source_stage, incoming_hop_distance) < _stardust_source_stage_priority(current_source_stage, current_hop_distance):
+        candidate["source_stage"] = normalized_source_stage
+        candidate["via_paper_key"] = _trim_text(via_paper_key, 300)
+        candidate["via_paper_title"] = _trim_text(via_paper_title, MAX_PAPER_TITLE_LENGTH)
     return True
 
 def _annotate_existing_stardust_candidates_with_relationship(
@@ -2595,6 +3690,9 @@ def _annotate_existing_stardust_candidates_with_relationship(
     *,
     discovery_source: str = "hop_1_overlap",
     hop_distance: int = 1,
+    source_stage: str = "",
+    via_paper_key: str = "",
+    via_paper_title: str = "",
 ) -> int:
     annotated_count = 0
     for work in works or []:
@@ -2628,12 +3726,30 @@ def _annotate_existing_stardust_candidates_with_relationship(
             candidate["_discovery_sources"].append(discovery_source)
         if relationship_type and relationship_type not in candidate["_relationship_types"]:
             candidate["_relationship_types"].append(relationship_type)
-        candidate["hop_distance"] = min(max(1, _safe_int(candidate.get("hop_distance"), 1)), max(1, _safe_int(hop_distance, 1)))
+        incoming_hop_distance = max(1, _safe_int(hop_distance, 1))
+        current_hop_distance = max(1, _safe_int(candidate.get("hop_distance"), 1))
+        candidate["hop_distance"] = min(current_hop_distance, incoming_hop_distance)
+        normalized_source_stage = _normalize_stardust_source_stage(source_stage)
+        current_source_stage = _normalize_stardust_source_stage(candidate.get("source_stage"))
+        if _stardust_source_stage_priority(normalized_source_stage, incoming_hop_distance) < _stardust_source_stage_priority(current_source_stage, current_hop_distance):
+            candidate["source_stage"] = normalized_source_stage
+            candidate["via_paper_key"] = _trim_text(via_paper_key, 300)
+            candidate["via_paper_title"] = _trim_text(via_paper_title, MAX_PAPER_TITLE_LENGTH)
         if not was_already_linked:
             annotated_count += 1
     return annotated_count
 
-def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_tokens: List[str], focus_phrases: List[str], seed_tokens: List[str], seed_phrases: List[str], seed_context_label: str = "seed paper") -> dict:
+def _score_stardust_candidate(
+    candidate: dict,
+    focus_claim_text: str,
+    focus_tokens: List[str],
+    focus_phrases: List[str],
+    seed_tokens: List[str],
+    seed_phrases: List[str],
+    seed_context_label: str = "seed paper",
+    *,
+    creation_mode: str = "challenge_paper",
+) -> dict:
     metrics = _build_claim_candidate_metrics(
         {
             **candidate,
@@ -2645,6 +3761,8 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
         focus_phrases,
         False
     )
+    stardust_kind = "support" if creation_mode == "support_paper" else "challenge"
+    support_hint = float(metrics.get("support_hint") or 0)
     challenge_hint = float(metrics.get("challenge_hint") or 0)
     claim_relevance = float(metrics.get("claim_relevance") or 0)
     quality_score = float(metrics.get("quality_score") or 0)
@@ -2652,13 +3770,20 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
     discovery_sources = list(candidate.get("_discovery_sources") or [])
     relationship_types = list(candidate.get("_relationship_types") or [])
     hop_distance = max(1, _safe_int(candidate.get("hop_distance"), 1))
+    source_stage = _normalize_stardust_source_stage(candidate.get("source_stage"))
+    via_paper_title = _trim_text(candidate.get("via_paper_title"), 160)
     semantic_overlap = min(
         (seed_similarity * 0.58) +
         (claim_relevance * 0.42),
         1.0
     )
     citation_bonus = min((math.log1p(max(_safe_int(candidate.get("citation_count"), 0), 0)) / math.log1p(250)), 1.0) * 0.02
-    semantic_bonus = 0.045 if "semantic_supplement" in discovery_sources else 0.0
+    if creation_mode in {"challenge_paper", "support_paper"}:
+        stage_bonus = 0.055 if source_stage == "hop_1" else (0.026 if source_stage == "hop_2" else 0.01)
+        semantic_bonus = 0.014 if "semantic_supplement" in discovery_sources else 0.0
+    else:
+        stage_bonus = 0.0
+        semantic_bonus = 0.045 if "semantic_supplement" in discovery_sources else 0.0
     semantic_linked_bonus = 0.0
     if semantic_overlap >= 0.24:
         if "cited_by" in relationship_types and "reference" in relationship_types:
@@ -2667,24 +3792,38 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
             semantic_linked_bonus = 0.038
         elif "reference" in relationship_types:
             semantic_linked_bonus = 0.03
+    stance_hint = support_hint if stardust_kind == "support" else challenge_hint
     score = min(
         (semantic_overlap * 0.50) +
-        (challenge_hint * 0.20) +
+        (stance_hint * 0.20) +
         (claim_relevance * 0.12) +
         (quality_score * 0.10) +
+        stage_bonus +
         semantic_bonus +
         semantic_linked_bonus +
         citation_bonus,
         1.0
     )
-    include = bool(
-        score >= 0.27 and (
-            semantic_overlap >= 0.24
-            or claim_relevance >= 0.28
-            or seed_similarity >= 0.22
-            or ("semantic_supplement" in discovery_sources and semantic_overlap >= 0.30)
+    if creation_mode in {"challenge_paper", "support_paper"}:
+        include = bool(
+            score >= 0.27 and (
+                semantic_overlap >= 0.24
+                or claim_relevance >= 0.28
+                or seed_similarity >= 0.22
+                or (source_stage == "hop_1" and (claim_relevance >= 0.20 or seed_similarity >= 0.18 or stance_hint >= 0.14))
+                or (source_stage == "hop_2" and (claim_relevance >= 0.22 or seed_similarity >= 0.20 or stance_hint >= 0.15))
+                or ("semantic_supplement" in discovery_sources and semantic_overlap >= 0.30)
+            )
         )
-    )
+    else:
+        include = bool(
+            score >= 0.27 and (
+                semantic_overlap >= 0.24
+                or claim_relevance >= 0.28
+                or seed_similarity >= 0.22
+                or ("semantic_supplement" in discovery_sources and semantic_overlap >= 0.30)
+            )
+        )
     reasons: List[str] = []
     seed_context = _trim_text(seed_context_label, 80) or "seed paper"
     if semantic_overlap >= 0.3:
@@ -2693,8 +3832,14 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
         reasons.append("it matches the sub-target thesis closely")
     elif seed_similarity >= 0.22:
         reasons.append(f"it overlaps clearly with the {seed_context}")
-    if "semantic_supplement" in discovery_sources:
-        reasons.append("semantic retrieval surfaced it as a challenge-adjacent candidate")
+    if source_stage == "hop_1":
+        reasons.append(f"it sits in the direct citation neighborhood of the {seed_context}")
+    elif source_stage == "hop_2" and via_paper_title:
+        reasons.append(f"it was reached on a second hop through {via_paper_title}")
+    elif source_stage == "hop_2":
+        reasons.append(f"it stayed relevant even on a second-hop expansion from the {seed_context}")
+    elif "semantic_supplement" in discovery_sources:
+        reasons.append("semantic retrieval surfaced it after the local citation neighborhood stayed too sparse")
     if "cited_by" in relationship_types and "reference" in relationship_types:
         reasons.append(f"it is semantically aligned and also linked to the {seed_context} in both citation directions")
     elif "cited_by" in relationship_types:
@@ -2703,21 +3848,35 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
         reasons.append(f"it is semantically aligned and is also referenced by the {seed_context}")
     elif hop_distance == 1:
         reasons.append(f"it still sits in the immediate citation neighborhood of the {seed_context}")
-    if challenge_hint >= 0.16:
+    if stardust_kind == "support" and support_hint >= 0.16:
+        reasons.append("its language reinforces the claim direction, mechanism, or empirical pattern")
+    elif stardust_kind == "challenge" and challenge_hint >= 0.16:
         reasons.append("its language suggests limits, null effects, or boundary conditions")
     if not reasons:
-        reasons.append("it remained one of the strongest challenge-adjacent candidates in this seed trail")
-    why_matched = f"This paper was kept because {'; '.join(reasons[:3])}."
+        reasons.append(
+            "it remained one of the strongest support-adjacent candidates in this seed trail"
+            if stardust_kind == "support"
+            else "it remained one of the strongest challenge-adjacent candidates in this seed trail"
+        )
+    why_prefix = "This paper was kept because"
+    why_matched = f"{why_prefix} {'; '.join(reasons[:3])}."
     caveat = ""
     return {
         **candidate,
         "relationship_type": "+".join(sorted(relationship_types)) or "semantic_match",
         "discovery_source": "+".join(sorted(discovery_sources)) or "semantic_supplement",
+        "source_stage": source_stage or ("semantic_fallback" if "semantic_supplement" in discovery_sources else ""),
+        "via_paper_key": _trim_text(candidate.get("via_paper_key"), 300),
+        "via_paper_title": via_paper_title,
         "challenge_score": round(score, 4),
+        "stardust_score": round(score, 4),
         "semantic_overlap": round(semantic_overlap, 4),
         "seed_similarity": round(seed_similarity, 4),
         "claim_relevance": round(claim_relevance, 4),
         "quality_score": round(quality_score, 4),
+        "support_hint": round(support_hint, 4),
+        "challenge_hint": round(challenge_hint, 4),
+        "kind": stardust_kind,
         "why_matched": _trim_text(why_matched, MAX_EVIDENCE_WHY_MATCHED_LENGTH),
         "caveat": _trim_text(caveat, MAX_EVIDENCE_CAVEAT_LENGTH),
         "include": include,
@@ -2725,10 +3884,13 @@ def _score_stardust_candidate(candidate: dict, focus_claim_text: str, focus_toke
 
 def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_row: dict, payload: ChallengeStardustCreateRequest) -> dict:
     creation_mode = _normalize_stardust_creation_mode(payload.mode)
+    stardust_kind = "support" if creation_mode == "support_paper" else "challenge"
     seed_context_label = "seed paper"
-    if creation_mode == "challenge_paper":
-        if _normalize_claim_stance((evidence_row or {}).get("stance")) != "challenge":
-            raise HTTPException(status_code=409, detail="Challenge Stardust can only be created from a paper in the challenge column.")
+    if creation_mode in {"challenge_paper", "support_paper"}:
+        required_stance = "support" if creation_mode == "support_paper" else "challenge"
+        if _normalize_claim_stance((evidence_row or {}).get("stance")) != required_stance:
+            label = "Support Stardust" if creation_mode == "support_paper" else "Challenge Stardust"
+            raise HTTPException(status_code=409, detail=f"{label} can only be created from a paper in the {required_stance} column.")
 
         seed_paper = _resolve_project_paper_for_evidence(project_data, evidence_row)
         if not seed_paper:
@@ -2745,7 +3907,7 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
 
         seed_openalex_id = _trim_text(enriched_seed.get("openalex_id"), 300)
         if not seed_openalex_id:
-            raise HTTPException(status_code=404, detail="The seed challenge paper could not be resolved on OpenAlex.")
+            raise HTTPException(status_code=404, detail="The seed evidence paper could not be resolved on OpenAlex.")
     else:
         seed_claim_text = _trim_text(payload.seed_claim_text, MAX_CLAIM_TEXT_LENGTH)
         enriched_seed = {
@@ -2776,7 +3938,19 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
 
     hop1_references: List[dict] = []
     hop1_cited_by: List[dict] = []
-    if creation_mode == "challenge_paper":
+    hop1_primary_to_work: Dict[str, dict] = {}
+    hop1_registered_count = 0
+    hop2_seed_keys: List[str] = []
+    hop2_reference_fetch_count = 0
+    hop2_cited_by_fetch_count = 0
+    semantic_queries: List[str] = []
+    semantic_result_count = 0
+    semantic_fallback_used = False
+    semantic_fallback_candidate_count = 0
+    hop1_reference_overlap_count = 0
+    hop1_cited_by_overlap_count = 0
+    used_hop1_fallback = False
+    if creation_mode in {"challenge_paper", "support_paper"}:
         try:
             hop1_references = _fetch_openalex_works_by_ids(
                 enriched_seed.get("referenced_openalex_ids") or [],
@@ -2815,79 +3989,248 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
     seed_tokens = _claim_tokens(seed_text)
     seed_phrases = _claim_phrases(seed_text)
 
-    semantic_queries = _build_stardust_semantic_queries(project_data, claim_row, evidence_row or {}, enriched_seed, payload.sub_target_thesis)
-    semantic_result_count = 0
-    for query in semantic_queries:
-        try:
-            semantic_results = _search_openalex_works(
-                query,
-                payload.openalex_api_key,
-                payload.contact_email,
-                MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY
-            )
-        except HTTPException as exc:
-            partial_failures.append({
-                "stage": "semantic_supplement",
-                "query": _trim_text(query, 140),
-                "detail": _trim_text(str(exc.detail), 200),
-            })
-            continue
-        semantic_result_count += len(semantic_results)
-        for work in semantic_results:
-            _register_stardust_candidate(
-                candidates_by_key,
-                signature_to_primary,
-                project_signature_set,
-                work,
-                discovery_source="semantic_supplement",
-                relationship_type="semantic_match",
-                hop_distance=3,
-                skipped=skipped,
-            )
-
-    hop1_reference_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
-        candidates_by_key,
-        signature_to_primary,
-        hop1_references,
-        "reference",
-    )
-    hop1_cited_by_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
-        candidates_by_key,
-        signature_to_primary,
-        hop1_cited_by,
-        "cited_by",
-    )
-
-    used_hop1_fallback = False
-    if creation_mode == "challenge_paper" and not candidates_by_key:
-        used_hop1_fallback = True
+    if creation_mode in {"challenge_paper", "support_paper"}:
         for relationship_type, works in (("reference", hop1_references), ("cited_by", hop1_cited_by)):
             for work in works:
+                if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                    break
+                before_count = len(candidates_by_key)
                 _register_stardust_candidate(
                     candidates_by_key,
                     signature_to_primary,
                     project_signature_set,
                     work,
-                    discovery_source="hop_1_fallback",
+                    discovery_source="hop_1_seed",
                     relationship_type=relationship_type,
                     hop_distance=1,
+                    source_stage="hop_1",
+                    skipped=skipped,
+                )
+                primary_key = _resolve_stardust_candidate_primary_key(signature_to_primary, work)
+                if primary_key and primary_key not in hop1_primary_to_work:
+                    hop1_primary_to_work[primary_key] = work
+                if len(candidates_by_key) > before_count:
+                    hop1_registered_count += 1
+            if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                break
+
+        preliminary_scored = _score_and_sort_stardust_candidates(
+            candidates_by_key,
+            focus_claim_text,
+            focus_tokens,
+            focus_phrases,
+            seed_tokens,
+            seed_phrases,
+            seed_context_label,
+            creation_mode,
+        )
+        hop2_seed_candidates: List[dict] = []
+        for item in preliminary_scored:
+            if _normalize_stardust_source_stage(item.get("source_stage")) != "hop_1":
+                continue
+            if not item.get("openalex_id") and not item.get("referenced_openalex_ids"):
+                continue
+            strong_enough = bool(item.get("include")) or float(item.get("challenge_score") or 0) >= 0.24 or (
+                float(item.get("claim_relevance") or 0) >= 0.20 and float(item.get("seed_similarity") or 0) >= 0.18
+            )
+            if not strong_enough:
+                continue
+            hop2_seed_candidates.append(item)
+            if len(hop2_seed_candidates) >= MAX_STARDUST_HOP2_SEEDS:
+                break
+
+        for hop2_seed in hop2_seed_candidates:
+            if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                break
+            via_paper_key = _trim_text(hop2_seed.get("paper_key"), 300)
+            via_paper_title = _trim_text(hop2_seed.get("title"), MAX_PAPER_TITLE_LENGTH)
+            if via_paper_key and via_paper_key not in hop2_seed_keys:
+                hop2_seed_keys.append(via_paper_key)
+            via_work = hop1_primary_to_work.get(via_paper_key) or {}
+            via_references = list(via_work.get("referenced_openalex_ids") or hop2_seed.get("referenced_openalex_ids") or [])
+            if via_references:
+                try:
+                    hop2_reference_works = _fetch_openalex_works_by_ids(
+                        via_references,
+                        payload.openalex_api_key,
+                        payload.contact_email,
+                        MAX_STARDUST_HOP2_REFERENCES_PER_SEED
+                    )
+                    hop2_reference_fetch_count += len(hop2_reference_works)
+                    for work in hop2_reference_works:
+                        if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                            break
+                        _register_stardust_candidate(
+                            candidates_by_key,
+                            signature_to_primary,
+                            project_signature_set,
+                            work,
+                            discovery_source="hop_2_expand",
+                            relationship_type="reference",
+                            hop_distance=2,
+                            source_stage="hop_2",
+                            via_paper_key=via_paper_key,
+                            via_paper_title=via_paper_title,
+                            skipped=skipped,
+                        )
+                except HTTPException as exc:
+                    partial_failures.append({
+                        "stage": "hop_2_references",
+                        "via_paper_title": _trim_text(via_paper_title, 120),
+                        "detail": _trim_text(str(exc.detail), 200),
+                    })
+            via_openalex_id = _trim_text(via_work.get("openalex_id") or hop2_seed.get("openalex_id"), 300)
+            if via_openalex_id and len(candidates_by_key) < MAX_STARDUST_CANDIDATE_POOL:
+                try:
+                    hop2_cited_by_works = _fetch_openalex_cited_by_works(
+                        via_openalex_id,
+                        payload.openalex_api_key,
+                        payload.contact_email,
+                        MAX_STARDUST_HOP2_CITED_BY_PER_SEED
+                    )
+                    hop2_cited_by_fetch_count += len(hop2_cited_by_works)
+                    for work in hop2_cited_by_works:
+                        if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                            break
+                        _register_stardust_candidate(
+                            candidates_by_key,
+                            signature_to_primary,
+                            project_signature_set,
+                            work,
+                            discovery_source="hop_2_expand",
+                            relationship_type="cited_by",
+                            hop_distance=2,
+                            source_stage="hop_2",
+                            via_paper_key=via_paper_key,
+                            via_paper_title=via_paper_title,
+                            skipped=skipped,
+                        )
+                except HTTPException as exc:
+                    partial_failures.append({
+                        "stage": "hop_2_cited_by",
+                        "via_paper_title": _trim_text(via_paper_title, 120),
+                        "detail": _trim_text(str(exc.detail), 200),
+                    })
+
+        local_scored = _score_and_sort_stardust_candidates(
+            candidates_by_key,
+            focus_claim_text,
+            focus_tokens,
+            focus_phrases,
+            seed_tokens,
+            seed_phrases,
+            seed_context_label,
+            creation_mode,
+        )
+        local_included = [item for item in local_scored if item.get("include")]
+        if len(local_included) < min(payload.max_papers, 18) and len(candidates_by_key) < MAX_STARDUST_CANDIDATE_POOL:
+            semantic_fallback_used = True
+            semantic_queries = _build_stardust_semantic_queries(project_data, claim_row, evidence_row or {}, enriched_seed, payload.sub_target_thesis)
+            before_semantic_count = len(candidates_by_key)
+            for query in semantic_queries:
+                if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                    break
+                try:
+                    semantic_results = _search_openalex_works(
+                        query,
+                        payload.openalex_api_key,
+                        payload.contact_email,
+                        MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY
+                    )
+                except HTTPException as exc:
+                    partial_failures.append({
+                        "stage": "semantic_fallback",
+                        "query": _trim_text(query, 140),
+                        "detail": _trim_text(str(exc.detail), 200),
+                    })
+                    continue
+                semantic_result_count += len(semantic_results)
+                for work in semantic_results:
+                    if len(candidates_by_key) >= MAX_STARDUST_CANDIDATE_POOL:
+                        break
+                    _register_stardust_candidate(
+                        candidates_by_key,
+                        signature_to_primary,
+                        project_signature_set,
+                        work,
+                        discovery_source="semantic_supplement",
+                        relationship_type="semantic_match",
+                        hop_distance=3,
+                        source_stage="semantic_fallback",
+                        skipped=skipped,
+                    )
+            semantic_fallback_candidate_count = max(0, len(candidates_by_key) - before_semantic_count)
+    else:
+        semantic_queries = _build_stardust_semantic_queries(project_data, claim_row, evidence_row or {}, enriched_seed, payload.sub_target_thesis)
+        for query in semantic_queries:
+            try:
+                semantic_results = _search_openalex_works(
+                    query,
+                    payload.openalex_api_key,
+                    payload.contact_email,
+                    MAX_STARDUST_SEMANTIC_RESULTS_PER_QUERY
+                )
+            except HTTPException as exc:
+                partial_failures.append({
+                    "stage": "semantic_supplement",
+                    "query": _trim_text(query, 140),
+                    "detail": _trim_text(str(exc.detail), 200),
+                })
+                continue
+            semantic_result_count += len(semantic_results)
+            for work in semantic_results:
+                _register_stardust_candidate(
+                    candidates_by_key,
+                    signature_to_primary,
+                    project_signature_set,
+                    work,
+                    discovery_source="semantic_supplement",
+                    relationship_type="semantic_match",
+                    hop_distance=3,
+                    source_stage="semantic_fallback",
                     skipped=skipped,
                 )
 
-    scored_candidates = [
-        _score_stardust_candidate(candidate, focus_claim_text, focus_tokens, focus_phrases, seed_tokens, seed_phrases, seed_context_label)
-        for candidate in candidates_by_key.values()
-    ]
-    scored_candidates.sort(
-        key=lambda item: (
-            float(item.get("challenge_score") or 0),
-            float(item.get("semantic_overlap") or 0),
-            float(item.get("claim_relevance") or 0),
-            float(item.get("seed_similarity") or 0),
-            float(item.get("quality_score") or 0),
-            _safe_int(item.get("citation_count"), 0)
-        ),
-        reverse=True
+        hop1_reference_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
+            candidates_by_key,
+            signature_to_primary,
+            hop1_references,
+            "reference",
+            source_stage="hop_1",
+        )
+        hop1_cited_by_overlap_count = _annotate_existing_stardust_candidates_with_relationship(
+            candidates_by_key,
+            signature_to_primary,
+            hop1_cited_by,
+            "cited_by",
+            source_stage="hop_1",
+        )
+
+        if not candidates_by_key:
+            used_hop1_fallback = True
+            for relationship_type, works in (("reference", hop1_references), ("cited_by", hop1_cited_by)):
+                for work in works:
+                    _register_stardust_candidate(
+                        candidates_by_key,
+                        signature_to_primary,
+                        project_signature_set,
+                        work,
+                        discovery_source="hop_1_fallback",
+                        relationship_type=relationship_type,
+                        hop_distance=1,
+                        source_stage="hop_1",
+                        skipped=skipped,
+                    )
+
+    scored_candidates = _score_and_sort_stardust_candidates(
+        candidates_by_key,
+        focus_claim_text,
+        focus_tokens,
+        focus_phrases,
+        seed_tokens,
+        seed_phrases,
+        seed_context_label,
+        creation_mode,
     )
     included_candidates = [item for item in scored_candidates if item.get("include")]
     if not included_candidates:
@@ -2910,6 +4253,7 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
         item.pop("_matched_queries", None)
 
     source_summary = {
+        "kind": stardust_kind,
         "creation_mode": creation_mode,
         "seed_claim_text": _trim_text(payload.seed_claim_text, MAX_CLAIM_TEXT_LENGTH) if creation_mode == "claim_only" else "",
         "seed_label": _trim_text(payload.seed_claim_text, 220) if creation_mode == "claim_only" else _trim_text(enriched_seed.get("title"), 220),
@@ -2928,6 +4272,19 @@ def _generate_challenge_stardust(project_data: dict, claim_row: dict, evidence_r
         "stored_count": len(included_candidates),
         "partial_failures": partial_failures[:12],
     }
+    if creation_mode in {"challenge_paper", "support_paper"}:
+        source_summary.update({
+            "seed_expansion_strategy": "hop_1_then_hop_2_then_semantic_fallback",
+            "hop1_candidate_count": len([item for item in scored_candidates if _normalize_stardust_source_stage(item.get("source_stage")) == "hop_1"]),
+            "hop1_registered_count": hop1_registered_count,
+            "hop2_seed_count": len(hop2_seed_keys),
+            "hop2_reference_fetch_count": hop2_reference_fetch_count,
+            "hop2_cited_by_fetch_count": hop2_cited_by_fetch_count,
+            "hop2_candidate_count": len([item for item in scored_candidates if _normalize_stardust_source_stage(item.get("source_stage")) == "hop_2"]),
+            "semantic_fallback_used": semantic_fallback_used,
+            "semantic_fallback_candidate_count": semantic_fallback_candidate_count,
+            "semantic_fallback_stored_count": len([item for item in included_candidates if _normalize_stardust_source_stage(item.get("source_stage")) == "semantic_fallback"]),
+        })
     return {
         "seed_paper": enriched_seed,
         "papers": included_candidates,
@@ -3308,9 +4665,13 @@ def _normalize_stardust_graph_mode(raw_mode: Optional[str]) -> str:
     value = _trim_text(raw_mode or "directed", 40).lower() or "directed"
     return value if value in STARDUST_GRAPH_MODE_VALUES else "directed"
 
+def _normalize_stardust_kind(raw_kind: Optional[str]) -> str:
+    value = _trim_text(raw_kind or "challenge", 40).lower() or "challenge"
+    return value if value in STARDUST_KIND_VALUES else "challenge"
+
 def _normalize_stardust_creation_mode(raw_mode: Optional[str]) -> str:
     value = _trim_text(raw_mode or "challenge_paper", 40).lower() or "challenge_paper"
-    return value if value in {"challenge_paper", "claim_only"} else "challenge_paper"
+    return value if value in {"challenge_paper", "support_paper", "claim_only"} else "challenge_paper"
 
 def _validate_stardust_create_payload(payload: ChallengeStardustCreateRequest) -> ChallengeStardustCreateRequest:
     payload.claim_id = max(1, int(payload.claim_id or 0))
@@ -3327,8 +4688,9 @@ def _validate_stardust_create_payload(payload: ChallengeStardustCreateRequest) -
         raise HTTPException(status_code=400, detail="Stardust name cannot be empty.")
     if not payload.sub_target_thesis:
         raise HTTPException(status_code=400, detail="Sub target thesis cannot be empty.")
-    if payload.mode == "challenge_paper" and payload.seed_evidence_id <= 0:
-        raise HTTPException(status_code=400, detail="A seed challenge paper is required for this Stardust mode.")
+    if payload.mode in {"challenge_paper", "support_paper"} and payload.seed_evidence_id <= 0:
+        required_label = "challenge" if payload.mode == "challenge_paper" else "support"
+        raise HTTPException(status_code=400, detail=f"A seed {required_label} paper is required for this Stardust mode.")
     if payload.mode == "claim_only" and not payload.seed_claim_text:
         raise HTTPException(status_code=400, detail="A seed claim is required for claim-seed Stardust mode.")
     return _apply_runtime_defaults_to_lookup(payload)
@@ -3410,6 +4772,7 @@ def _serialize_stardust_row(conn: sqlite3.Connection, row: dict, include_childre
     except Exception:
         item["source_summary"] = {}
     item.pop("source_summary_json", None)
+    item["kind"] = _normalize_stardust_kind(item.get("kind") or item.get("source_summary", {}).get("kind"))
     item["creation_mode"] = _normalize_stardust_creation_mode(
         item.get("source_summary", {}).get("creation_mode") or ("challenge_paper" if int(item.get("seed_evidence_id") or 0) > 0 else "claim_only")
     )
@@ -3430,6 +4793,9 @@ def _serialize_stardust_paper_row(row: dict) -> dict:
     item["selected_for_import"] = bool(item.get("selected_for_import"))
     item["hidden"] = bool(item.get("hidden"))
     item["hop_distance"] = int(item.get("hop_distance") or 0)
+    item["source_stage"] = _normalize_stardust_source_stage(item.get("source_stage"))
+    item["via_paper_key"] = _trim_text(item.get("via_paper_key"), 300)
+    item["via_paper_title"] = _trim_text(item.get("via_paper_title"), MAX_PAPER_TITLE_LENGTH)
     return item
 
 def _load_stardust_papers(conn: sqlite3.Connection, stardust_id: int, include_hidden: bool = True) -> List[dict]:
@@ -3457,7 +4823,7 @@ def _get_owned_stardust(project_id: int, stardust_id: int, user_id: int) -> dict
     row = cursor.fetchone()
     conn.close()
     if not row:
-        raise HTTPException(status_code=404, detail="Challenge Stardust not found.")
+        raise HTTPException(status_code=404, detail="Stardust not found.")
     return dict(row)
 
 def _delete_stardust_records(conn: sqlite3.Connection, stardust_id: int):
@@ -3490,7 +4856,10 @@ def _insert_stardust_papers(conn: sqlite3.Connection, stardust_id: int, papers: 
             json.dumps(paper.get("referenced_openalex_ids") or [], ensure_ascii=False),
             _trim_text(paper.get("relationship_type"), 120),
             _trim_text(paper.get("discovery_source"), 120),
+            _trim_text(paper.get("source_stage"), 40),
             max(0, min(_safe_int(paper.get("hop_distance"), 0), 9)),
+            _trim_text(paper.get("via_paper_key"), 300),
+            _trim_text(paper.get("via_paper_title"), MAX_PAPER_TITLE_LENGTH),
             round(max(0.0, min(float(paper.get("challenge_score") or 0), 1.0)), 4),
             round(max(0.0, min(float(paper.get("seed_similarity") or 0), 1.0)), 4),
             round(max(0.0, min(float(paper.get("claim_relevance") or 0), 1.0)), 4),
@@ -3506,10 +4875,11 @@ def _insert_stardust_papers(conn: sqlite3.Connection, stardust_id: int, papers: 
         '''INSERT INTO challenge_stardust_papers (
             stardust_id, paper_key, title, abstract, current_content, authors, year, doi,
             openalex_id, paper_url, source_url, publication_venue, citation_count,
-            referenced_openalex_ids_json, relationship_type, discovery_source, hop_distance,
+            referenced_openalex_ids_json, relationship_type, discovery_source, source_stage, hop_distance,
+            via_paper_key, via_paper_title,
             challenge_score, seed_similarity, claim_relevance, quality_score, why_matched,
             caveat, selected_for_import, hidden, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
         rows
     )
 
@@ -3790,6 +5160,98 @@ class ProjectUpdate(BaseModel):
 # 新增：用于覆盖更新论文列表的请求模型 (删除功能依赖此模型)
 class UpdatePapersRequest(BaseModel):
     top_papers: List[PaperItem]
+
+class AtlasAnchorImportItem(BaseModel):
+    client_key: str
+    paper_key: str = ""
+    title: str = ""
+    authors: str = ""
+    year: str = ""
+    label: str = ""
+    note: str = ""
+    anchor_kind: str = "marked"
+    pinned: bool = True
+    created_from_surface: str = ""
+    created_at: Optional[Any] = None
+    updated_at: Optional[Any] = None
+    archived_at: Optional[Any] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AtlasTrailImportItem(BaseModel):
+    client_key: str
+    name: str = ""
+    root_paper_key: str = ""
+    root_anchor_client_key: str = ""
+    color: str = ""
+    note: str = ""
+    created_from_surface: str = ""
+    created_at: Optional[Any] = None
+    updated_at: Optional[Any] = None
+    archived_at: Optional[Any] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AtlasRelationImportItem(BaseModel):
+    client_key: str
+    trail_client_key: str = ""
+    source_anchor_client_key: str = ""
+    source_paper_key: str = ""
+    target_paper_key: str = ""
+    relation_kind: str = "manual"
+    note: str = ""
+    confidence: Optional[float] = None
+    created_from_surface: str = ""
+    created_at: Optional[Any] = None
+    updated_at: Optional[Any] = None
+    archived_at: Optional[Any] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AtlasLegacyImportRequest(BaseModel):
+    migration_version: str = "legacy_localstorage_v1"
+    anchors: List[AtlasAnchorImportItem] = Field(default_factory=list)
+    trails: List[AtlasTrailImportItem] = Field(default_factory=list)
+    relations: List[AtlasRelationImportItem] = Field(default_factory=list)
+
+class AtlasAnchorUpsertRequest(BaseModel):
+    client_key: str = ""
+    paper_key: str
+    title: str = ""
+    authors: str = ""
+    year: str = ""
+    label: str = ""
+    note: str = ""
+    anchor_kind: str = "project_mark"
+    pinned: bool = True
+    created_from_surface: str = "workspace_node_inspector"
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AtlasTrailUpsertRequest(BaseModel):
+    id: Optional[int] = None
+    client_key: str = ""
+    name: str = ""
+    root_paper_key: str = ""
+    root_anchor_id: Optional[int] = None
+    root_anchor_client_key: str = ""
+    color: str = ""
+    note: str = ""
+    created_from_surface: str = "workspace_trail_browser"
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+class AtlasRelationUpsertRequest(BaseModel):
+    client_key: str = ""
+    source_paper_key: str
+    target_paper_key: str
+    relation_kind: str = "manual"
+    trail_id: Optional[int] = None
+    trail_client_key: str = ""
+    trail_name: str = ""
+    trail_root_paper_key: str = ""
+    trail_color: str = ""
+    source_anchor_id: Optional[int] = None
+    source_anchor_client_key: str = ""
+    note: str = ""
+    confidence: Optional[float] = None
+    created_from_surface: str = "workspace_relation_composer"
+    meta: Dict[str, Any] = Field(default_factory=dict)
 
 class PaperLookupRequest(BaseModel):
     title: str
@@ -7682,6 +9144,168 @@ async def get_project(project_id: int, current_user: dict = Depends(_require_ses
     project_data.pop("target_keywords", None)
     return project_data
 
+@app.get("/api/projects/{project_id}/atlas")
+async def get_project_atlas(project_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    return _load_project_atlas_snapshot(project_id)
+
+@app.post("/api/projects/{project_id}/atlas/anchors")
+async def upsert_project_atlas_anchor(project_id: int, payload: AtlasAnchorUpsertRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_anchor_upsert")
+    try:
+        anchor = _upsert_project_atlas_anchor(project_id, payload)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_anchor_upsert",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "paper_key": anchor.get("paper_key"),
+                "client_key": anchor.get("client_key"),
+                "anchor_kind": anchor.get("anchor_kind"),
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas anchor saved",
+            "anchor": anchor,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
+@app.post("/api/projects/{project_id}/atlas/trails")
+async def upsert_project_atlas_trail(project_id: int, payload: AtlasTrailUpsertRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_trail_upsert")
+    try:
+        trail = _upsert_project_atlas_trail(project_id, payload)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_trail_upsert",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "trail_id": trail.get("id"),
+                "client_key": trail.get("client_key"),
+                "name": trail.get("name"),
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas trail saved",
+            "trail": trail,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
+@app.delete("/api/projects/{project_id}/atlas/trails")
+async def delete_project_atlas_trail(project_id: int, trail_id: int = 0, client_key: str = "", current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_trail_delete")
+    try:
+        deleted = _delete_project_atlas_trails(project_id, trail_id=trail_id, client_key=client_key)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_trail_delete",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "trail_id": int(trail_id or 0),
+                "client_key": _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+                **deleted,
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas trail removed",
+            **deleted,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
+@app.delete("/api/projects/{project_id}/atlas/anchors")
+async def delete_project_atlas_anchor(project_id: int, paper_key: str = "", client_key: str = "", current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_anchor_delete")
+    try:
+        deleted = _delete_project_atlas_anchors(project_id, paper_key=paper_key, client_key=client_key)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_anchor_delete",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "paper_key": _trim_text(paper_key, MAX_ATLAS_PAPER_KEY_LENGTH),
+                "client_key": _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+                "deleted_count": deleted,
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas anchor removed",
+            "deleted_count": deleted,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
+@app.post("/api/projects/{project_id}/atlas/relations")
+async def upsert_project_atlas_relation(project_id: int, payload: AtlasRelationUpsertRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_relation_upsert")
+    try:
+        relation = _upsert_project_atlas_relation(project_id, payload)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_relation_upsert",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "source_paper_key": relation.get("source_paper_key"),
+                "target_paper_key": relation.get("target_paper_key"),
+                "client_key": relation.get("client_key"),
+                "trail_id": relation.get("trail_id"),
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas relation saved",
+            "relation": relation,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
+@app.delete("/api/projects/{project_id}/atlas/relations")
+async def delete_project_atlas_relation(project_id: int, relation_id: int = 0, client_key: str = "", current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_relation_delete")
+    try:
+        deleted = _delete_project_atlas_relations(project_id, relation_id=relation_id, client_key=client_key)
+        snapshot = _load_project_atlas_snapshot(project_id)
+        _write_audit_log(
+            "atlas_relation_delete",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "relation_id": int(relation_id or 0),
+                "client_key": _trim_text(client_key, MAX_ATLAS_CLIENT_KEY_LENGTH),
+                **deleted,
+            },
+            success=True
+        )
+        return {
+            "message": "Atlas relation removed",
+            **deleted,
+            "counts": snapshot.get("counts") or {},
+        }
+    finally:
+        lock.release()
+
 @app.post("/api/projects/{project_id}/read-paper/analyze")
 async def analyze_project_read_paper_selection(project_id: int, payload: ReadPaperAnalyzeRequest, current_user: dict = Depends(_require_session)):
     project_data = _get_owned_project(project_id, current_user["user_id"])
@@ -7802,6 +9426,30 @@ async def update_project_papers(project_id: int, request: UpdatePapersRequest, c
         conn.close()
         lock.release()
 
+@app.post("/api/projects/{project_id}/atlas/import-legacy")
+async def import_project_legacy_atlas(project_id: int, payload: AtlasLegacyImportRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "atlas_import_legacy")
+    try:
+        result = _import_legacy_atlas_payload(project_id, payload)
+        _write_audit_log(
+            "atlas_import_legacy",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={
+                "migration_version": result.get("migration_version"),
+                "processed": result.get("processed"),
+                "counts": result.get("counts"),
+            },
+            success=True
+        )
+        return {
+            "message": "Legacy atlas state imported",
+            **result,
+        }
+    finally:
+        lock.release()
+
 @app.post("/api/projects/{project_id}/claims")
 async def create_project_claim(project_id: int, payload: ClaimCreateRequest, current_user: dict = Depends(_require_session)):
     _get_owned_project(project_id, current_user["user_id"])
@@ -7892,14 +9540,16 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
     payload = _validate_stardust_create_payload(payload)
     claim = _get_owned_claim(project_id, payload.claim_id, current_user["user_id"])
     creation_mode = _normalize_stardust_creation_mode(payload.mode)
+    stardust_kind = "support" if creation_mode == "support_paper" else "challenge"
     if payload.seed_claim_text and int(payload.seed_evidence_id or 0) <= 0:
         creation_mode = "claim_only"
         payload.mode = "claim_only"
+        stardust_kind = "challenge"
 
     conn = _db_connect(row_factory=True)
     cursor = conn.cursor()
     evidence_row = None
-    if creation_mode == "challenge_paper":
+    if creation_mode in {"challenge_paper", "support_paper"}:
         cursor.execute(
             "SELECT * FROM claim_evidence_items WHERE id = ? AND claim_id = ? AND project_id = ?",
             (payload.seed_evidence_id, payload.claim_id, project_id)
@@ -7908,6 +9558,11 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         if not evidence_row:
             conn.close()
             raise HTTPException(status_code=404, detail="Seed evidence item not found.")
+        evidence_stance = _normalize_claim_stance(evidence_row["stance"])
+        if evidence_stance in {"support", "challenge"}:
+            creation_mode = f"{evidence_stance}_paper"
+            payload.mode = creation_mode
+            stardust_kind = evidence_stance
 
     replaced_stardust_id = None
     if payload.replace_stardust_id:
@@ -7918,7 +9573,7 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         replace_row = cursor.fetchone()
         if not replace_row:
             conn.close()
-            raise HTTPException(status_code=404, detail="The Challenge Stardust chosen for replacement was not found.")
+            raise HTTPException(status_code=404, detail="The Stardust chosen for replacement was not found.")
         replaced_stardust_id = int(replace_row["id"])
 
     cursor.execute(
@@ -7930,7 +9585,7 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         conn.close()
         raise HTTPException(
             status_code=409,
-            detail=f"This project already has {MAX_STARDUSTS_PER_PROJECT} Challenge Stardusts. Replace an existing one before creating a new one."
+            detail=f"This project already has {MAX_STARDUSTS_PER_PROJECT} stored Stardusts. Replace an existing one before creating a new one."
         )
     conn.close()
 
@@ -7945,14 +9600,15 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
     now = _now_ts()
     cursor.execute(
         '''INSERT INTO challenge_stardusts (
-            project_id, claim_id, seed_evidence_id, seed_paper_key, name, sub_target_thesis,
+            project_id, claim_id, seed_evidence_id, seed_paper_key, kind, name, sub_target_thesis,
             status, paper_count, graph_cache_signature, source_summary_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
         (
             project_id,
             payload.claim_id,
-            payload.seed_evidence_id if creation_mode == "challenge_paper" else 0,
+            payload.seed_evidence_id if creation_mode in {"challenge_paper", "support_paper"} else 0,
             _trim_text(evidence_row["paper_key"], 300) if evidence_row else "__claim_seed__",
+            stardust_kind,
             payload.name,
             payload.sub_target_thesis,
             "ready",
@@ -7978,8 +9634,9 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
         detail={
             "stardust_id": stardust_id,
             "claim_id": int(claim["id"]),
+            "kind": stardust_kind,
             "creation_mode": creation_mode,
-            "seed_evidence_id": payload.seed_evidence_id if creation_mode == "challenge_paper" else 0,
+            "seed_evidence_id": payload.seed_evidence_id if creation_mode in {"challenge_paper", "support_paper"} else 0,
             "replaced_stardust_id": replaced_stardust_id,
             "stored_count": len(papers),
         },
@@ -8236,7 +9893,7 @@ async def patch_project_stardust_paper(project_id: int, stardust_id: int, paper_
     row = cursor.fetchone()
     if not row:
         conn.close()
-        raise HTTPException(status_code=404, detail="Challenge Stardust paper not found.")
+        raise HTTPException(status_code=404, detail="Stardust paper not found.")
 
     cursor.execute(
         f"UPDATE challenge_stardust_papers SET {', '.join(fields)} WHERE id = ? AND stardust_id = ?",
