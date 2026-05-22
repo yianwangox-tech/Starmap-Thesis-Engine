@@ -1,534 +1,648 @@
 # StarMap Primary Guide for Research Leads and New Contributors
 
-Review baseline: `2026-05-10`
+Review baseline: `2026-05-22`
 
 ## Positioning
 
-This document presents StarMap as a thesis-centered research system organized around its interface and major workspaces.
+This document explains StarMap as a user-facing research system organized around one live project and its main workspaces.
 
 It is written for:
 
-- project leads
+- research leads
 - product owners
 - new contributors
-- readers who need a system-level understanding before they need implementation detail
+- collaborators who need a reliable mental model before they need implementation detail
 
-This is the primary guide, not the implementation appendix. It intentionally does not focus on:
+This is the primary guide, not the technical appendix. It intentionally avoids:
 
+- code-level walkthroughs
+- parameter ledgers
+- audit-style scoring breakdowns
 - low-value CRUD explanation
-- function-by-function code walkthroughs
-- parameter ledgers, tuning notes, or audit-oriented weight breakdowns
 
-Those materials belong in the companion document:
+For implementation detail, see:
 
-- [StarMap Companion Reference for Implementers and Auditors](./StarMap_Companion_Reference_for_Implementers_and_Auditors.md)
+- [StarMap Functional Detail Guide](./StarMap_Functional_Detail_Guide.md)
 
-The purpose of this guide is to explain how StarMap is structured, how users move through it, and how each major workspace supports one stage of the research loop.
+The goal of this guide is simpler: explain what StarMap is for, how a user moves through it, and how the major workspaces fit together as one research loop.
 
-## How to Read This Guide
+## What StarMap Is
 
-StarMap is easier to understand from the outside in than from the architecture inward. For that reason, this guide follows the user's actual path through the product:
+StarMap is a thesis-centered research environment. One project should usually correspond to one thesis direction, chapter argument, or tightly scoped research question.
 
-- first, the common interface layer and foundational functions
-- then, the five major workspaces that carry the deeper research work
+Within that project, StarMap helps the user:
 
-The document should therefore be read less as a feature inventory and more as a map of how StarMap organizes a research project over time.
+- build and clean a paper library
+- understand which papers matter most to the project
+- inspect the library as a structure rather than a flat list
+- read important papers closely
+- test claims against the current library
+- expand outward when support or challenge literature is still missing
+- keep the project current as new work appears
 
-## StarMap at a Glance
+The system is strongest when it is treated as a project workbench, not as a generic paper manager.
 
-StarMap is best understood as a workbench for one live research direction. A project is expected to correspond to one thesis topic, chapter argument, or tightly scoped research question. The system then helps the user build a library, understand its structure, read core papers closely, test claims against evidence, explore challenge-side literature, and keep the project current as new work appears.
+## The Research Loop
 
-At the highest level, the research loop looks like this:
+At a high level, StarMap supports the following loop:
 
 ```mermaid
 flowchart LR
-    A["Set project context"] --> B["Build and clean the library"]
-    B --> C["Map the repository structure"]
+    A["Set project context"] --> B["Build the project library"]
+    B --> C["Visualize the library"]
     C --> D["Read priority papers closely"]
-    D --> E["Test claims against the library"]
-    E --> F["Expand challenge-side literature when needed"]
-    F --> G["Track newly published work"]
+    D --> E["Test claims against current evidence"]
+    E --> F["Expand with Stardust when gaps appear"]
+    F --> G["Monitor new literature"]
     G --> A
 ```
 
-The six sections below explain where each part of that loop lives in the current interface.
+The rest of this guide follows that user path.
 
 ## Table of Contents
 
-1. [Interface Layer and Foundational Functions](#1-interface-layer-and-foundational-functions)
-2. [Workspace Atlas](#2-workspace-atlas)
-3. [Read A Paper](#3-read-a-paper)
-4. [Evidence Board](#4-evidence-board)
-5. [Challenge Stardust](#5-challenge-stardust)
+1. [Project Shell and Shared Concepts](#1-project-shell-and-shared-concepts)
+2. [Building and Maintaining the Project Library](#2-building-and-maintaining-the-project-library)
+3. [StarMap Visualization](#3-starmap-visualization)
+4. [Read A Paper PDF](#4-read-a-paper-pdf)
+5. [Evidence Board and Stardust](#5-evidence-board-and-stardust)
 6. [Project Literature Watch](#6-project-literature-watch)
+7. [A Practical Starting Workflow](#7-a-practical-starting-workflow)
 
 ---
 
-## 1. Interface Layer and Foundational Functions
+## 1. Project Shell and Shared Concepts
 
-### 1.1 Why this section comes first
+### 1.1 Why the project shell matters
 
-Before a user enters any deep workspace, they encounter a common project shell. That shell defines project identity, displays integration readiness, exposes shared actions, and manages the paper pool used across the entire system.
+Before users enter any deep workspace, they enter a shared project shell. That layer is not just navigation. It establishes the research context that the rest of the system reuses.
 
-This layer matters because it is not merely decorative. It sets the project's semantic baseline, establishes whether the environment is operational, and exposes the functions that make the five major workspaces usable.
+In practice, the project shell answers three questions:
 
-### 1.2 What the user sees at the interface layer
+- What project am I working on?
+- Is the environment ready for serious work?
+- What should I do next?
 
-At the top level of a project, the user typically encounters:
+### 1.2 The project as the semantic center
 
-- the project title and project-level navigation
-- access to `Settings`
-- a return path to `Dashboard`
-- integration health indicators for the LLM, Zotero, and OpenAlex / Scholar API
-- lightweight action surfaces for library management and workspace entry
-
-This is the system's orientation layer. It tells the user whether the project is ready, where they are, and what the most immediate next actions are.
-
-For a new user or new contributor, it also answers a practical onboarding question: "Is this project ready for serious work yet?" If integrations are unavailable, if the repository is still thin, or if the project context is underspecified, the rest of the system will feel weaker than intended. The interface layer makes that readiness visible.
-
-### 1.3 Foundational functions exposed from the interface layer
-
-The current project shell exposes a small set of shared functions that matter across the whole system:
-
-| Interface block | Main role in the workflow |
-| --- | --- |
-| `Paper Status Overview` | Gives a quick reading-state view across the imported library |
-| `Import PDFs` | Adds local papers and supports rollback of the latest batch |
-| `Auto Cluster Themes` | Opens the clustering entry point without forcing the user into a graph first |
-| `Sync Zotero` | Connects the project to the external Zotero library |
-| `All Papers` | Opens the project-wide paper hub for search, filtering, and cross-cutting inspection |
-| `Settings` | Controls shared runtime and project-level behavior |
-
-These functions are foundational because they do not belong to only one analytical workspace. They maintain the shared substrate of the project. A user may spend most of their time in one deep workspace, but these top-level functions keep the project healthy enough for all workspaces to remain useful.
-
-### 1.4 The project as the shared semantic baseline
-
-Every major workspace depends on one central project object. At minimum, that object carries:
+Every major workspace depends on the same project context, especially:
 
 - `Target Title`
 - `Target Abstract`
 - `Target Current Content`
 
-Together, these fields define the thesis context that shapes:
+Together, these fields act as the semantic center of the project. They influence:
 
-- similarity ranking
-- cluster naming and interpretation
-- claim analysis and evidence grouping
+- paper relevance ranking
+- visualization behavior
+- claim analysis
 - literature-watch relevance
-- explanation quality across the interface
+- how helpful the system's explanations feel
 
-For that reason, the interface layer should be understood not only as navigation, but also as a project-level semantic control surface. In many research tools, the top layer is operational but not intellectually important. In StarMap, the opposite is true: the project shell quietly determines the baseline that makes ranking, clustering, and argument support coherent everywhere else.
+If these fields are vague, the entire system becomes less coherent. If they are sharp, the whole project becomes easier to interpret.
 
-### 1.5 Import, curation, and paper-pool preparation
+### 1.3 Shared project-level functions
 
-Before any deep research analysis can happen, the system needs a usable paper pool. The interface layer is where that preparation begins.
+At the project level, users typically encounter shared functions such as:
 
-Its foundational responsibilities include:
-
-- importing local PDFs
-- merging newly imported papers into the project
-- rolling back the latest local import batch when intake quality is poor
-- syncing with Zotero to fetch or push literature assets
-- exposing a project-wide `All Papers` view for manual cleaning and review
-
-This stage matters because StarMap assumes that analysis quality depends heavily on the quality of the shared library feeding every workspace downstream. A weak import pass, poor metadata, or an incoherent initial paper pool will not stay local to the import step; those weaknesses propagate into structure analysis, evidence classification, and watch relevance later on.
-
-### 1.6 Shared states across all workspaces
-
-Although StarMap is divided into distinct workspaces, several project-level states persist across them:
-
-- reading statuses such as `Core`, `Pending`, `Unread`, and `Underweight`
-- paper notes and curation decisions
-- clustering readiness and project-level cluster caches
-- integration readiness
-- project preferences such as background precompute, theme naming behavior, density choices, and watch settings
-
-This continuity is one of StarMap's main design strengths. A user's judgment about a paper in one place can affect how that paper behaves everywhere else, which is exactly what a thesis-centered research environment should do.
-
-### 1.7 What this section should establish
-
-After reading this section, the reader should understand:
-
-- how a user first enters and orients inside a project
-- which actions are common infrastructure rather than workspace-specific analysis
-- why project context and library preparation sit upstream of everything else
-
-The interface layer is not merely a landing page. It is the project's operational and semantic staging area.
-
----
-
-## 2. Workspace Atlas
-
-### 2.1 Role of Workspace Atlas in the system
-
-`Workspace Atlas` is the main structural analysis workspace in StarMap. Its role is to help the user see the repository as a shaped research landscape rather than as a flat paper list.
-
-If the interface layer prepares the project and the paper pool, Workspace Atlas turns that pool into a spatial and relational map that supports orientation, discovery, and structure judgment. It is often the first place where the user feels that StarMap is more than a ranked queue, because it reveals not just which papers are relevant, but how the repository behaves as a structured body of literature.
-
-### 2.2 Core question this workspace answers
-
-Workspace Atlas is designed to answer a family of related questions:
-
-- Which papers sit closest to the project's main thesis direction?
-- Which papers cluster together conceptually or topologically?
-- Which papers act as bridges, anchors, or structurally important nodes?
-- How does the current library look when seen as a map rather than a queue?
-
-These are the questions that arise once the library has grown beyond the point where linear reading order is enough. Atlas exists because repository understanding eventually becomes a structural problem, not just a sorting problem.
-
-### 2.3 Main views inside Workspace Atlas
-
-The current Atlas workspace brings together multiple views of the same repository:
-
-| View | What it helps the user see |
+| Interface surface | Why it matters |
 | --- | --- |
-| `Orbital` | Broad relevance distribution around the target thesis |
-| `Network` | Neighborhood structure, bridge papers, and local proximity |
-| `Citation Graph` | Directed citation relationships and graph backbone |
+| `Import PDFs` | Bring local papers into the project library |
+| `Sync Zotero` | Pull from Zotero or sync PDF text back into the project |
+| `All Papers` | Search, filter, review, and clean the shared paper pool |
+| `Paper Status Overview` | Maintain reading-state awareness across the project |
+| `Settings` | Control project behavior and integration setup |
 
-These are not redundant charts. They are different interpretive lenses over the same library. The practical value of the design is that users can shift between "What is near my target?" and "What is connected to what?" without leaving the same conceptual workspace. That lowers the cost of moving between topical thinking and structural thinking.
+These are shared infrastructure, not isolated features. They keep the common paper pool healthy enough for the rest of StarMap to work well.
 
-### 2.4 Atlas as the home of clustering and navigation
+### 1.4 Shared paper states across the system
 
-Atlas is also where StarMap's clustering story becomes visible and actionable. In practical use, this workspace supports:
+StarMap is divided into separate workspaces, but the project behaves like one connected environment. Papers can carry shared states such as:
 
-- `Semantic Cluster` as a topic-grouping lens
-- `Citation Cluster` as a community and lineage lens
-- local node exploration
-- marked-node workflows
-- saved exploration traces such as manual paths and custom citation structures
+- `Core`
+- `Pending`
+- `Unread`
+- `Underweight`
+- notes
+- reading annotations
+- cluster membership
+- evidence roles
 
-This makes Workspace Atlas both a visualization surface and a navigation surface. That dual role matters. The workspace is not only for interpretation after the fact; it changes what the user does next. A bridge paper found here may become the next reading target. A dense citation community may become the next cluster to inspect. A surprising isolated node may trigger a library-cleaning decision.
+That continuity is one of StarMap's core strengths. A paper is not supposed to mean one thing in one workspace and something unrelated in another. The system is designed so that library curation, reading, evidence work, and watch decisions reinforce one another.
 
-### 2.5 Typical user flow in this workspace
+### 1.5 What a new user should understand first
 
-A common path through Workspace Atlas looks like this:
+Before learning individual modules, a new user should understand this principle:
 
-1. Open the project and inspect the current library shape.
-2. Adjust visualization density to match the desired trade-off between coverage and performance.
-3. Switch among orbital, network, and citation views.
-4. Identify promising clusters, bridge papers, or anchor papers.
-5. Open individual papers or jump into deeper reading and evidence work from structurally important nodes.
+StarMap is not mainly about storing papers. It is about organizing one research direction around a living, reusable paper library.
 
-The workspace therefore acts as a bridge between broad repository orientation and more focused downstream analysis. It is best treated as the system's structural hub rather than as an optional visual add-on.
-
-### 2.6 When this workspace is especially valuable
-
-Workspace Atlas becomes especially valuable when:
-
-- the project already contains enough papers that simple ranking is no longer sufficient
-- the user wants to understand subfields or thematic pockets inside the repository
-- the user suspects that one or two bridge papers are linking otherwise separate conversations
-- the project is moving from repository growth into repository interpretation
-
-### 2.7 What this workspace contributes to the larger research loop
-
-In the full StarMap loop, Workspace Atlas contributes:
-
-- structural orientation
-- cluster-level understanding
-- citation-topology awareness
-- transition points into deeper reading, evidence work, and counter-evidence expansion
-
-It is the system's main answer to the question: "What kind of library have I actually built?"
+Once that is clear, the individual workspaces make much more sense.
 
 ---
 
-## 3. Read A Paper
+## 2. Building and Maintaining the Project Library
 
-### 3.1 Role of Read A Paper in the system
+### 2.1 Why the library comes first
 
-`Read A Paper` is StarMap's deep-reading workspace. It exists for the point at which repository-level orientation is no longer enough and the user needs close engagement with a priority paper.
+Every major StarMap workflow depends on the quality of the project library. Weak imports, poor metadata, or incomplete text content do not stay local to the import step. They affect visualization quality, claim analysis, reading support, and watch relevance later on.
 
-This workspace prevents StarMap from becoming overly abstract. High-level repository intelligence is useful only if the user can eventually return to the primary source text and interrogate it carefully. Read A Paper provides that return path.
+For that reason, library-building is not a trivial setup task. It is the foundation of the project.
 
-### 3.2 Core question this workspace answers
+### 2.2 The five main ways papers enter the library
 
-This workspace is designed to answer:
+StarMap supports several distinct paper-intake paths. They all end in the same project library, but they begin from different starting points.
 
-- What is this paper actually saying?
-- Which parts of it matter to my project?
-- Where are the strongest passages, weaknesses, limitations, or useful methods?
-- How do I turn this reading into reusable project knowledge?
+| Intake path | Best used when |
+| --- | --- |
+| `Import PDFs` | You already have local PDFs and want to build the library from full documents |
+| `Fetch from Zotero` | You want to pull papers from an existing Zotero library or collection |
+| `Sync PDF Content for Improving Similarity Calculations` | The paper already exists in the project, but you want richer PDF text to improve project matching |
+| Single-paper external import | You find one promising paper from citations, search results, or external metadata and want to add it quickly |
+| `Literature Watch` import | You want to admit selected results returned by the watch module |
 
-### 3.3 Main capabilities of Read A Paper
+### 2.3 `Import PDFs`
 
-The current reading workspace is not a generic PDF viewer. It is built around critical reading and grounded extraction. Its capabilities include:
+`Import PDFs` is the most direct intake path. The user selects one or more local PDFs from the project workspace.
 
-- opening and reading a selected PDF in context
-- asking user-driven questions about the paper
-- surfacing evidence-like passages
-- recording highlights, marks, and reading notes
-- identifying strengths, weaknesses, limitations, or useful methods
-- exporting reading results back into Zotero when needed
+From the user's point of view, the important behavior is:
 
-The design intent is to convert deep reading from a private one-off act into a reusable project asset. The goal is not just comprehension in the moment. The goal is to produce portable insight that can later support claim work, note reuse, Zotero export, or broader repository judgment.
+- StarMap reads the PDF content rather than relying only on a filename
+- it extracts useful paper information from the document
+- it tries to enrich the paper with outside metadata when available
+- it checks whether the paper already exists in the project
+- it either creates a new project record or updates an existing one
+- it recalculates project relevance after the merge
 
-### 3.4 Relationship to the rest of the system
+This path is especially useful at the beginning of a project, when the user already has a seed library on disk.
 
-Read A Paper is tightly connected to other parts of StarMap:
+### 2.4 `Fetch from Zotero`
 
-- it usually begins from a paper selected in Atlas or the paper library
-- it can strengthen understanding of a paper already suspected to be `Core`
-- it can generate material that later informs claim analysis
-- it can export enriched reading outputs back to Zotero
+This path begins from the user's Zotero library or a selected Zotero collection rather than from local PDFs.
 
-It should therefore not be interpreted as a detached reader module. Its best use is relational: a user arrives because some earlier workspace made the paper matter, and leaves with material that strengthens later project reasoning.
+It is best when:
 
-### 3.5 Typical user flow in this workspace
+- the user already curates literature in Zotero
+- a team wants to reuse an established bibliography
+- the project library should be built quickly from an existing collection
 
-1. Select a priority paper from the library, map, or cluster context.
-2. Open the PDF and inspect the paper in detail.
-3. Ask a focused question or review it through a critical-reading lens.
-4. Mark passages, record notes, and extract grounded observations.
-5. Preserve or export the resulting reading artifact for later project use.
+From the user's perspective, the key idea is simple: Zotero becomes a source for project papers, but StarMap still decides how those papers fit into the project library after deduplication and merge.
 
-A strong session in this workspace usually produces one of three outcomes:
+### 2.5 `Sync PDF Content for Improving Similarity Calculations`
 
-- stronger understanding of a genuinely central paper
-- grounded caution about a paper that looked promising at first glance
-- reusable passages or notes that sharpen later argument work
+This mode matters because sometimes a paper is already in the project library, but the project still lacks enough full-text content to judge it well.
 
-### 3.6 When this workspace is especially valuable
+This sync path is not mainly for adding new papers. It is for improving the text completeness of papers that already exist in the project.
 
-Read A Paper is especially valuable when:
+That distinction is important. A user should think of this feature as:
 
-- a paper has already been marked or suspected to be `Core`
-- a cluster or graph view has surfaced a structurally important but not yet fully understood paper
-- a claim analysis result is intriguing but still too coarse
-- the user needs grounded passages rather than high-level summaries
+- enrich existing papers with fuller PDF text
+- improve later similarity and relevance behavior
+- strengthen downstream analysis without rebuilding the library from scratch
 
-### 3.7 What this workspace contributes to the larger research loop
+### 2.6 Single-paper external import
 
-Read A Paper contributes the close-reading layer that a map or ranking system cannot replace. It is where broad repository judgment is converted into detailed textual understanding.
+Sometimes the user is reading a citation chain, browsing related work, or checking an outside search result and finds one paper that deserves quick admission into the project.
 
-In other words, this workspace answers: "Now that I know this paper matters, what does it actually give me?"
+In that case, StarMap can import a single candidate from external metadata. This path is useful because it lets the user expand the library opportunistically without running a large batch job.
+
+### 2.7 `Literature Watch` import
+
+When papers come from `Project Literature Watch`, they still do not enter the project automatically. The user reviews the watch results first, then selectively imports the strongest candidates.
+
+This is a good design choice. It keeps the project library deliberate instead of letting it grow automatically with every monitored result.
+
+### 2.8 What users should expect from all intake paths
+
+Although the entry points differ, the user-facing outcome is consistent:
+
+- StarMap tries to identify the paper
+- it checks whether the paper already exists
+- it merges, updates, or creates the record as needed
+- it places the paper into the shared project context
+- it refreshes project relevance so the rest of the system can use the paper properly
+
+In other words, the library is one shared destination even when the intake routes differ.
 
 ---
 
-## 4. Evidence Board
+## 3. StarMap Visualization
 
-### 4.1 Role of Evidence Board in the system
+### 3.1 What this workspace is for
 
-`Evidence Board` is StarMap's argument-organization workspace. It transforms a project from a literature collection into a structured claim-evaluation environment.
+`StarMap Visualization` is the main workspace for understanding the project library as a structure rather than as a list.
 
-This is the point where the system becomes explicitly thesis-driven rather than merely discovery-driven. For many projects, it is also the point where the repository starts functioning like an argument rather than a collection of potentially relevant references.
+It helps answer questions like:
 
-### 4.2 Core question this workspace answers
+- Which papers are closest to the project's main direction?
+- Which papers belong to the same local neighborhood?
+- Which papers act as bridges?
+- What does the library look like as a citation structure?
 
-Evidence Board exists to answer:
+This workspace is often the moment when users stop thinking of the project as "a folder of papers" and start seeing it as "a shaped literature landscape."
 
-- Which papers support my claim?
-- Which papers challenge or narrow it?
-- Which papers mainly contribute setup, method, or background value?
-- Which candidates remain ambiguous and need further judgment?
+### 3.2 The three visualization modes
 
-### 4.3 Main model used by the workspace
+The visualization module provides three distinct modes:
 
-The workspace is organized around project claims and four evidence columns:
+| Mode | Main question it answers |
+| --- | --- |
+| `Orbital (Uni-directional)` | Which papers are closest to the project thesis? |
+| `Network (Bi-directional)` | How do the most relevant papers relate to one another in content space? |
+| `Citation Graph` | How are project papers connected by real citation relationships? |
+
+These modes are complementary. They reuse the same library, but they answer different kinds of research questions.
+
+### 3.3 `Orbital (Uni-directional)`
+
+`Orbital` is the clearest mode for answering a very practical question:
+
+Which papers should I probably care about first?
+
+In this mode:
+
+- the project thesis sits at the center
+- papers closer to the center are more aligned with the project direction
+- papers farther out are weaker fits
+- `Visualization Density` controls how many papers enter the current view
+
+This mode is especially good for early prioritization and for quick orientation after a fresh import batch.
+
+### 3.4 `Network (Bi-directional)`
+
+`Network` shifts attention from thesis-to-paper distance toward paper-to-paper proximity.
+
+It helps the user see:
+
+- local neighborhoods
+- small thematic groups
+- bridge papers between groups
+- which relevant papers are near one another conceptually
+
+This is the best mode when the user wants to understand the internal shape of the most relevant part of the library rather than just its ranking relative to the thesis.
+
+### 3.5 `Citation Graph`
+
+`Citation Graph` is different from the first two modes because it is based on real citation links rather than content similarity.
+
+This mode helps the user see:
+
+- lineage
+- influence
+- internal project citation chains
+- source, bridge, and downstream papers
+
+It is the right view when the user wants academic structure rather than semantic proximity.
+
+### 3.6 `Visualization Density`
+
+`Visualization Density` is not a cosmetic setting. It controls how many papers are allowed into the current view.
+
+That matters because different moments call for different levels of breadth:
+
+- a smaller view is easier to read
+- a denser view gives more coverage
+- the right setting depends on whether the user wants quick orientation or wider structure awareness
+
+### 3.7 How users typically use this workspace
+
+A common flow looks like this:
+
+1. Open the visualization module after building or refreshing the library.
+2. Start with `Orbital` to see which papers are nearest to the project.
+3. Move to `Network` to inspect neighborhoods and bridge papers.
+4. Switch to `Citation Graph` to understand lineage and internal citation structure.
+5. Use what you find to choose papers for close reading, evidence work, or import review.
+
+### 3.8 Why this workspace matters
+
+Visualization is not just an attractive layer on top of the library. It is the system's main orientation surface.
+
+It helps the user decide:
+
+- where to read next
+- which papers are central
+- whether the project is topically coherent
+- whether the library has hidden clusters or disconnected regions
+
+That makes `StarMap Visualization` a structural hub rather than a decorative chart page.
+
+---
+
+## 4. Read A Paper PDF
+
+### 4.1 What this workspace is for
+
+`Read A Paper PDF` is StarMap's deep-reading workspace. It is designed for the point where the user no longer wants only a ranked or visual understanding of a paper, but wants to read one paper carefully and turn that reading into reusable project knowledge.
+
+It is not just a PDF viewer. It is a reading workbench.
+
+### 4.2 What makes it different from a normal reader
+
+This workspace is built around one paper at a time. It supports:
+
+- opening and parsing one PDF for focused reading
+- asking paper-level questions
+- asking passage-level questions
+- marking and annotating specific regions
+- preserving reading continuity
+- exporting marked results to Zotero
+
+Its goal is not passive reading. Its goal is to make close reading durable and reusable.
+
+### 4.3 Choosing a PDF
+
+The reading session begins with `Choose PDF`.
+
+One important user-facing rule should be clear:
+
+Uploading a PDF here does not automatically add that paper to the main project library.
+
+This module is for deep reading of one active paper. It brings the file into the reading workspace, but it does not automatically turn that file into a project library record.
+
+That distinction matters because this workspace is about focused reading, not project-level intake.
+
+### 4.4 `Run Paper Critique`
+
+`Run Paper Critique` is the paper-level analysis path. The user can optionally supply a guiding question, such as:
+
+- What is the weakest identification assumption in this paper?
+- What is the main external-validity risk?
+- What should I trust here and what should I be skeptical of?
+
+The important design principle is that the critique is not fully detached from the project. It is informed by the current project context, so the output is more useful than a generic summary.
+
+In practical terms, the feature helps users ask:
+
+- What does this paper mean for my project?
+- Where is it strong?
+- Where is it fragile?
+- What should I question next?
+
+### 4.5 `Analyze Passage`
+
+`Analyze Passage` is the local, passage-level path.
+
+The user selects a region on the page, then asks for analysis of that specific passage, figure explanation, method paragraph, or result statement.
+
+This is especially useful when the user needs help with a narrow question such as:
+
+- What exactly is this paragraph claiming?
+- Does this figure actually support the authors' conclusion?
+- What is the key methodological weakness in this section?
+
+The main value of this feature is precision. It keeps the system grounded in the local evidence that the user actually selected.
+
+### 4.6 Marking, notes, and reading continuity
+
+The workspace also supports:
+
+- highlights
+- typed notes
+- mark types such as `claim`, `evidence`, `method`, `threat`, `limitation`, `question`, and `to_cite`
+- local reading continuity such as page position and current reading state
+
+This matters because deep reading is rarely completed in one sitting. The module is designed so the user can return to the same paper and continue rather than start over.
+
+### 4.7 Export to Zotero
+
+When the user wants to preserve the deep-reading result outside StarMap, the marked PDF and selected notes can be exported to Zotero.
+
+The design here is intentionally selective:
+
+- the system exports the paper and meaningful marked reading artifacts
+- it does not treat every temporary local state as something worth exporting
+
+That keeps Zotero export focused on durable reading outcomes rather than temporary session noise.
+
+### 4.8 Why this workspace matters
+
+`Read A Paper PDF` is where StarMap becomes grounded in actual pages and passages.
+
+It answers:
+
+- What does this paper really say?
+- Which parts matter for my project?
+- What do I want to preserve from this reading session?
+
+Without this workspace, the rest of StarMap would risk becoming too abstract. With it, library intelligence can be converted into usable close-reading judgment.
+
+---
+
+## 5. Evidence Board and Stardust
+
+### 5.1 Why these two belong together
+
+`Evidence Board` and `Stardust` form one continuous reasoning workflow.
+
+They serve different roles:
+
+- `Evidence Board` asks what the current project library already does for a claim
+- `Stardust` asks where to search next when the current library is not enough
+
+Together, they help the user move from "What evidence do I have?" to "What evidence am I still missing?"
+
+### 5.2 `Evidence Board`: the claim-centered workspace
+
+`Evidence Board` turns the library into an argument surface.
+
+The user writes a claim, then asks the system to organize the current project library around that claim. The key shift is that papers are no longer judged only by topical relevance. They are judged by argumentative role.
+
+The four main roles are:
 
 - `support`
 - `challenge`
 - `setup`
 - `pending`
 
-This framing matters because it converts a research library into a live argument surface. The user is no longer managing papers only by relevance, but by argumentative function. A highly relevant paper is not automatically a support paper. It may be a challenge paper, a setup paper, or only a tentative candidate. Evidence Board keeps those distinctions visible.
+This is one of the most important conceptual moves in StarMap. A highly relevant paper is not automatically a support paper. It may be a challenge paper, a setup paper, or a still-uncertain candidate.
 
-### 4.4 Main activities supported here
+### 5.3 What `Evidence Board` helps the user see
 
-Inside this workspace, the user can:
+This workspace helps answer:
 
-- create and revise claims
-- analyze the current library against a chosen claim
-- inspect why papers were grouped into different evidence roles
-- move from a claim to its supporting, challenging, or setup literature
-- identify where evidence remains weak or inconclusive
+- Which papers directly support the claim?
+- Which papers constrain, complicate, or challenge it?
+- Which papers are more useful for background, setup, or method?
+- Which papers may matter, but still need more reading?
 
-The workspace therefore supports not just literature review, but argument construction and argument stress-testing. It is especially useful in thesis-writing or chapter-writing contexts, where the user is not only trying to know the field better, but trying to understand whether the current field knowledge can actually carry a specific claim.
+That makes the board useful not just for discovery, but for writing readiness.
 
-### 4.5 Relationship to reading and structure work
+### 5.4 A practical way to use `Evidence Board`
 
-Evidence Board depends on upstream work and also feeds downstream work:
+A common workflow is:
 
-- it depends on project context, curated papers, and often prior close reading
-- it can send the user back to deep reading when evidence is uncertain
-- it can send the user forward into Challenge Stardust when challenge-side expansion is needed
+1. Write a claim, chapter point, or focused research question.
+2. Run `Analyze Claim`.
+3. Inspect how the current project library is distributed across the four columns.
+4. Open uncertain or important papers for closer reading when needed.
+5. Decide whether the claim is already well supported or whether more evidence must be found.
 
-This makes Evidence Board the system's main bridge between literature organization and actual thesis reasoning. It is also where ambiguity becomes productive: weak support, mixed evidence, or too many `pending` items are not merely deficiencies, but signals about what the project still needs.
+This is often the moment when a project moves from "I have many papers" to "I know what these papers are doing for my argument."
 
-### 4.6 When this workspace is especially valuable
+### 5.5 Why `pending` matters
 
-Evidence Board becomes especially valuable when:
+`pending` should not be read as a failure state. It usually signals one of two things:
 
-- the user already has a curated library but not yet a clear argument structure
-- multiple plausible papers seem relevant but their argumentative roles differ
-- the user needs to know whether the repository is ready to support writing
-- the project is moving from exploration into evaluation
+- the claim is still not well grounded in the current library
+- the relevant papers need fuller reading, better text coverage, or clearer notes
 
-### 4.7 What this workspace contributes to the larger research loop
+In other words, `pending` is often a useful diagnostic signal rather than a dead end.
 
-Evidence Board contributes argumentative clarity. It helps the user see whether the current repository:
+### 5.6 Manual judgment still matters
 
-- genuinely supports the thesis
-- hides unresolved challenges
-- leans too heavily on background or method papers
-- still needs targeted expansion before writing can proceed confidently
+`Evidence Board` is not meant to be a black box. Users can inspect results, pin important cards, move items, and apply their own judgment.
 
-It answers: "How does my current library function as evidence?"
+That is the right design for research work. The system helps organize the board, but the user remains the final judge of the argument.
 
----
+### 5.7 `Stardust`: outward expansion beyond the current library
 
-## 5. Challenge Stardust
+`Stardust` begins where `Evidence Board` becomes insufficient.
 
-### 5.1 Role of Challenge Stardust in the system
+If the board reveals a weak challenge side, a weak support side, unclear boundary conditions, or too many uncertain papers, `Stardust` gives the user a controlled way to expand outward without automatically polluting the main project library.
 
-`Challenge Stardust` is StarMap's counter-evidence exploration workspace. It is designed for the moment when a user identifies a challenge paper or a vulnerable claim and wants to explore outward without immediately polluting the main project library.
+This separation is important. Not every exploratory lead deserves immediate promotion into the main corpus.
 
-This is one of the system's most distinctive workspaces because it treats counter-evidence discovery as a managed research activity rather than as an ad hoc search. That distinction matters in serious research work, where counter-evidence often enters a project in a messy and disruptive way. Challenge Stardust gives the user a dedicated place to explore that disruption without collapsing the organization of the main repository.
+### 5.8 The three main Stardust entry paths
 
-### 5.2 Core question this workspace answers
+StarMap supports three conceptually distinct ways to start a Stardust trail:
 
-Challenge Stardust exists to answer:
+| Entry path | Best used when |
+| --- | --- |
+| `Challenge Stardust` | A challenge paper reveals a line of literature worth exploring outward |
+| `Support Stardust` | A support paper suggests a stronger support-side neighborhood worth expanding |
+| `New From Claim` | The user wants to start from a claim rather than from one existing evidence paper |
 
-- If this claim is challenged, where should I search next?
-- What neighboring literature might extend or sharpen the challenge?
-- Which challenge-side candidates deserve inspection before entering the main project?
+### 5.9 What Stardust returns
 
-### 5.3 Why it is separate from Evidence Board
+From the user's perspective, the important behavior is:
 
-Evidence Board classifies the current project library. Challenge Stardust goes beyond that boundary.
+- Stardust looks outward from a seed or claim
+- it generates a side pool of candidate papers
+- those candidates stay separate from the main project library
+- the user reviews them before importing anything
 
-The separation is useful because it allows:
+This makes Stardust both a discovery layer and a quarantine layer.
 
-- exploratory challenge-side discovery in an isolated space
-- temporary candidate pools that do not automatically change the main repository
-- independent graph building around a challenge direction
-- selective import back into the main project only after review
+### 5.10 How users typically use Stardust
 
-This keeps the main library cleaner while still supporting ambitious counter-evidence work. It also preserves a healthy research discipline: not every challenge-side lead deserves immediate promotion into the primary corpus. Some leads should remain exploratory until they have earned a place.
+1. Start from a support paper, challenge paper, or claim.
+2. Review the candidate list and source groupings.
+3. Decide which candidates are genuinely worth attention.
+4. Import only the strongest additions into the main project.
+5. Return to the board if the new material changes the argument.
 
-### 5.4 Main activities supported here
+### 5.11 Why this combined workflow matters
 
-Inside this workspace, the user can:
+Used together, `Evidence Board` and `Stardust` support a disciplined research habit:
 
-- create a Stardust trail from a challenge paper or challenge-oriented seed
-- inspect generated candidate papers
-- review why those candidates were surfaced
-- build and inspect a challenge-side graph
-- decide which items should remain isolated and which should be imported into the main repository
+- first inspect what the current library already says
+- then expand only where the claim still needs pressure, support, or clarification
 
-The workspace is therefore both a discovery surface and a quarantine surface. That combination is exactly what makes it useful: it permits aggressive exploration while still preserving repository coherence.
-
-### 5.5 Typical user flow in this workspace
-
-1. Start from a claim or challenge paper that raises a real tension.
-2. Generate a challenge-oriented exploration trail.
-3. Inspect the candidate pool and local graph.
-4. Manually review which candidates are truly relevant.
-5. Import only the strongest additions into the main project if warranted.
-
-A well-used Stardust trail typically ends in one of two ways:
-
-- it identifies genuinely important challenge-side literature and enriches the main project
-- it demonstrates that the apparent challenge line was weaker, narrower, or less relevant than expected
-
-Both outcomes are valuable.
-
-### 5.6 When this workspace is especially valuable
-
-Challenge Stardust is especially valuable when:
-
-- a claim appears too clean and needs deliberate pressure-testing
-- the user has found one challenge paper but does not yet understand the surrounding literature
-- challenge-side exploration would be useful, but direct import into the main library would be premature
-- the project is entering a stage where robustness matters more than raw expansion
-
-### 5.7 What this workspace contributes to the larger research loop
-
-Challenge Stardust contributes disciplined counter-evidence expansion. It is StarMap's answer to the problem that good research is not only about gathering supporting papers, but also about testing the durability of the thesis under challenge.
-
-It answers: "How do I systematically explore the literature that could weaken or refine my current argument?"
+That is far better than adding more papers indiscriminately.
 
 ---
 
 ## 6. Project Literature Watch
 
-### 6.1 Role of Project Literature Watch in the system
+### 6.1 What this workspace is for
 
-`Project Literature Watch` is StarMap's incremental frontier-tracking workspace. Its job is to keep the project alive after the initial repository has already been built.
+`Project Literature Watch` is StarMap's monitoring workspace. Its role is not to explain what is already in the project library, but to help the user discover new papers that are worth reviewing for possible admission.
 
-This workspace matters because a thesis-centered literature environment cannot remain static. Once a project has a working structure, the next problem becomes controlled expansion. Project Literature Watch is the workspace that prevents a good repository from slowly becoming an outdated one.
+It is a controlled frontier-tracking tool.
 
-### 6.2 Core question this workspace answers
+### 6.2 The three watch modes
 
-This workspace is designed to answer:
+The module supports three monitoring modes:
 
-- What new literature has appeared that is worth adding to this project?
-- Which recent papers align with the target thesis?
-- What have watched scholars or journals produced recently that may matter here?
-
-### 6.3 Main watch modes
-
-The current workspace supports three major monitoring modes:
-
-| Mode | Main use |
+| Mode | What it watches |
 | --- | --- |
-| `Target Watch` | Scan for new literature around the thesis direction itself |
-| `Scholar Watch` | Track recent work from watched authors |
-| `Journal Watch` | Track recent work from watched journals |
+| `Target Watch` | New literature around the project's research direction |
+| `Scholar Watch` | New literature from selected scholars |
+| `Journal Watch` | New literature from selected journals |
 
-These modes allow the user to keep one project current from multiple angles without leaving the StarMap workflow. Each reflects a different way research projects actually evolve. Sometimes the thesis direction itself should drive monitoring. Sometimes a few scholars matter disproportionately. Sometimes journals act as the best proxy for the frontier.
+These are three entry routes into the same broader goal: keep the project current without losing focus.
 
-### 6.4 Why this workspace is more than a search page
+### 6.3 `Target Watch`
 
-Project Literature Watch is not just a place to run isolated queries. It is guided by the existing project and draws on:
+`Target Watch` is best when the user wants the project itself to define the monitoring direction.
 
-- project target fields
-- the current curated library
-- discipline scope
-- watched scholars
-- watched journals and their relative importance
+In practice, this mode is for questions like:
 
-In that sense, this workspace acts as a continuation of project curation rather than as an independent literature search engine. The user is not starting from zero each time; the system is reusing the project's existing knowledge and priorities.
+- What newly published work is emerging around my thesis direction?
+- Which recent papers look closest to the project's current concerns?
 
-### 6.5 Main activities supported here
+This mode is especially useful for long-running projects whose frontier is moving quickly.
 
-Within this workspace, the user can:
+### 6.4 `Scholar Watch`
 
-- run project-centered watch scans
-- adjust discipline and time-window scope
-- maintain scholar and journal watch lists
-- assign stronger or weaker lift to watched journals
-- review returned candidates before deciding whether to admit them into the project
+`Scholar Watch` is best when a few authors matter disproportionately to the project.
 
-This preserves the principle that new literature should enter through judgment, not automatically. The workspace therefore supports expansion without surrendering selectivity, which is one of the hardest balances for research tools to maintain.
+It helps the user ask:
 
-### 6.6 When this workspace is especially valuable
+- What have these specific scholars published recently?
+- Which of their new papers actually matter for this project?
 
-Project Literature Watch is especially valuable when:
+Importantly, not every paper by a watched scholar is automatically treated as relevant. The scholar is a source boundary, not a guarantee of project fit.
 
-- the initial repository is already strong and the next need is maintenance
-- the user wants to avoid repeating broad manual searches
-- one or two scholars or journals have become strategically important for the project
-- the project is long-running enough that freshness is now a research risk
+### 6.5 `Journal Watch`
 
-### 6.7 What this workspace contributes to the larger research loop
+`Journal Watch` is best when journals are the most meaningful frontier signal for the project.
 
-Project Literature Watch contributes controlled project growth. It helps the user sustain the repository after initial setup while still keeping the project tightly tied to its original thesis direction.
+It helps the user ask:
 
-It answers: "How do I keep this research project current without losing focus?"
+- What is appearing in the journals I care about?
+- Which of those newly published papers are worth bringing into this project?
+
+As with `Scholar Watch`, the watched source does not override project relevance. It only narrows where the system looks first.
+
+### 6.6 Time windows and review discipline
+
+This workspace is meant for monitoring recent work, not for replacing the main historical library-building process.
+
+That is why time windows matter. The user can define how recent the watch should be, and the system returns candidates from that monitoring window.
+
+Just as importantly, the results are still candidates. They do not enter the main project library automatically.
+
+### 6.7 How users typically use this workspace
+
+1. Choose `Target Watch`, `Scholar Watch`, or `Journal Watch`.
+2. Set the relevant scope and time window.
+3. Run the watch.
+4. Review the returned candidates and their explanations.
+5. Import only the strongest additions into the project library.
+
+### 6.8 Why this workspace matters
+
+Many research tools help users build an initial library, but fewer help them maintain it without turning it into noise.
+
+`Project Literature Watch` matters because it keeps the project current while preserving review discipline. It supports growth, but controlled growth.
 
 ---
 
+## 7. A Practical Starting Workflow
+
+For a new user, the cleanest way to approach StarMap is usually:
+
+1. Define the project clearly with a strong `Target Title`, `Target Abstract`, and `Target Current Content`.
+2. Build the initial project library through `Import PDFs`, `Fetch from Zotero`, or both.
+3. Use `StarMap Visualization` to identify the most central papers and the rough structure of the library.
+4. Open a few priority papers in `Read A Paper PDF` and turn reading into marked, reusable project knowledge.
+5. Use `Evidence Board` to test one concrete claim against the current library.
+6. If the board reveals weak support, weak challenge coverage, or too many uncertain items, expand outward with `Stardust`.
+7. Use `Project Literature Watch` to keep the project current once the core library is already in place.
+
+This order is not mandatory, but it matches the way the system is designed to become most useful over time.
+
 ## Closing Note
 
-When organized around its interface and major workspaces, StarMap becomes easier to explain as a coherent research environment:
+When explained from the user side, StarMap is best understood as one connected research environment:
 
-- the interface layer establishes the project and keeps its shared state healthy
-- `Workspace Atlas` reveals the structure of the repository
-- `Read A Paper` grounds that structure in close textual understanding
-- `Evidence Board` turns the repository into an argument surface
-- `Challenge Stardust` expands the counter-evidence frontier in a controlled way
-- `Project Literature Watch` keeps the project current after the initial structure is already in place
+- the project shell establishes context
+- library intake builds the shared paper pool
+- visualization reveals structure
+- close reading grounds judgment in actual papers
+- evidence work tests claims against the current library
+- Stardust expands the library in a controlled way when needed
+- literature watch keeps the project alive as new work appears
 
-This six-part structure is a strong fit for the primary guide because it follows the user's real movement through the product. Read together, the six sections present StarMap as one continuous environment rather than a scattered capability list.
+Taken together, these workflows make StarMap more than a paper manager and more than a visualization tool. It is a thesis-centered environment for building, testing, and maintaining a live research direction.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional, Tuple
 import asyncio
@@ -21,11 +22,21 @@ import hmac
 import base64
 import html
 import logging
+import socket
 from pathlib import Path
 from http.client import IncompleteRead
 from urllib import error, parse, request
 from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
+
+try:
+    from backend.paper_repository import PaperRepository
+    from backend.paper_repository import scrub_paper_dict as _repo_scrub_paper_dict
+    from backend.paper_repository import scrub_top_papers_json as _repo_scrub_top_papers_json
+except ModuleNotFoundError:
+    from paper_repository import PaperRepository
+    from paper_repository import scrub_paper_dict as _repo_scrub_paper_dict
+    from paper_repository import scrub_top_papers_json as _repo_scrub_top_papers_json
 
 app = FastAPI(title="StarMap Backend API")
 logger = logging.getLogger(__name__)
@@ -40,6 +51,7 @@ app.add_middleware(
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 DB_FILE = PROJECT_ROOT / "database.db"
 LEGACY_DB_FILE = Path(__file__).resolve().parent / "database.db"
 ENV_FILE = PROJECT_ROOT / ".env"
@@ -117,7 +129,6 @@ CLAIM_STATUS_VALUES = {"active", "archived"}
 CLAIM_STANCE_VALUES = {"support", "challenge", "setup", "pending"}
 READ_PAPER_SELECTION_VALUES = {"paper", "cluster"}
 STARDUST_STATUS_VALUES = {"draft", "ready", "building", "failed", "archived"}
-STARDUST_GRAPH_MODE_VALUES = {"directed", "mutual", "full"}
 STARDUST_KIND_VALUES = {"challenge", "support"}
 MAX_STARDUSTS_PER_PROJECT = 10
 CACHE_SOFT_LIMIT_BYTES = 128 * 1024 * 1024
@@ -295,28 +306,12 @@ CLAIM_SETUP_MARKERS = {
 def _scrub_paper_payload(paper: dict) -> dict:
     if not isinstance(paper, dict):
         return paper
-    cleaned = dict(paper)
-    cleaned.pop("keywords", None)
-    abstract = str(cleaned.get("abstract", "") or "").strip()[:MAX_PAPER_ABSTRACT_LENGTH]
-    cleaned["abstract"] = abstract or "Unknown"
-    cleaned["current_content"] = str(cleaned.get("current_content", "") or "").strip()[:MAX_PAPER_CURRENT_CONTENT_LENGTH]
-    cleaned["analysis_ready"] = bool(abstract and abstract.lower() != "unknown")
-    cleaned["metadata_only"] = not cleaned["analysis_ready"]
-    cleaned["similarity_pending"] = bool(cleaned.get("similarity_pending"))
-    cleaned["zotero_has_pdf_attachment"] = bool(cleaned.get("zotero_has_pdf_attachment"))
-    cleaned["zotero_has_fulltext"] = bool(cleaned.get("zotero_has_fulltext"))
+    cleaned = _repo_scrub_paper_dict(paper)
+    cleaned.pop("id", None)
     return cleaned
 
 def _scrub_top_papers_json(raw_value) -> str:
-    if not raw_value:
-        return "[]"
-    try:
-        papers = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
-    except Exception:
-        return "[]"
-    if not isinstance(papers, list):
-        return "[]"
-    return json.dumps([_scrub_paper_payload(paper) for paper in papers if isinstance(paper, dict)], ensure_ascii=False)
+    return _repo_scrub_top_papers_json(raw_value)
 
 def _ensure_projects_schema(cursor):
     expected_columns = [
@@ -495,7 +490,6 @@ def _ensure_stardust_schema(cursor):
             sub_target_thesis TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'draft',
             paper_count INTEGER NOT NULL DEFAULT 0,
-            graph_cache_signature TEXT NOT NULL DEFAULT '',
             source_summary_json TEXT NOT NULL DEFAULT '{}',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
@@ -555,28 +549,13 @@ def _ensure_stardust_schema(cursor):
         cursor.execute("ALTER TABLE challenge_stardust_papers ADD COLUMN via_paper_key TEXT NOT NULL DEFAULT ''")
     if "via_paper_title" not in stardust_paper_columns:
         cursor.execute("ALTER TABLE challenge_stardust_papers ADD COLUMN via_paper_title TEXT NOT NULL DEFAULT ''")
-    cursor.execute(
-        '''CREATE TABLE IF NOT EXISTS challenge_stardust_graph_cache (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            stardust_id INTEGER NOT NULL,
-            graph_mode TEXT NOT NULL,
-            graph_signature TEXT NOT NULL DEFAULT '',
-            nodes_json TEXT NOT NULL DEFAULT '[]',
-            edges_json TEXT NOT NULL DEFAULT '[]',
-            meta_json TEXT NOT NULL DEFAULT '{}',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            FOREIGN KEY (stardust_id) REFERENCES challenge_stardusts (id),
-            UNIQUE (stardust_id, graph_mode)
-        )'''
-    )
+    cursor.execute("DROP TABLE IF EXISTS challenge_stardust_graph_cache")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_project_id ON challenge_stardusts (project_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_claim_id ON challenge_stardusts (claim_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_updated_at ON challenge_stardusts (updated_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_stardust_id ON challenge_stardust_papers (stardust_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_score ON challenge_stardust_papers (stardust_id, challenge_score DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_papers_openalex ON challenge_stardust_papers (openalex_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_stardust_graph_cache_stardust_id ON challenge_stardust_graph_cache (stardust_id)")
 
 def _ensure_atlas_schema(cursor):
     cursor.execute(
@@ -687,6 +666,8 @@ def init_db():
         refreshed_at INTEGER NOT NULL DEFAULT 0
     )''')
     _ensure_projects_schema(cursor)
+    paper_repo = PaperRepository(conn)
+    paper_repo.ensure_schema()
     _ensure_claims_schema(cursor)
     _ensure_stardust_schema(cursor)
     _ensure_atlas_schema(cursor)
@@ -697,6 +678,7 @@ def init_db():
         scrubbed = _scrub_top_papers_json(top_papers)
         if scrubbed != (top_papers or "[]"):
             cursor.execute("UPDATE projects SET top_papers = ? WHERE id = ?", (scrubbed, project_id))
+    paper_repo.migrate_all_projects_from_legacy_blob()
     conn.commit()
     conn.close()
 
@@ -748,11 +730,6 @@ def _write_env_file(settings: Dict[str, str]):
     lines = [
         "## StarMap backend runtime configuration",
         "## Fill in your real keys below.",
-        "",
-        "# Data/runtime",
-        "STARMAP_DATA_DIR=",
-        "STARMAP_EXTERNAL_CALL_CONCURRENCY=32",
-        "STARMAP_HEAVY_ROUTE_CONCURRENCY=16",
         "",
         "# LLM defaults",
         f"STARMAP_LLM_PROVIDER={settings.get('STARMAP_LLM_PROVIDER', 'groq')}",
@@ -846,6 +823,8 @@ def _merge_legacy_database():
     current_cursor = current.cursor()
 
     try:
+        paper_repo = PaperRepository(current)
+        paper_repo.ensure_schema()
         legacy_cursor.execute("SELECT id, username, password FROM users ORDER BY id")
         for row in legacy_cursor.fetchall():
             current_cursor.execute("SELECT id, username, password FROM users WHERE username = ?", (row["username"],))
@@ -928,12 +907,11 @@ def _merge_legacy_database():
                 (row["token"], row["user_id"], row["created_at"], row["expires_at"])
             )
 
+        paper_repo.migrate_all_projects_from_legacy_blob()
         current.commit()
     finally:
         legacy.close()
         current.close()
-
-_merge_legacy_database()
 
 def _create_session(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
@@ -2200,14 +2178,15 @@ def _validate_read_paper_payload(payload: ReadPaperAnalyzeRequest) -> ReadPaperA
     return payload
 
 def _load_project_top_papers(project_data: dict) -> List[dict]:
-    raw_value = project_data.get("top_papers")
-    if not raw_value:
+    project_id = int((project_data or {}).get("id") or 0)
+    if not project_id:
         return []
-    if isinstance(raw_value, list):
-        papers = raw_value
-    else:
-        papers = json.loads(_scrub_top_papers_json(raw_value))
-    return [_scrub_paper_payload(paper) for paper in papers if isinstance(paper, dict)]
+    conn = _db_connect()
+    try:
+        paper_repo = PaperRepository(conn)
+        return [_scrub_paper_payload(paper) for paper in paper_repo.list_project_papers(project_id)]
+    finally:
+        conn.close()
 
 def _make_claim_paper_key(paper: dict) -> str:
     openalex_id = _trim_text((paper or {}).get("openalex_id"), 300)
@@ -4633,10 +4612,19 @@ async def _require_session(request: Request):
         raise HTTPException(status_code=401, detail="Session expired.")
     return {"token": token, "user_id": int(row["user_id"]), "username": row["username"]}
 
+PROJECT_RUNTIME_SELECT = (
+    "id, user_id, project_name, target_title, target_abstract, target_current_content"
+)
+
+
 def _get_owned_project(project_id: int, user_id: int):
     conn = _db_connect(row_factory=True)
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id))
+    # Exclude the legacy top_papers blob from request-time ownership checks.
+    cursor.execute(
+        f"SELECT {PROJECT_RUNTIME_SELECT} FROM projects WHERE id = ? AND user_id = ?",
+        (project_id, user_id),
+    )
     row = cursor.fetchone()
     conn.close()
     if not row:
@@ -4660,10 +4648,6 @@ def _get_owned_claim(project_id: int, claim_id: int, user_id: int) -> dict:
 def _normalize_stardust_status(raw_status: Optional[str]) -> str:
     value = _trim_text(raw_status or "draft", MAX_STARDUST_STATUS_LENGTH).lower() or "draft"
     return value if value in STARDUST_STATUS_VALUES else "draft"
-
-def _normalize_stardust_graph_mode(raw_mode: Optional[str]) -> str:
-    value = _trim_text(raw_mode or "directed", 40).lower() or "directed"
-    return value if value in STARDUST_GRAPH_MODE_VALUES else "directed"
 
 def _normalize_stardust_kind(raw_kind: Optional[str]) -> str:
     value = _trim_text(raw_kind or "challenge", 40).lower() or "challenge"
@@ -4708,11 +4692,6 @@ def _validate_stardust_update_payload(payload: ChallengeStardustUpdateRequest) -
         payload.status = _normalize_stardust_status(payload.status)
     return payload
 
-def _validate_stardust_graph_build_payload(payload: ChallengeStardustGraphBuildRequest) -> ChallengeStardustGraphBuildRequest:
-    payload.mode = _normalize_stardust_graph_mode(payload.mode)
-    payload.force_rebuild = bool(payload.force_rebuild)
-    return _apply_runtime_defaults_to_lookup(payload)
-
 def _serialize_stardust_seed_summary(conn: sqlite3.Connection, stardust_row: dict) -> Optional[dict]:
     seed_evidence_id = int(stardust_row.get("seed_evidence_id") or 0)
     if not seed_evidence_id:
@@ -4746,23 +4725,6 @@ def _serialize_stardust_claim_summary(conn: sqlite3.Connection, stardust_row: di
     claim["status"] = _normalize_claim_status(claim.get("status"))
     return claim
 
-def _serialize_stardust_graph_summaries(conn: sqlite3.Connection, stardust_id: int) -> List[dict]:
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id, graph_mode, graph_signature, created_at, updated_at FROM challenge_stardust_graph_cache WHERE stardust_id = ? ORDER BY updated_at DESC, id DESC",
-        (stardust_id,)
-    )
-    return [
-        {
-            "id": int(row["id"]),
-            "graph_mode": _normalize_stardust_graph_mode(row["graph_mode"]),
-            "graph_signature": row["graph_signature"] or "",
-            "created_at": int(row["created_at"] or 0),
-            "updated_at": int(row["updated_at"] or 0),
-        }
-        for row in cursor.fetchall()
-    ]
-
 def _serialize_stardust_row(conn: sqlite3.Connection, row: dict, include_children: bool = False) -> dict:
     item = dict(row)
     item["status"] = _normalize_stardust_status(item.get("status"))
@@ -4778,7 +4740,6 @@ def _serialize_stardust_row(conn: sqlite3.Connection, row: dict, include_childre
     )
     item["seed"] = _serialize_stardust_seed_summary(conn, item)
     item["claim"] = _serialize_stardust_claim_summary(conn, item)
-    item["graphs"] = _serialize_stardust_graph_summaries(conn, int(item.get("id") or 0))
     if include_children:
         item["papers"] = _load_stardust_papers(conn, int(item.get("id") or 0))
     return item
@@ -4828,7 +4789,6 @@ def _get_owned_stardust(project_id: int, stardust_id: int, user_id: int) -> dict
 
 def _delete_stardust_records(conn: sqlite3.Connection, stardust_id: int):
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM challenge_stardust_graph_cache WHERE stardust_id = ?", (stardust_id,))
     cursor.execute("DELETE FROM challenge_stardust_papers WHERE stardust_id = ?", (stardust_id,))
     cursor.execute("DELETE FROM challenge_stardusts WHERE id = ?", (stardust_id,))
 
@@ -4902,181 +4862,6 @@ def _stardust_paper_to_paper_item(paper: dict) -> PaperItem:
         source_url=_trim_text(paper.get("source_url"), 1000),
         import_source="challenge_stardust",
     )
-
-def _update_stardust_paper_graph_metadata(conn: sqlite3.Connection, stardust_id: int, paper: dict):
-    paper_id = int(paper.get("id") or 0)
-    if not paper_id:
-        return
-    cursor = conn.cursor()
-    cursor.execute(
-        '''UPDATE challenge_stardust_papers SET
-               doi = ?, openalex_id = ?, paper_url = ?, source_url = ?, publication_venue = ?,
-               citation_count = ?, referenced_openalex_ids_json = ?, updated_at = ?
-           WHERE id = ? AND stardust_id = ?''',
-        (
-            _clean_doi(paper.get("doi")),
-            _trim_text(paper.get("openalex_id"), 300),
-            _trim_text(paper.get("paper_url"), 1000),
-            _trim_text(paper.get("source_url"), 1000),
-            _trim_text(paper.get("publication_venue"), 300),
-            _safe_int(paper.get("citation_count"), 0),
-            json.dumps(paper.get("referenced_openalex_ids") or [], ensure_ascii=False),
-            _now_ts(),
-            paper_id,
-            stardust_id,
-        )
-    )
-
-def _build_stardust_graph_signature(papers: List[dict], mode: str) -> str:
-    payload = [
-        {
-            "paper_key": _trim_text(paper.get("paper_key"), 300),
-            "title": _trim_text(paper.get("title"), MAX_PAPER_TITLE_LENGTH),
-            "openalex_id": _trim_text(paper.get("openalex_id"), 300),
-            "citation_count": _safe_int(paper.get("citation_count"), 0),
-            "referenced_openalex_ids": sorted([
-                _trim_text(value, 300)
-                for value in (paper.get("referenced_openalex_ids") or [])
-                if _trim_text(value, 300)
-            ]),
-        }
-        for paper in sorted(
-            papers or [],
-            key=lambda item: (
-                _trim_text(item.get("paper_key"), 300),
-                _trim_text(item.get("openalex_id"), 300),
-                _trim_text(item.get("title"), MAX_PAPER_TITLE_LENGTH)
-            )
-        )
-    ]
-    return hashlib.sha1(_stable_json_dumps({"mode": _normalize_stardust_graph_mode(mode), "papers": payload}).encode("utf-8")).hexdigest()
-
-def _load_stardust_graph_cache(conn: sqlite3.Connection, stardust_id: int, mode: str) -> Optional[dict]:
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM challenge_stardust_graph_cache WHERE stardust_id = ? AND graph_mode = ?",
-        (stardust_id, _normalize_stardust_graph_mode(mode))
-    )
-    row = cursor.fetchone()
-    if not row:
-        return None
-    item = dict(row)
-    try:
-        nodes = json.loads(item.get("nodes_json") or "[]")
-    except Exception:
-        nodes = []
-    try:
-        edges = json.loads(item.get("edges_json") or "[]")
-    except Exception:
-        edges = []
-    try:
-        meta = json.loads(item.get("meta_json") or "{}")
-    except Exception:
-        meta = {}
-    if not isinstance(meta, dict):
-        meta = {}
-    meta["mode"] = _normalize_stardust_graph_mode(item.get("graph_mode"))
-    meta["graph_signature"] = item.get("graph_signature") or ""
-    return {
-        "id": int(item.get("id") or 0),
-        "graph_mode": meta["mode"],
-        "graph_signature": item.get("graph_signature") or "",
-        "nodes": nodes if isinstance(nodes, list) else [],
-        "edges": edges if isinstance(edges, list) else [],
-        "meta": meta,
-        "created_at": int(item.get("created_at") or 0),
-        "updated_at": int(item.get("updated_at") or 0),
-    }
-
-def _upsert_stardust_graph_cache(conn: sqlite3.Connection, stardust_id: int, mode: str, signature: str, nodes: List[dict], edges: List[dict], meta: dict):
-    normalized_mode = _normalize_stardust_graph_mode(mode)
-    now = _now_ts()
-    cursor = conn.cursor()
-    cursor.execute(
-        '''INSERT INTO challenge_stardust_graph_cache (
-               stardust_id, graph_mode, graph_signature, nodes_json, edges_json, meta_json, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(stardust_id, graph_mode) DO UPDATE SET
-               graph_signature = excluded.graph_signature,
-               nodes_json = excluded.nodes_json,
-               edges_json = excluded.edges_json,
-               meta_json = excluded.meta_json,
-               updated_at = excluded.updated_at''',
-        (
-            stardust_id,
-            normalized_mode,
-            signature,
-            json.dumps(nodes, ensure_ascii=False),
-            json.dumps(edges, ensure_ascii=False),
-            json.dumps(meta, ensure_ascii=False),
-            now,
-            now,
-        )
-    )
-    cursor.execute(
-        "UPDATE challenge_stardusts SET graph_cache_signature = ?, updated_at = ? WHERE id = ?",
-        (signature, now, stardust_id)
-    )
-
-def _build_stardust_graph_result(enriched_papers: List[dict], mode: str, partial_failures: Optional[List[dict]] = None) -> dict:
-    normalized_mode = _normalize_stardust_graph_mode(mode)
-    base_result = _build_citation_graph_result(enriched_papers)
-    full_edges = list(base_result.get("edges") or [])
-    edge_lookup = {
-        (str(edge.get("source") or "").strip(), str(edge.get("target") or "").strip())
-        for edge in full_edges
-        if str(edge.get("source") or "").strip() and str(edge.get("target") or "").strip()
-    }
-    mutual_pairs: Dict[Tuple[str, str], dict] = {}
-    directed_only_edges: List[dict] = []
-    for edge in full_edges:
-        source = str(edge.get("source") or "").strip()
-        target = str(edge.get("target") or "").strip()
-        if not source or not target or source == target:
-            continue
-        reverse_key = (target, source)
-        if reverse_key in edge_lookup:
-            pair_key = tuple(sorted([source, target]))
-            if pair_key not in mutual_pairs:
-                mutual_pairs[pair_key] = {
-                    "source": pair_key[0],
-                    "target": pair_key[1],
-                    "relationship": "mutual",
-                }
-        else:
-            directed_only_edges.append({
-                **edge,
-                "relationship": "directed"
-            })
-
-    if normalized_mode == "mutual":
-        display_edges = list(mutual_pairs.values())
-    elif normalized_mode == "full":
-        display_edges = [
-            {
-                **edge,
-                "relationship": "mutual_member" if tuple(sorted([str(edge.get("source") or "").strip(), str(edge.get("target") or "").strip()])) in mutual_pairs else "directed"
-            }
-            for edge in full_edges
-        ]
-    else:
-        display_edges = directed_only_edges
-
-    stats = {
-        **(base_result.get("stats") or {}),
-        "mode": normalized_mode,
-        "full_edge_count": len(full_edges),
-        "directed_only_edge_count": len(directed_only_edges),
-        "mutual_pair_count": len(mutual_pairs),
-        "edge_count": len(display_edges),
-        "partial_failures": (partial_failures or [])[:12],
-    }
-    return {
-        "mode": normalized_mode,
-        "nodes": enriched_papers,
-        "edges": display_edges,
-        "stats": stats,
-    }
 
 async def _acquire_project_task_lock(project_id: int, task_name: str):
     key = f"{project_id}:{task_name}"
@@ -5160,6 +4945,19 @@ class ProjectUpdate(BaseModel):
 # 新增：用于覆盖更新论文列表的请求模型 (删除功能依赖此模型)
 class UpdatePapersRequest(BaseModel):
     top_papers: List[PaperItem]
+
+class ProjectPaperPatchRequest(BaseModel):
+    changes: Dict[str, Any] = Field(default_factory=dict)
+
+class ProjectPaperBatchPatchItem(BaseModel):
+    id: int
+    changes: Dict[str, Any] = Field(default_factory=dict)
+
+class ProjectPaperBatchPatchRequest(BaseModel):
+    patches: List[ProjectPaperBatchPatchItem] = Field(default_factory=list)
+
+class ProjectPaperBatchUpsertRequest(BaseModel):
+    papers: List[PaperItem]
 
 class AtlasAnchorImportItem(BaseModel):
     client_key: str
@@ -5438,12 +5236,6 @@ class ChallengeStardustPaperPatchRequest(BaseModel):
     selected_for_import: Optional[bool] = None
     hidden: Optional[bool] = None
 
-class ChallengeStardustGraphBuildRequest(BaseModel):
-    mode: str = "directed"
-    force_rebuild: bool = False
-    openalex_api_key: str = ""
-    contact_email: str = ""
-
 class ChallengeExpansionRequest(BaseModel):
     evidence_id: int
     max_references: int = MAX_CHALLENGE_EXPANSION_REFERENCES
@@ -5614,7 +5406,7 @@ def _normalize_watch_range(raw_value: str) -> Tuple[str, str, str, int]:
     return normalized, label, start, days
 
 def _get_project_watch_context(project_data: dict, discipline_scopes: List[str]) -> dict:
-    top_papers = json.loads(_scrub_top_papers_json(project_data.get("top_papers"))) if project_data.get("top_papers") else []
+    top_papers = _load_project_top_papers(project_data)
     core_papers = [
         paper for paper in top_papers
         if str((paper or {}).get("status") or "").strip() == "Core"
@@ -6775,12 +6567,67 @@ def _http_post_json(url: str, body: dict, headers: Optional[dict] = None, timeou
         with request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+        raise _normalize_upstream_http_error(exc)
     except error.URLError as exc:
         raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
     except TimeoutError:
         raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
+
+def _extract_upstream_error_message(detail: Any) -> str:
+    if isinstance(detail, dict):
+        payload = detail.get("error") if isinstance(detail.get("error"), dict) else detail
+        message = str(payload.get("message") or "").strip() if isinstance(payload, dict) else ""
+        status = str(payload.get("status") or "").strip() if isinstance(payload, dict) else ""
+        code = payload.get("code") if isinstance(payload, dict) else ""
+        parts = [message]
+        if status:
+            parts.append(f"status={status}")
+        if code not in {"", None}:
+            parts.append(f"code={code}")
+        normalized = " | ".join(part for part in parts if part)
+        if normalized:
+            return normalized
+        return json.dumps(detail, ensure_ascii=False)
+    return str(detail or "").strip()
+
+def _normalize_upstream_http_error(exc: error.HTTPError, default_prefix: str = "Upstream request failed") -> HTTPException:
+    raw_detail = exc.read().decode("utf-8", errors="ignore").strip()
+    detail_payload: Any = raw_detail
+    if raw_detail:
+        try:
+            detail_payload = json.loads(raw_detail)
+        except Exception:
+            detail_payload = raw_detail
+    message = _extract_upstream_error_message(detail_payload) or f"{default_prefix} with status {exc.code}"
+    return HTTPException(status_code=exc.code, detail=message)
+
+def _is_temporary_llm_failure(exc: HTTPException) -> bool:
+    status_code = int(getattr(exc, "status_code", 0) or 0)
+    detail_text = _extract_upstream_error_message(getattr(exc, "detail", "")).lower()
+    if status_code in {429, 500, 502, 503, 504}:
+        return True
+    return (
+        "high demand" in detail_text
+        or "temporarily unavailable" in detail_text
+        or "service unavailable" in detail_text
+        or "resource exhausted" in detail_text
+        or "rate limit" in detail_text
+    )
+
+def _call_llm_with_retry(request_fn, max_attempts: int = 3, retry_delay_seconds: float = 1.1):
+    last_error: Optional[HTTPException] = None
+    attempts = max(1, int(max_attempts or 1))
+    for attempt in range(1, attempts + 1):
+        try:
+            return request_fn()
+        except HTTPException as exc:
+            last_error = exc
+            if attempt >= attempts or not _is_temporary_llm_failure(exc):
+                raise
+            time.sleep(retry_delay_seconds * attempt)
+    if last_error:
+        raise last_error
+    raise HTTPException(status_code=503, detail="The upstream provider is temporarily unavailable. Please try again shortly.")
 
 def _http_post_form(url: str, body: dict, headers: Optional[dict] = None, timeout: int = 90):
     encoded = parse.urlencode({key: value for key, value in (body or {}).items() if value is not None}).encode("utf-8")
@@ -6794,8 +6641,7 @@ def _http_post_form(url: str, body: dict, headers: Optional[dict] = None, timeou
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw.strip() else {}
     except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+        raise _normalize_upstream_http_error(exc)
     except error.URLError as exc:
         raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
     except TimeoutError:
@@ -6814,8 +6660,7 @@ def _http_post_bytes(url: str, body: bytes, headers: Optional[dict] = None, time
                 "status": getattr(resp, "status", 200)
             }
     except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+        raise _normalize_upstream_http_error(exc)
     except error.URLError as exc:
         raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
     except TimeoutError:
@@ -6833,8 +6678,7 @@ def _http_patch_json(url: str, body: dict, headers: Optional[dict] = None, timeo
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw.strip() else {}
     except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+        raise _normalize_upstream_http_error(exc)
     except error.URLError as exc:
         raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
     except TimeoutError:
@@ -6853,8 +6697,7 @@ def _http_delete(url: str, headers: Optional[dict] = None, timeout: int = 90):
                 "status": getattr(resp, "status", 200)
             }
     except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise HTTPException(status_code=exc.code, detail=detail or f"Upstream request failed with status {exc.code}")
+        raise _normalize_upstream_http_error(exc)
     except error.URLError as exc:
         raise HTTPException(status_code=502, detail=f"Could not reach upstream provider: {exc.reason}")
     except TimeoutError:
@@ -6883,7 +6726,11 @@ def _call_llm_from_env(prompt: str, temperature: float = 0.2, json_mode: bool = 
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        response = _http_post_json(url, payload, {"Authorization": f"Bearer {api_key}"})
+        response = _call_llm_with_retry(
+            lambda: _http_post_json(url, payload, {"Authorization": f"Bearer {api_key}"}),
+            max_attempts=3 if provider == "groq" else 2,
+            retry_delay_seconds=0.9
+        )
         return (((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
     if provider == "gemini":
@@ -6896,7 +6743,11 @@ def _call_llm_from_env(prompt: str, temperature: float = 0.2, json_mode: bool = 
                 **({"response_mime_type": "application/json"} if json_mode else {}),
             }
         }
-        response = _http_post_json(url, payload)
+        response = _call_llm_with_retry(
+            lambda: _http_post_json(url, payload),
+            max_attempts=3,
+            retry_delay_seconds=1.2
+        )
         return ((((response.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text") or "").strip()
 
     raise HTTPException(status_code=400, detail="Unsupported LLM provider configured in .env")
@@ -6937,11 +6788,15 @@ def _call_vision_llm_from_env(prompt: str, image_data_url: str, temperature: flo
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        response = _http_post_json(
-            "https://api.openai.com/v1/chat/completions",
-            payload,
-            {"Authorization": f"Bearer {api_key}"},
-            timeout=90
+        response = _call_llm_with_retry(
+            lambda: _http_post_json(
+                "https://api.openai.com/v1/chat/completions",
+                payload,
+                {"Authorization": f"Bearer {api_key}"},
+                timeout=90
+            ),
+            max_attempts=2,
+            retry_delay_seconds=0.9
         )
         return (((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
@@ -6963,10 +6818,14 @@ def _call_vision_llm_from_env(prompt: str, image_data_url: str, temperature: flo
                 **({"response_mime_type": "application/json"} if json_mode else {}),
             }
         }
-        response = _http_post_json(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={parse.quote(api_key, safe='')}",
-            payload,
-            timeout=90
+        response = _call_llm_with_retry(
+            lambda: _http_post_json(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={parse.quote(api_key, safe='')}",
+                payload,
+                timeout=90
+            ),
+            max_attempts=3,
+            retry_delay_seconds=1.2
         )
         return ((((response.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text") or "").strip()
 
@@ -7027,7 +6886,7 @@ def _probe_scholar_status() -> dict:
             "https://api.openalex.org/works",
             {"per_page": 1, "filter": "publication_year:2024", "api_key": api_key}
         )
-        _http_get_json(url, contact_email)
+        _http_get_json(url, contact_email, timeout=8)
         return _status_result("Scholar API", "ready", "OpenAlex reachable.", True)
     except HTTPException as exc:
         return _status_result("Scholar API", "error", f"OpenAlex check failed: {str(exc.detail)[:180]}", bool(api_key or contact_email))
@@ -7042,7 +6901,7 @@ def _probe_zotero_status() -> dict:
         base_path = f"https://api.zotero.org/users/{parse.quote(user_id, safe='')}"
         path = f"{base_path}/collections/{parse.quote(collection_key, safe='')}/items/top" if collection_key else f"{base_path}/items/top"
         url = _build_url(path, {"limit": 1})
-        _http_get_json(url, extra_headers={"Zotero-API-Key": api_key})
+        _http_get_json(url, extra_headers={"Zotero-API-Key": api_key}, timeout=8)
         return _status_result("Zotero", "ready", "Zotero reachable.", True)
     except HTTPException as exc:
         return _status_result("Zotero", "error", f"Zotero check failed: {str(exc.detail)[:180]}", True)
@@ -7058,7 +6917,7 @@ def _build_url(base_url: str, params: dict) -> str:
         return base_url
     return f"{base_url}?{parse.urlencode(cleaned, doseq=True)}"
 
-def _http_get_json(url: str, contact_email: str = "", extra_headers: Optional[dict] = None):
+def _http_get_json(url: str, contact_email: str = "", extra_headers: Optional[dict] = None, timeout: int = 20):
     headers = {"Accept": "application/json"}
     if contact_email:
         headers["User-Agent"] = f"StarMap System/1.0 (mailto:{contact_email})"
@@ -7068,7 +6927,7 @@ def _http_get_json(url: str, contact_email: str = "", extra_headers: Optional[di
     last_error = None
     for _ in range(3):
         try:
-            with request.urlopen(req, timeout=20) as resp:
+            with request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except IncompleteRead as exc:
             last_error = exc
@@ -7085,6 +6944,8 @@ def _http_get_json(url: str, contact_email: str = "", extra_headers: Optional[di
         except error.URLError as exc:
             last_error = exc
             continue
+        except (TimeoutError, socket.timeout):
+            raise HTTPException(status_code=503, detail=f"External API timed out: {url}")
         except Exception as exc:
             if exc.__class__.__name__ == "IncompleteRead":
                 last_error = exc
@@ -7102,6 +6963,18 @@ def _http_get_json(url: str, contact_email: str = "", extra_headers: Optional[di
     if isinstance(last_error, IncompleteRead):
         raise HTTPException(status_code=502, detail=f"External API returned an incomplete response after retries: {url}")
     raise HTTPException(status_code=502, detail=f"External API unavailable: {url}")
+
+async def _run_integration_probe(service_key: str, probe_fn, fallback_name: str) -> Tuple[str, dict]:
+    try:
+        return service_key, await asyncio.to_thread(probe_fn)
+    except HTTPException as exc:
+        detail = _extract_upstream_error_message(exc.detail) or "Status check failed."
+        logger.warning("Integration probe failed for %s: %s", service_key, detail)
+        return service_key, _status_result(fallback_name, "error", f"{fallback_name} check failed: {detail[:180]}", True)
+    except Exception as exc:
+        logger.warning("Integration probe crashed for %s", service_key, exc_info=exc)
+        detail = str(exc).strip() or "Unexpected status probe failure."
+        return service_key, _status_result(fallback_name, "error", f"{fallback_name} check failed: {detail[:180]}", True)
 
 def _http_get_json_with_meta(url: str, contact_email: str = "", extra_headers: Optional[dict] = None) -> Tuple[Any, Dict[str, str]]:
     headers = {"Accept": "application/json"}
@@ -9140,9 +9013,18 @@ async def create_project(req: ProjectCreate, current_user: dict = Depends(_requi
 @app.get("/api/projects/{project_id}")
 async def get_project(project_id: int, current_user: dict = Depends(_require_session)):
     project_data = _get_owned_project(project_id, current_user["user_id"])
-    project_data["top_papers"] = json.loads(_scrub_top_papers_json(project_data["top_papers"])) if project_data["top_papers"] else []
     project_data.pop("target_keywords", None)
     return project_data
+
+@app.get("/api/projects/{project_id}/papers")
+async def get_project_papers(project_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    conn = _db_connect()
+    try:
+        paper_repo = PaperRepository(conn)
+        return {"papers": paper_repo.list_project_papers(project_id)}
+    finally:
+        conn.close()
 
 @app.get("/api/projects/{project_id}/atlas")
 async def get_project_atlas(project_id: int, current_user: dict = Depends(_require_session)):
@@ -9354,6 +9236,7 @@ async def delete_project(project_id: int, current_user: dict = Depends(_require_
     conn = _db_connect()
     cursor = conn.cursor()
     try:
+        PaperRepository(conn).delete_project_data(project_id)
         cursor.execute("DELETE FROM projects WHERE id=? AND user_id=?", (project_id, current_user["user_id"]))
         conn.commit()
         _write_audit_log("project_delete", user_id=current_user["user_id"], project_id=project_id, success=True)
@@ -9369,36 +9252,9 @@ async def merge_top_150_papers(project_id: int, request: MergeRequest, current_u
     _validate_paper_list(request.new_papers)
     lock = await _acquire_project_task_lock(project_id, "merge_papers")
     conn = _db_connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT top_papers FROM projects WHERE id = ? AND user_id = ?", (project_id, current_user["user_id"]))
-    row = cursor.fetchone()
     try:
-        if not row:
-            raise HTTPException(status_code=404, detail="Project not found.")
-        existing_papers_json = row[0]
-        existing_papers = json.loads(_scrub_top_papers_json(existing_papers_json)) if existing_papers_json else []
-        
-        for p in existing_papers:
-            p["is_new"] = False
-            
-        new_papers = []
-        protected_filenames = set()
-        for paper in request.new_papers:
-            p_dict = paper.model_dump()
-            p_dict["is_new"] = True
-            if p_dict.get("filename"):
-                protected_filenames.add(p_dict["filename"])
-            new_papers.append(p_dict)
-        
-        all_papers = existing_papers + new_papers
-        protected_papers = [paper for paper in all_papers if paper.get("filename") in protected_filenames]
-        remaining_papers = [paper for paper in all_papers if paper.get("filename") not in protected_filenames]
-        remaining_papers.sort(key=lambda x: x["similarity"], reverse=True)
-        top_papers = (protected_papers + remaining_papers)[:MAX_TOP_PAPERS]
-        top_papers.sort(key=lambda x: x["similarity"], reverse=True)
-        
-        updated_json = _scrub_top_papers_json(top_papers)
-        cursor.execute("UPDATE projects SET top_papers = ? WHERE id = ? AND user_id = ?", (updated_json, project_id, current_user["user_id"]))
+        paper_repo = PaperRepository(conn)
+        top_papers = paper_repo.merge_project_papers(project_id, [paper.model_dump() for paper in request.new_papers])
         conn.commit()
         _write_audit_log("project_merge_papers", user_id=current_user["user_id"], project_id=project_id, detail={"new_papers": len(request.new_papers), "stored_papers": len(top_papers)}, success=True)
         return {"message": "Merge successful", "top_papers": top_papers}
@@ -9415,13 +9271,123 @@ async def update_project_papers(project_id: int, request: UpdatePapersRequest, c
     _validate_paper_list(request.top_papers)
     lock = await _acquire_project_task_lock(project_id, "update_papers")
     conn = _db_connect()
-    cursor = conn.cursor()
     try:
-        updated_json = _scrub_top_papers_json([p.model_dump() for p in request.top_papers])
-        cursor.execute("UPDATE projects SET top_papers = ? WHERE id = ? AND user_id = ?", (updated_json, project_id, current_user["user_id"]))
+        paper_repo = PaperRepository(conn)
+        top_papers = paper_repo.replace_project_papers(project_id, [paper.model_dump() for paper in request.top_papers])
         conn.commit()
         _write_audit_log("project_update_papers", user_id=current_user["user_id"], project_id=project_id, detail={"paper_count": len(request.top_papers)}, success=True)
-        return {"message": "Papers updated successfully"}
+        return {"message": "Papers updated successfully", "top_papers": top_papers}
+    finally:
+        conn.close()
+        lock.release()
+
+@app.patch("/api/projects/{project_id}/papers/{paper_id}")
+async def patch_project_paper(project_id: int, paper_id: int, request: ProjectPaperPatchRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "patch_project_paper")
+    conn = _db_connect()
+    try:
+        paper_repo = PaperRepository(conn)
+        try:
+            paper = paper_repo.patch_project_paper(project_id, paper_id, request.changes)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Paper not found.")
+        conn.commit()
+        _write_audit_log(
+            "project_patch_paper",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={"paper_id": paper_id, "fields": sorted(list(request.changes.keys()))[:40]},
+            success=True
+        )
+        return {"message": "Paper updated", "paper": paper}
+    finally:
+        conn.close()
+        lock.release()
+
+@app.post("/api/projects/{project_id}/papers/batch_patch")
+async def batch_patch_project_papers(project_id: int, request: ProjectPaperBatchPatchRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "batch_patch_project_papers")
+    conn = _db_connect()
+    try:
+        paper_repo = PaperRepository(conn)
+        try:
+            papers = paper_repo.batch_patch_project_papers(
+                project_id,
+                [{"id": patch.id, "changes": patch.changes} for patch in request.patches]
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Paper not found.")
+        conn.commit()
+        _write_audit_log(
+            "project_batch_patch_papers",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={"patch_count": len(request.patches)},
+            success=True
+        )
+        return {"message": "Papers updated", "papers": papers}
+    finally:
+        conn.close()
+        lock.release()
+
+@app.post("/api/projects/{project_id}/papers/batch_upsert")
+async def batch_upsert_project_papers(project_id: int, request: ProjectPaperBatchUpsertRequest, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    _validate_paper_list(request.papers)
+    lock = await _acquire_project_task_lock(project_id, "batch_upsert_project_papers")
+    conn = _db_connect()
+    try:
+        paper_repo = PaperRepository(conn)
+        papers = paper_repo.upsert_project_papers(project_id, [paper.model_dump() for paper in request.papers])
+        conn.commit()
+        _write_audit_log(
+            "project_batch_upsert_papers",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={"paper_count": len(request.papers)},
+            success=True
+        )
+        return {"message": "Papers upserted", "papers": papers}
+    finally:
+        conn.close()
+        lock.release()
+
+@app.delete("/api/projects/{project_id}/papers/{paper_id}")
+async def delete_project_paper(project_id: int, paper_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "delete_project_paper")
+    conn = _db_connect()
+    try:
+        paper_repo = PaperRepository(conn)
+        deleted = paper_repo.delete_project_paper(project_id, paper_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Paper not found.")
+        conn.commit()
+        _write_audit_log(
+            "project_delete_paper",
+            user_id=current_user["user_id"],
+            project_id=project_id,
+            detail={"paper_id": paper_id},
+            success=True
+        )
+        return {"message": "Paper deleted"}
+    finally:
+        conn.close()
+        lock.release()
+
+@app.delete("/api/projects/{project_id}/papers")
+async def clear_project_papers(project_id: int, current_user: dict = Depends(_require_session)):
+    _get_owned_project(project_id, current_user["user_id"])
+    lock = await _acquire_project_task_lock(project_id, "clear_project_papers")
+    conn = _db_connect()
+    try:
+        paper_repo = PaperRepository(conn)
+        paper_repo.clear_project_papers(project_id)
+        conn.commit()
+        _write_audit_log("project_clear_papers", user_id=current_user["user_id"], project_id=project_id, success=True)
+        return {"message": "All papers cleared"}
     finally:
         conn.close()
         lock.release()
@@ -9601,8 +9567,8 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
     cursor.execute(
         '''INSERT INTO challenge_stardusts (
             project_id, claim_id, seed_evidence_id, seed_paper_key, kind, name, sub_target_thesis,
-            status, paper_count, graph_cache_signature, source_summary_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            status, paper_count, source_summary_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
         (
             project_id,
             payload.claim_id,
@@ -9613,7 +9579,6 @@ async def create_project_stardust(project_id: int, payload: ChallengeStardustCre
             payload.sub_target_thesis,
             "ready",
             len(papers),
-            "",
             json.dumps(source_summary, ensure_ascii=False),
             now,
             now,
@@ -9679,154 +9644,6 @@ async def list_project_stardust_papers(project_id: int, stardust_id: int, includ
     papers = _load_stardust_papers(conn, stardust_id, include_hidden=include_hidden)
     conn.close()
     return {"papers": papers}
-
-@app.get("/api/projects/{project_id}/stardusts/{stardust_id}/graph")
-async def get_project_stardust_graph(project_id: int, stardust_id: int, mode: str = "directed", current_user: dict = Depends(_require_session)):
-    _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
-    normalized_mode = _normalize_stardust_graph_mode(mode)
-    conn = _db_connect(row_factory=True)
-    cached = _load_stardust_graph_cache(conn, stardust_id, normalized_mode)
-    graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
-    conn.close()
-    if not cached:
-        raise HTTPException(status_code=404, detail="No cached Stardust graph exists for this mode yet.")
-    return {
-        "cache_hit": True,
-        "graph": {
-            "mode": normalized_mode,
-            "nodes": cached.get("nodes") or [],
-            "edges": cached.get("edges") or [],
-            "stats": cached.get("meta") or {},
-        },
-        "graphs": graphs,
-    }
-
-@app.post("/api/projects/{project_id}/stardusts/{stardust_id}/graph/build")
-async def build_project_stardust_graph(project_id: int, stardust_id: int, payload: ChallengeStardustGraphBuildRequest, current_user: dict = Depends(_require_session)):
-    stardust_row = _get_owned_stardust(project_id, stardust_id, current_user["user_id"])
-    project_data = _get_owned_project(project_id, current_user["user_id"])
-    payload = _validate_stardust_graph_build_payload(payload)
-    conn = _db_connect(row_factory=True)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM claim_evidence_items WHERE id = ? AND project_id = ?",
-        (int(stardust_row.get("seed_evidence_id") or 0), project_id)
-    )
-    seed_evidence_row = cursor.fetchone()
-    papers = _load_stardust_papers(conn, stardust_id, include_hidden=False)
-    initial_signature = _build_stardust_graph_signature(papers, payload.mode)
-    cached = _load_stardust_graph_cache(conn, stardust_id, payload.mode)
-    if cached and cached.get("graph_signature") == initial_signature and not payload.force_rebuild:
-        graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
-        conn.close()
-        return {
-            "cache_hit": True,
-            "graph": {
-                "mode": payload.mode,
-                "nodes": cached.get("nodes") or [],
-                "edges": cached.get("edges") or [],
-                "stats": cached.get("meta") or {},
-            },
-            "graphs": graphs,
-        }
-
-    seed_graph_paper = None
-    if seed_evidence_row:
-        try:
-            resolved_seed = _resolve_project_paper_for_evidence(project_data, dict(seed_evidence_row))
-            if resolved_seed:
-                seed_graph_paper = _enrich_paper_for_citation_graph(
-                    PaperItem(**resolved_seed),
-                    payload.openalex_api_key,
-                    payload.contact_email
-                )
-        except Exception:
-            seed_graph_paper = None
-
-    enriched_papers: List[dict] = []
-    partial_failures: List[dict] = []
-    for paper in papers:
-        enriched = dict(paper)
-        needs_enrichment = not _trim_text(enriched.get("openalex_id"), 300) or not (enriched.get("referenced_openalex_ids") or [])
-        if needs_enrichment:
-            try:
-                enriched = {
-                    **enriched,
-                    **_enrich_paper_for_citation_graph(
-                        _stardust_paper_to_paper_item(enriched),
-                        payload.openalex_api_key,
-                        payload.contact_email
-                    )
-                }
-                _update_stardust_paper_graph_metadata(conn, stardust_id, enriched)
-            except Exception as exc:
-                partial_failures.append({
-                    "paper_key": _trim_text(enriched.get("paper_key"), 300),
-                    "title": _trim_text(enriched.get("title"), 180),
-                    "detail": _trim_text(str(exc), 220),
-                })
-        enriched_papers.append(enriched)
-
-    graph_signature = _build_stardust_graph_signature(enriched_papers, payload.mode)
-    cached = _load_stardust_graph_cache(conn, stardust_id, payload.mode)
-    if cached and cached.get("graph_signature") == graph_signature and not payload.force_rebuild:
-        graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
-        conn.commit()
-        conn.close()
-        return {
-            "cache_hit": True,
-            "graph": {
-                "mode": payload.mode,
-                "nodes": cached.get("nodes") or [],
-                "edges": cached.get("edges") or [],
-                "stats": cached.get("meta") or {},
-            },
-            "graphs": graphs,
-        }
-
-    graph = _build_stardust_graph_result(enriched_papers, payload.mode, partial_failures)
-    graph_meta = {
-        **(graph.get("stats") or {}),
-        "mode": payload.mode,
-        "graph_signature": graph_signature,
-        "seed": {
-            "paper_key": _trim_text((seed_evidence_row or {}).get("paper_key"), 300),
-            "paper_title": _trim_text((seed_evidence_row or {}).get("paper_title"), MAX_PAPER_TITLE_LENGTH),
-            "paper_authors": _trim_text((seed_evidence_row or {}).get("paper_authors"), MAX_PAPER_AUTHORS_LENGTH),
-            "paper_year": _trim_text((seed_evidence_row or {}).get("paper_year"), 40),
-            "openalex_id": _trim_text((seed_graph_paper or {}).get("openalex_id"), 300),
-            "doi": _clean_doi((seed_graph_paper or {}).get("doi")),
-            "paper_url": _trim_text((seed_graph_paper or {}).get("paper_url"), 1000),
-            "publication_venue": _trim_text((seed_graph_paper or {}).get("publication_venue"), 300),
-            "citation_count": _safe_int((seed_graph_paper or {}).get("citation_count"), 0),
-            "referenced_openalex_ids": list((seed_graph_paper or {}).get("referenced_openalex_ids") or []),
-        },
-    }
-    _upsert_stardust_graph_cache(
-        conn,
-        stardust_id,
-        payload.mode,
-        graph_signature,
-        graph.get("nodes") or [],
-        graph.get("edges") or [],
-        graph_meta,
-    )
-    conn.commit()
-    graphs = _serialize_stardust_graph_summaries(conn, stardust_id)
-    conn.close()
-
-    _write_audit_log(
-        "project_stardust_graph_build",
-        user_id=current_user["user_id"],
-        project_id=project_id,
-        detail={"stardust_id": stardust_id, "mode": payload.mode, "edge_count": int((graph.get("stats") or {}).get("edge_count") or 0)},
-        success=True
-    )
-    return {
-        "cache_hit": False,
-        "graph": graph,
-        "graphs": graphs,
-    }
 
 @app.patch("/api/projects/{project_id}/stardusts/{stardust_id}")
 async def update_project_stardust(project_id: int, stardust_id: int, payload: ChallengeStardustUpdateRequest, current_user: dict = Depends(_require_session)):
@@ -10276,12 +10093,14 @@ async def save_runtime_settings(payload: SettingsPayload, current_user: dict = D
 
 @app.get("/api/integrations/status")
 async def integration_status(current_user: dict = Depends(_require_session)):
-    return {
-        "llm": _probe_llm_status(),
-        "zotero": _probe_zotero_status(),
-        "scholar": _probe_scholar_status(),
-        "checked_at": _now_ts(),
-    }
+    results = await asyncio.gather(
+        _run_integration_probe("llm", _probe_llm_status, "LLM"),
+        _run_integration_probe("zotero", _probe_zotero_status, "Zotero"),
+        _run_integration_probe("scholar", _probe_scholar_status, "Scholar API"),
+    )
+    payload = {key: value for key, value in results}
+    payload["checked_at"] = _now_ts()
+    return payload
 
 @app.post("/api/llm/text")
 async def llm_text(payload: LlmProxyRequest, current_user: dict = Depends(_require_session)):
@@ -10511,14 +10330,6 @@ async def lookup_paper_references(payload: CitationLookupRequest, current_user: 
         "total_count": (response.get("meta") or {}).get("count", len(references))
     }
 
-@app.post("/api/papers/citation-graph")
-async def build_citation_graph(payload: CitationGraphRequest, current_user: dict = Depends(_require_session)):
-    payload = _apply_runtime_defaults_to_lookup(payload)
-    job_id = _create_citation_job(min(len(payload.papers), 500))
-    _write_audit_log("citation_graph_create", user_id=current_user["user_id"], detail={"paper_count": len(payload.papers), "job_id": job_id}, success=True)
-    asyncio.create_task(_run_citation_graph_job(job_id, payload))
-    return {"job_id": job_id, "status": "queued"}
-
 @app.post("/api/papers/citation-graph/jobs", response_model=CitationGraphJobCreated)
 async def create_citation_graph_job(payload: CitationGraphRequest, current_user: dict = Depends(_require_session)):
     payload = _apply_runtime_defaults_to_lookup(payload)
@@ -10609,6 +10420,9 @@ async def update_account(payload: AccountUpdate, current_user: dict = Depends(_r
     _write_audit_log("update_account", user_id=current_user["user_id"], success=True, detail={"username_changed": bool(new_username), "password_changed": bool(payload.new_password)})
     
     return {"message": "Account updated successfully"}
+
+if FRONTEND_ROOT.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_ROOT), html=True), name="frontend")
 
 if __name__ == "__main__":
     import uvicorn

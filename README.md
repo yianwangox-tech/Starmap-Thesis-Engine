@@ -9,7 +9,7 @@ The product is designed for users who do not just want to store papers, but want
 StarMap now ships with two complementary English technical documents aimed at different readers:
 
 - [StarMap Primary Guide for Research Leads and New Contributors](./StarMap_Primary_Guide_for_Research_Leads_and_New_Contributors.md) explains the system from the research workflow and architecture perspective.
-- [StarMap Companion Reference for Implementers and Auditors](./StarMap_Companion_Reference_for_Implementers_and_Auditors.md) covers lower-level implementation details, function-level algorithm notes, defaults, thresholds, and local weight ledgers.
+- [StarMap Functional Detail Guide](./StarMap_Functional_Detail_Guide.md) explains the major workspace behaviors, intake paths, filtering logic, and project-level product rules in implementation-facing English.
 
 ## What StarMap Is For
 
@@ -203,40 +203,28 @@ The backend starts on:
 
 - `http://127.0.0.1:8001`
 
-### Frontend
+The same FastAPI process now serves both:
 
-Serve the `frontend` directory with any static file server. For example:
-
-```bash
-python -m http.server 8000 --directory frontend
-```
-
-Then open:
-
-- `http://127.0.0.1:8000`
-
-The frontend automatically probes common local API origins and will try the backend on port `8001`.
+- the frontend app at `http://127.0.0.1:8001/`
+- the backend API at `http://127.0.0.1:8001/api/...`
 
 ### Auto-start on macOS
 
-If you want both services to come back automatically after a reboot, this repo now includes helper scripts for `launchd`:
+If you want the single 8001 app to come back automatically after a reboot, this repo includes helper scripts for `launchd`:
 
 ```bash
-chmod +x scripts/start_backend.sh scripts/start_frontend.sh scripts/install_launch_agents.sh
+chmod +x scripts/start_backend.sh scripts/install_launch_agents.sh
 ./scripts/install_launch_agents.sh
 ```
 
-This installs two user LaunchAgents:
+This installs one user LaunchAgent:
 
 - `com.ianwang.starmap.backend`
-- `com.ianwang.starmap.frontend`
 
-They start automatically when you log in and restart themselves if they exit unexpectedly. Logs are written to:
+It starts automatically when you log in and restarts itself if it exits unexpectedly. Logs are written to:
 
 - `logs/backend.stdout.log`
 - `logs/backend.stderr.log`
-- `logs/frontend.stdout.log`
-- `logs/frontend.stderr.log`
 
 These scripts are macOS-only and do not affect Windows users.
 
