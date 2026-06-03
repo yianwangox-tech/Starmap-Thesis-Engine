@@ -418,6 +418,21 @@
             gap: 12px;
         }
 
+        .dashboard-advanced-settings {
+            display: grid;
+            gap: 12px;
+            padding: 12px;
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            border-radius: 8px;
+            background: rgba(248, 250, 252, 0.86);
+        }
+
+        .dashboard-advanced-note {
+            font-size: 11px;
+            line-height: 1.5;
+            color: var(--text-muted);
+        }
+
         #view-dashboard label {
             font-size: 11px;
             font-weight: 800;
@@ -2774,16 +2789,36 @@
                 </div>
             </div>
             <div class="dashboard-form-grid">
+                <div id="llm-advanced-settings" class="dashboard-advanced-settings hidden">
                 <div class="form-group" style="margin-bottom:0;">
                     <label>Provider</label>
                     <select id="llm-provider">
+                        <option value="auto">Auto-detect from API key</option>
                         <option value="groq">Groq (Llama-3.1-8b)</option>
+                        <option value="minimax">MiniMax (MiniMax-M3)</option>
                         <option value="gemini">Google Gemini</option>
                         <option value="deepseek">DeepSeek</option>
                         <option value="openai">OpenAI</option>
+                        <option value="anthropic">Anthropic Claude</option>
+                        <option value="mistral">Mistral</option>
+                        <option value="openrouter">OpenRouter</option>
+                        <option value="perplexity">Perplexity</option>
+                        <option value="xai">xAI</option>
+                        <option value="together">Together AI</option>
+                        <option value="siliconflow">SiliconFlow</option>
+                        <option value="qwen">Alibaba DashScope / Qwen</option>
+                        <option value="moonshot">Moonshot / Kimi</option>
+                        <option value="zhipu">Zhipu GLM</option>
+                        <option value="custom_openai">Custom OpenAI-compatible</option>
                     </select>
                 </div>
-                <div class="form-group" style="margin-bottom:0;"><label>API Key</label><input type="password" id="llm-key" placeholder="sk-..."></div>
+                <div class="dashboard-field-grid">
+                    <div class="form-group" style="margin-bottom:0;"><label>Model (Optional)</label><input type="text" id="llm-model" placeholder="Leave blank for provider default"></div>
+                    <div class="form-group" style="margin-bottom:0;"><label>Base URL (Optional)</label><input type="text" id="llm-base-url" placeholder="Only for custom or private gateways"></div>
+                </div>
+                <div class="dashboard-advanced-note">Auto-detect uses clear key prefixes when possible, then a short live probe for ambiguous keys. If detection fails, choose a provider here and add model or base URL only when your provider requires it.</div>
+                </div>
+                <div class="form-group" style="margin-bottom:0;"><label>API Key</label><input type="password" id="llm-key" placeholder="Paste your LLM API key"></div>
                 <div class="form-group" style="margin-bottom:0;"><label>OpenAlex API Key</label><input type="password" id="openalex-key" placeholder="oa_... (recommended)"></div>
                 <div class="form-group" style="margin-bottom:0;"><label>Contact Email</label><input type="text" id="scholar-email" placeholder="name@example.com"></div>
                 <div class="dashboard-field-grid">
@@ -3891,8 +3926,10 @@
     let currentUser = null;
     const embeddingService = createEmbeddingService();
     let appSettings = {
-        llm_provider: 'groq',
+        llm_provider: 'auto',
         llm_api_key: '',
+        llm_model: '',
+        llm_base_url: '',
         openalex_api_key: '',
         contact_email: '',
         zotero_user_id: '',
@@ -9134,21 +9171,60 @@ Rules:
             throw new Error(data.detail || 'Could not load AI Parser Settings.');
         }
         appSettings = {
-            llm_provider: data.llm_provider || 'groq',
+            llm_provider: data.llm_provider || 'auto',
             llm_api_key: data.llm_api_key || '',
+            llm_model: data.llm_model || '',
+            llm_base_url: data.llm_base_url || '',
             openalex_api_key: data.openalex_api_key || '',
             contact_email: data.contact_email || '',
             zotero_user_id: data.zotero_user_id || '',
             zotero_api_key: data.zotero_api_key || '',
             zotero_collection_key: data.zotero_collection_key || ''
         };
-        document.getElementById('llm-provider').value = appSettings.llm_provider;
+        const shouldShowLlmDetails = Boolean(appSettings.llm_model || appSettings.llm_base_url || appSettings.llm_provider === 'custom_openai');
+        setLlmAdvancedSettingsVisible(shouldShowLlmDetails);
+        document.getElementById('llm-provider').value = shouldShowLlmDetails ? appSettings.llm_provider : 'auto';
         document.getElementById('llm-key').value = appSettings.llm_api_key;
+        document.getElementById('llm-model').value = appSettings.llm_model;
+        document.getElementById('llm-base-url').value = appSettings.llm_base_url;
         document.getElementById('openalex-key').value = appSettings.openalex_api_key;
         document.getElementById('scholar-email').value = appSettings.contact_email;
         document.getElementById('zotero-user-id').value = appSettings.zotero_user_id;
         document.getElementById('zotero-api-key').value = appSettings.zotero_api_key;
         document.getElementById('zotero-collection-key').value = appSettings.zotero_collection_key;
+    }
+
+    function setLlmAdvancedSettingsVisible(visible) {
+        const panel = document.getElementById('llm-advanced-settings');
+        if (!panel) return;
+        panel.classList.toggle('hidden', !visible);
+    }
+
+    function isLlmAdvancedSettingsVisible() {
+        const panel = document.getElementById('llm-advanced-settings');
+        return Boolean(panel && !panel.classList.contains('hidden'));
+    }
+
+    function buildSettingsPayload() {
+        const useManualLlmDetails = isLlmAdvancedSettingsVisible();
+        return {
+            llm_provider: useManualLlmDetails ? document.getElementById('llm-provider').value : 'auto',
+            llm_api_key: document.getElementById('llm-key').value,
+            llm_model: useManualLlmDetails ? document.getElementById('llm-model').value : '',
+            llm_base_url: useManualLlmDetails ? document.getElementById('llm-base-url').value : '',
+            openalex_api_key: document.getElementById('openalex-key').value,
+            contact_email: document.getElementById('scholar-email').value,
+            zotero_user_id: document.getElementById('zotero-user-id').value,
+            zotero_api_key: document.getElementById('zotero-api-key').value,
+            zotero_collection_key: document.getElementById('zotero-collection-key').value
+        };
+    }
+
+    function revealLlmDetailsAfterDetectionFailure(message) {
+        setLlmAdvancedSettingsVisible(true);
+        const providerSelect = document.getElementById('llm-provider');
+        if (providerSelect && !providerSelect.value) providerSelect.value = 'auto';
+        alert(`${message || 'Could not auto-detect this API key.'}\n\nPlease choose the provider and add Model or Base URL only if your API requires them.`);
     }
 
     function validateProjectPayload(payload) {
@@ -9202,7 +9278,7 @@ Rules:
 
     function getConfiguredLLM() {
         return {
-            provider: appSettings.llm_provider || 'groq',
+            provider: appSettings.llm_provider || 'auto',
             apiKey: appSettings.llm_api_key || ''
         };
     }
@@ -23093,19 +23169,19 @@ Return ONLY a JSON object matching this exact schema:
     });
 
     window.saveLLMSettings = async () => { 
+        const payload = buildSettingsPayload();
+        const statusEl = document.getElementById('llm-status');
+        if (statusEl) {
+            statusEl.style.color = 'var(--text-muted)';
+            statusEl.innerText = payload.llm_provider === 'auto' && payload.llm_api_key.trim()
+                ? 'Saving and auto-detecting provider...'
+                : 'Saving configuration...';
+        }
         try {
             const res = await fetch(`${API_BASE}/settings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    llm_provider: document.getElementById('llm-provider').value,
-                    llm_api_key: document.getElementById('llm-key').value,
-                    openalex_api_key: document.getElementById('openalex-key').value,
-                    contact_email: document.getElementById('scholar-email').value,
-                    zotero_user_id: document.getElementById('zotero-user-id').value,
-                    zotero_api_key: document.getElementById('zotero-api-key').value,
-                    zotero_collection_key: document.getElementById('zotero-collection-key').value
-                })
+                body: JSON.stringify(payload)
             });
             const data = await res.json();
             if (!res.ok) {
@@ -23113,16 +23189,35 @@ Return ONLY a JSON object matching this exact schema:
             }
             clearLegacySensitiveStorage();
             appSettings = data;
-            document.getElementById('llm-status').innerText = "Saved to backend .env.";
+            setLlmAdvancedSettingsVisible(false);
+            document.getElementById('llm-provider').value = 'auto';
+            document.getElementById('llm-model').value = appSettings.llm_model || '';
+            document.getElementById('llm-base-url').value = appSettings.llm_base_url || '';
+            if (statusEl) {
+                statusEl.style.color = 'var(--success)';
+                statusEl.innerText = appSettings.llm_provider && appSettings.llm_provider !== 'auto'
+                    ? `Saved to backend .env. Detected ${appSettings.llm_provider}.`
+                    : 'Saved to backend .env.';
+            }
             await refreshIntegrationStatus();
             if (currentProject?.id) {
                 scheduleProjectIdlePreparation(currentProject, { warmupMs: 1200 });
             }
             setDashboardApiSettingsExpanded(false);
         } catch (error) {
-            document.getElementById('llm-status').innerText = error.message || 'Save failed.';
+            const message = error.message || 'Save failed.';
+            if (statusEl) {
+                statusEl.style.color = 'var(--danger)';
+                statusEl.innerText = message;
+            }
+            if (payload.llm_provider === 'auto' && payload.llm_api_key.trim()) {
+                revealLlmDetailsAfterDetectionFailure(message);
+            }
         }
-        setTimeout(() => { document.getElementById('llm-status').innerText = ""; }, 3000); 
+        setTimeout(() => {
+            const currentStatusEl = document.getElementById('llm-status');
+            if (currentStatusEl) currentStatusEl.innerText = "";
+        }, 3000); 
     };
 
     window.openProjectSettingsModal = () => {
@@ -32259,7 +32354,7 @@ ${rawText}`;
     }
 
     document.getElementById('pdfUpload').addEventListener('change', async (e) => {
-        const provider = appSettings.llm_provider || 'groq';
+        const provider = appSettings.llm_provider || 'auto';
         const apiKey = appSettings.llm_api_key || '';
         if (!apiKey) return alert("⚠️ Please save your LLM API Key to backend .env first.");
         if (currentImportInProgress) {
