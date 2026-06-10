@@ -732,8 +732,10 @@ def _write_env_file(settings: Dict[str, str]):
         "## Fill in your real keys below.",
         "",
         "# LLM defaults",
-        f"STARMAP_LLM_PROVIDER={settings.get('STARMAP_LLM_PROVIDER', 'groq')}",
+        f"STARMAP_LLM_PROVIDER={settings.get('STARMAP_LLM_PROVIDER', 'auto')}",
         f"STARMAP_LLM_API_KEY={settings.get('STARMAP_LLM_API_KEY', '')}",
+        f"STARMAP_LLM_MODEL={settings.get('STARMAP_LLM_MODEL', '')}",
+        f"STARMAP_LLM_BASE_URL={settings.get('STARMAP_LLM_BASE_URL', '')}",
         "",
         "# OpenAlex defaults",
         f"STARMAP_OPENALEX_API_KEY={settings.get('STARMAP_OPENALEX_API_KEY', '')}",
@@ -750,8 +752,10 @@ def _write_env_file(settings: Dict[str, str]):
 def _load_runtime_settings() -> Dict[str, str]:
     values = _parse_env_file()
     return {
-        "llm_provider": (values.get("STARMAP_LLM_PROVIDER") or "groq").strip() or "groq",
+        "llm_provider": (values.get("STARMAP_LLM_PROVIDER") or "auto").strip() or "auto",
         "llm_api_key": (values.get("STARMAP_LLM_API_KEY") or "").strip(),
+        "llm_model": (values.get("STARMAP_LLM_MODEL") or "").strip(),
+        "llm_base_url": (values.get("STARMAP_LLM_BASE_URL") or "").strip(),
         "openalex_api_key": (values.get("STARMAP_OPENALEX_API_KEY") or "").strip(),
         "contact_email": (values.get("STARMAP_CONTACT_EMAIL") or "").strip(),
         "zotero_user_id": (values.get("STARMAP_ZOTERO_USER_ID") or "").strip(),
@@ -760,9 +764,19 @@ def _load_runtime_settings() -> Dict[str, str]:
     }
 
 def _save_runtime_settings(settings: Dict[str, str]):
+    llm_provider = settings.get("llm_provider", "auto").strip() or "auto"
+    llm_api_key = settings.get("llm_api_key", "").strip()
+    llm_model = settings.get("llm_model", "").strip()
+    llm_base_url = settings.get("llm_base_url", "").strip()
+    if llm_provider.lower() == "auto" and llm_api_key:
+        detected = _detect_llm_provider(llm_api_key, model=llm_model, base_url=llm_base_url, allow_network_probe=True)
+        llm_provider = detected["provider"]
+
     env_settings = {
-        "STARMAP_LLM_PROVIDER": settings.get("llm_provider", "groq").strip() or "groq",
-        "STARMAP_LLM_API_KEY": settings.get("llm_api_key", "").strip(),
+        "STARMAP_LLM_PROVIDER": llm_provider,
+        "STARMAP_LLM_API_KEY": llm_api_key,
+        "STARMAP_LLM_MODEL": llm_model,
+        "STARMAP_LLM_BASE_URL": llm_base_url,
         "STARMAP_OPENALEX_API_KEY": settings.get("openalex_api_key", "").strip(),
         "STARMAP_CONTACT_EMAIL": settings.get("contact_email", "").strip(),
         "STARMAP_ZOTERO_USER_ID": settings.get("zotero_user_id", "").strip(),
@@ -4328,15 +4342,9 @@ def _claim_analysis_version(claim_row: dict) -> str:
     return _trim_text((claim_row or {}).get("analysis_version"), MAX_CLAIM_ANALYSIS_VERSION_LENGTH) or "v1"
 
 def _llm_cache_model_name() -> str:
-    provider = (_env_value("STARMAP_LLM_PROVIDER", "groq") or "groq").lower()
-    if provider == "openai":
-        model = "gpt-4o-mini"
-    elif provider == "deepseek":
-        model = "deepseek-chat"
-    elif provider == "gemini":
-        model = GEMINI_MODEL
-    else:
-        model = "llama-3.1-8b-instant"
+    settings = _load_runtime_settings()
+    provider = (settings.get("llm_provider") or "groq").lower()
+    model = settings.get("llm_model") or _default_llm_model(provider)
     return f"{provider}:{model}"
 
 def _read_claim_cache_payload(table_name: str, cache_key: str, payload_column: str) -> Optional[str]:
@@ -5159,8 +5167,10 @@ class BibtexExportRequest(BaseModel):
     citation_key: str = ""
 
 class SettingsPayload(BaseModel):
-    llm_provider: str = "groq"
+    llm_provider: str = "auto"
     llm_api_key: str = ""
+    llm_model: str = ""
+    llm_base_url: str = ""
     openalex_api_key: str = ""
     contact_email: str = ""
     zotero_user_id: str = ""
@@ -6703,38 +6713,396 @@ def _http_delete(url: str, headers: Optional[dict] = None, timeout: int = 90):
     except TimeoutError:
         raise HTTPException(status_code=503, detail="The upstream provider timed out. Please try again in a moment.")
 
+LLM_PROVIDER_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "openai": {
+        "label": "OpenAI",
+        "kind": "openai_compatible",
+        "base_url": "https://api.openai.com/v1",
+        "text_model": "gpt-4o-mini",
+        "vision_model": "gpt-4o-mini",
+        "key_patterns": [r"^sk-"],
+        "supports_json_mode": True,
+        "supports_vision": True,
+    },
+    "groq": {
+        "label": "Groq",
+        "kind": "openai_compatible",
+        "base_url": "https://api.groq.com/openai/v1",
+        "text_model": "llama-3.1-8b-instant",
+        "key_patterns": [r"^gsk_"],
+        "supports_json_mode": True,
+        "supports_vision": False,
+        "max_attempts": 3,
+    },
+    "deepseek": {
+        "label": "DeepSeek",
+        "kind": "openai_compatible",
+        "base_url": "https://api.deepseek.com",
+        "text_model": "deepseek-chat",
+        "key_patterns": [],
+        "supports_json_mode": True,
+        "supports_vision": False,
+    },
+    "minimax": {
+        "label": "MiniMax",
+        "kind": "openai_compatible",
+        "base_url": "https://api.minimax.io/v1",
+        "text_model": "MiniMax-M3",
+        "vision_model": "MiniMax-M3",
+        "key_patterns": [],
+        "supports_json_mode": False,
+        "supports_vision": True,
+    },
+    "mistral": {
+        "label": "Mistral",
+        "kind": "openai_compatible",
+        "base_url": "https://api.mistral.ai/v1",
+        "text_model": "mistral-small-latest",
+        "key_patterns": [],
+        "supports_json_mode": True,
+        "supports_vision": False,
+    },
+    "openrouter": {
+        "label": "OpenRouter",
+        "kind": "openai_compatible",
+        "base_url": "https://openrouter.ai/api/v1",
+        "text_model": "openai/gpt-4o-mini",
+        "key_patterns": [r"^sk-or-"],
+        "supports_json_mode": True,
+        "supports_vision": False,
+    },
+    "perplexity": {
+        "label": "Perplexity",
+        "kind": "openai_compatible",
+        "base_url": "https://api.perplexity.ai",
+        "text_model": "sonar",
+        "key_patterns": [r"^pplx-"],
+        "supports_json_mode": False,
+        "supports_vision": False,
+    },
+    "xai": {
+        "label": "xAI",
+        "kind": "openai_compatible",
+        "base_url": "https://api.x.ai/v1",
+        "text_model": "grok-3-mini",
+        "key_patterns": [r"^xai-"],
+        "supports_json_mode": True,
+        "supports_vision": False,
+    },
+    "together": {
+        "label": "Together AI",
+        "kind": "openai_compatible",
+        "base_url": "https://api.together.xyz/v1",
+        "text_model": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+        "key_patterns": [],
+        "supports_json_mode": True,
+        "supports_vision": False,
+    },
+    "siliconflow": {
+        "label": "SiliconFlow",
+        "kind": "openai_compatible",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "text_model": "Qwen/Qwen2.5-7B-Instruct",
+        "key_patterns": [],
+        "supports_json_mode": True,
+        "supports_vision": False,
+    },
+    "qwen": {
+        "label": "Alibaba DashScope / Qwen",
+        "kind": "openai_compatible",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "text_model": "qwen-plus",
+        "key_patterns": [],
+        "supports_json_mode": True,
+        "supports_vision": False,
+    },
+    "moonshot": {
+        "label": "Moonshot / Kimi",
+        "kind": "openai_compatible",
+        "base_url": "https://api.moonshot.cn/v1",
+        "text_model": "moonshot-v1-8k",
+        "key_patterns": [],
+        "supports_json_mode": True,
+        "supports_vision": False,
+    },
+    "zhipu": {
+        "label": "Zhipu GLM",
+        "kind": "openai_compatible",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "text_model": "glm-4-flash",
+        "key_patterns": [],
+        "supports_json_mode": True,
+        "supports_vision": False,
+    },
+    "custom_openai": {
+        "label": "Custom OpenAI-compatible",
+        "kind": "openai_compatible",
+        "base_url": "",
+        "text_model": "",
+        "key_patterns": [],
+        "supports_json_mode": True,
+        "supports_vision": False,
+    },
+    "gemini": {
+        "label": "Google Gemini",
+        "kind": "gemini",
+        "base_url": "",
+        "text_model": GEMINI_MODEL,
+        "vision_model": GEMINI_MODEL,
+        "key_patterns": [r"^AIza"],
+        "supports_json_mode": True,
+        "supports_vision": True,
+        "max_attempts": 3,
+    },
+    "anthropic": {
+        "label": "Anthropic Claude",
+        "kind": "anthropic",
+        "base_url": "https://api.anthropic.com/v1",
+        "text_model": "claude-sonnet-4-5-20250929",
+        "key_patterns": [r"^sk-ant-"],
+        "supports_json_mode": False,
+        "supports_vision": False,
+    },
+}
+
+LLM_AUTO_PROBE_ORDER = ["minimax", "openai", "deepseek", "mistral", "gemini", "anthropic"]
+
+def _normalize_llm_provider(provider: str) -> str:
+    normalized = re.sub(r"[^a-z0-9_]+", "_", (provider or "").strip().lower()).strip("_")
+    aliases = {
+        "chatgpt": "openai",
+        "chat_gpt": "openai",
+        "google": "gemini",
+        "dashscope": "qwen",
+        "ali": "qwen",
+        "alibaba": "qwen",
+        "kimi": "moonshot",
+        "glm": "zhipu",
+        "zhipuai": "zhipu",
+        "custom": "custom_openai",
+        "openai_compatible": "custom_openai",
+    }
+    return aliases.get(normalized, normalized or "groq")
+
+def _default_llm_model(provider: str) -> str:
+    provider = _normalize_llm_provider(provider)
+    return str((LLM_PROVIDER_REGISTRY.get(provider) or {}).get("text_model") or "")
+
+def _default_llm_base_url(provider: str) -> str:
+    provider = _normalize_llm_provider(provider)
+    return str((LLM_PROVIDER_REGISTRY.get(provider) or {}).get("base_url") or "")
+
+def _llm_provider_label(provider: str) -> str:
+    provider = _normalize_llm_provider(provider)
+    return str((LLM_PROVIDER_REGISTRY.get(provider) or {}).get("label") or provider)
+
+def _matching_llm_key_providers(api_key: str) -> List[str]:
+    key = (api_key or "").strip()
+    if not key:
+        return []
+    explicit_prefixes = [
+        ("gsk_", "groq"),
+        ("AIza", "gemini"),
+        ("sk-ant-", "anthropic"),
+        ("sk-or-", "openrouter"),
+        ("pplx-", "perplexity"),
+        ("xai-", "xai"),
+    ]
+    for prefix, provider in explicit_prefixes:
+        if key.startswith(prefix):
+            return [provider]
+    matches: List[str] = []
+    for provider, config in LLM_PROVIDER_REGISTRY.items():
+        for pattern in config.get("key_patterns") or []:
+            if re.search(pattern, key):
+                matches.append(provider)
+                break
+    if matches == ["openai"]:
+        return []
+    return matches
+
+def _auto_probe_candidates(api_key: str, matches: List[str]) -> List[str]:
+    if matches:
+        return matches
+    key = (api_key or "").strip()
+    if key.startswith("sk-"):
+        return ["openai", "deepseek", "mistral", "minimax"]
+    return LLM_AUTO_PROBE_ORDER
+
+def _chat_completions_url(base_url: str) -> str:
+    raw = (base_url or "").strip().rstrip("/")
+    if not raw:
+        raise HTTPException(status_code=400, detail="LLM base URL is required for this provider.")
+    if raw.endswith("/chat/completions") or raw.endswith("/text/chatcompletion_v2"):
+        return raw
+    return f"{raw}/chat/completions"
+
+def _openai_compatible_headers(provider: str, api_key: str) -> Dict[str, str]:
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if provider == "openrouter":
+        headers["HTTP-Referer"] = "http://127.0.0.1:8001"
+        headers["X-Title"] = "StarMap System"
+    return headers
+
+def _openai_compatible_text_payload(provider: str, model: str, prompt: str, temperature: float, json_mode: bool) -> dict:
+    config = LLM_PROVIDER_REGISTRY.get(provider) or {}
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+    }
+    if json_mode and config.get("supports_json_mode", True):
+        payload["response_format"] = {"type": "json_object"}
+    if provider == "minimax":
+        payload["extra_body"] = {"reasoning_split": True}
+    return payload
+
+def _extract_openai_compatible_text(response: dict) -> str:
+    choice = (response.get("choices") or [{}])[0] or {}
+    message = choice.get("message") or {}
+    content = message.get("content")
+    if isinstance(content, list):
+        parts: List[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                parts.append(str(part.get("text") or part.get("content") or ""))
+            else:
+                parts.append(str(part))
+        return "".join(parts).strip()
+    return str(content or "").strip()
+
+def _call_openai_compatible_text(provider: str, api_key: str, prompt: str, temperature: float, json_mode: bool, model: str = "", base_url: str = "", timeout: int = 90) -> str:
+    config = LLM_PROVIDER_REGISTRY.get(provider) or {}
+    resolved_model = (model or config.get("text_model") or "").strip()
+    if not resolved_model:
+        raise HTTPException(status_code=400, detail=f"LLM model is required for {_llm_provider_label(provider)}.")
+    resolved_base_url = (base_url or config.get("base_url") or "").strip()
+    response = _call_llm_with_retry(
+        lambda: _http_post_json(
+            _chat_completions_url(resolved_base_url),
+            _openai_compatible_text_payload(provider, resolved_model, prompt, temperature, json_mode),
+            _openai_compatible_headers(provider, api_key),
+            timeout=timeout,
+        ),
+        max_attempts=int(config.get("max_attempts") or 2),
+        retry_delay_seconds=0.9
+    )
+    return _extract_openai_compatible_text(response)
+
+def _call_anthropic_text(api_key: str, prompt: str, temperature: float, model: str = "", base_url: str = "", timeout: int = 90) -> str:
+    resolved_model = model or _default_llm_model("anthropic")
+    url = f"{(base_url or _default_llm_base_url('anthropic')).rstrip('/')}/messages"
+    response = _call_llm_with_retry(
+        lambda: _http_post_json(
+            url,
+            {
+                "model": resolved_model,
+                "max_tokens": 2048,
+                "temperature": temperature,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+            timeout=timeout,
+        ),
+        max_attempts=2,
+        retry_delay_seconds=0.9
+    )
+    content = response.get("content") or []
+    return "".join(str(part.get("text") or "") for part in content if isinstance(part, dict)).strip()
+
+def _detect_llm_provider(api_key: str, model: str = "", base_url: str = "", allow_network_probe: bool = False) -> dict:
+    key = (api_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="LLM API key is required for auto-detection.")
+    if base_url:
+        return {"provider": "custom_openai", "model": model, "base_url": base_url}
+
+    matches = _matching_llm_key_providers(key)
+    if len(matches) == 1:
+        provider = matches[0]
+        return {"provider": provider, "model": model or _default_llm_model(provider), "base_url": _default_llm_base_url(provider)}
+    if not allow_network_probe:
+        raise HTTPException(status_code=400, detail="Could not identify this API key from its prefix. Choose a provider manually, or save with Auto to run a live probe.")
+
+    candidates = _auto_probe_candidates(key, matches)
+    failures: List[str] = []
+    for provider in candidates:
+        try:
+            _probe_specific_llm_provider(provider, key, model=model, base_url=base_url, timeout=8)
+            return {"provider": provider, "model": model or _default_llm_model(provider), "base_url": _default_llm_base_url(provider)}
+        except HTTPException as exc:
+            failures.append(f"{provider}: {str(exc.detail)[:90]}")
+    raise HTTPException(
+        status_code=400,
+        detail="Could not auto-detect the LLM provider. Choose it manually. Probe summary: " + " | ".join(failures[:4])
+    )
+
+def _current_llm_config(allow_auto_probe: bool = True) -> dict:
+    settings = _load_runtime_settings()
+    provider = _normalize_llm_provider(settings.get("llm_provider") or "groq")
+    api_key = settings.get("llm_api_key") or ""
+    model = settings.get("llm_model") or ""
+    base_url = settings.get("llm_base_url") or ""
+    if provider == "auto" and api_key:
+        detected = _detect_llm_provider(api_key, model=model, base_url=base_url, allow_network_probe=allow_auto_probe)
+        provider = detected["provider"]
+        model = model or detected.get("model", "")
+        base_url = base_url or detected.get("base_url", "")
+    elif provider == "auto":
+        provider = "groq"
+    config = LLM_PROVIDER_REGISTRY.get(provider)
+    if not config:
+        raise HTTPException(status_code=400, detail=f"Unsupported LLM provider configured: {provider}")
+    return {
+        "provider": provider,
+        "api_key": api_key,
+        "model": model or config.get("text_model") or "",
+        "base_url": base_url or config.get("base_url") or "",
+        "config": config,
+    }
+
+def _probe_specific_llm_provider(provider: str, api_key: str, model: str = "", base_url: str = "", timeout: int = 12) -> str:
+    provider = _normalize_llm_provider(provider)
+    config = LLM_PROVIDER_REGISTRY.get(provider)
+    if not config:
+        raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
+    prompt = "Reply with OK only."
+    if provider == "gemini":
+        resolved_model = model or GEMINI_MODEL
+        _http_post_json(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{resolved_model}:generateContent?key={parse.quote(api_key, safe='')}",
+            {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0}},
+            timeout=timeout
+        )
+        return resolved_model
+    if provider == "anthropic":
+        _call_anthropic_text(api_key, prompt, 0, model=model, base_url=base_url, timeout=timeout)
+        return model or _default_llm_model(provider)
+    if config.get("kind") == "openai_compatible":
+        _call_openai_compatible_text(provider, api_key, prompt, 0, False, model=model, base_url=base_url, timeout=timeout)
+        return model or _default_llm_model(provider)
+    raise HTTPException(status_code=400, detail=f"Unsupported provider kind: {config.get('kind')}")
+
 def _call_llm_from_env(prompt: str, temperature: float = 0.2, json_mode: bool = False) -> str:
-    provider = (_env_value("STARMAP_LLM_PROVIDER", "groq") or "groq").lower()
-    api_key = _env_value("STARMAP_LLM_API_KEY")
+    llm = _current_llm_config()
+    provider = llm["provider"]
+    api_key = llm["api_key"]
     if not api_key:
         raise HTTPException(status_code=400, detail="LLM API key is not configured in .env")
 
-    if provider in {"openai", "deepseek", "groq"}:
-        if provider == "openai":
-            url = "https://api.openai.com/v1/chat/completions"
-            model = "gpt-4o-mini"
-        elif provider == "deepseek":
-            url = "https://api.deepseek.com/chat/completions"
-            model = "deepseek-chat"
-        else:
-            url = "https://api.groq.com/openai/v1/chat/completions"
-            model = "llama-3.1-8b-instant"
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
-        }
-        if json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        response = _call_llm_with_retry(
-            lambda: _http_post_json(url, payload, {"Authorization": f"Bearer {api_key}"}),
-            max_attempts=3 if provider == "groq" else 2,
-            retry_delay_seconds=0.9
+    if llm["config"].get("kind") == "openai_compatible":
+        return _call_openai_compatible_text(
+            provider,
+            api_key,
+            prompt,
+            temperature,
+            json_mode,
+            model=llm["model"],
+            base_url=llm["base_url"],
         )
-        return (((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
     if provider == "gemini":
-        model = GEMINI_MODEL
+        model = llm["model"] or GEMINI_MODEL
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={parse.quote(api_key, safe='')}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -6750,7 +7118,10 @@ def _call_llm_from_env(prompt: str, temperature: float = 0.2, json_mode: bool = 
         )
         return ((((response.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text") or "").strip()
 
-    raise HTTPException(status_code=400, detail="Unsupported LLM provider configured in .env")
+    if provider == "anthropic":
+        return _call_anthropic_text(api_key, prompt, temperature, model=llm["model"], base_url=llm["base_url"])
+
+    raise HTTPException(status_code=400, detail=f"Unsupported LLM provider configured in .env: {provider}")
 
 def _parse_data_url_image(data_url: str) -> Tuple[str, bytes]:
     raw = str(data_url or "").strip()
@@ -6767,8 +7138,9 @@ def _parse_data_url_image(data_url: str) -> Tuple[str, bytes]:
     return mime_type, image_bytes
 
 def _call_vision_llm_from_env(prompt: str, image_data_url: str, temperature: float = 0.2, json_mode: bool = False) -> str:
-    provider = (_env_value("STARMAP_LLM_PROVIDER", "groq") or "groq").lower()
-    api_key = _env_value("STARMAP_LLM_API_KEY")
+    llm = _current_llm_config()
+    provider = llm["provider"]
+    api_key = llm["api_key"]
     if not api_key:
         raise HTTPException(status_code=400, detail="LLM API key is not configured in .env")
 
@@ -6776,7 +7148,7 @@ def _call_vision_llm_from_env(prompt: str, image_data_url: str, temperature: flo
 
     if provider == "openai":
         payload = {
-            "model": "gpt-4o-mini",
+            "model": llm["model"] or "gpt-4o-mini",
             "messages": [{
                 "role": "user",
                 "content": [
@@ -6799,6 +7171,31 @@ def _call_vision_llm_from_env(prompt: str, image_data_url: str, temperature: flo
             retry_delay_seconds=0.9
         )
         return (((response.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+
+    if provider == "minimax":
+        model = llm["model"] or "MiniMax-M3"
+        payload = {
+            "model": model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_url, "detail": "default"}}
+                ]
+            }],
+            "temperature": temperature,
+        }
+        response = _call_llm_with_retry(
+            lambda: _http_post_json(
+                _chat_completions_url(llm["base_url"] or _default_llm_base_url("minimax")),
+                payload,
+                _openai_compatible_headers("minimax", api_key),
+                timeout=90
+            ),
+            max_attempts=2,
+            retry_delay_seconds=0.9
+        )
+        return _extract_openai_compatible_text(response)
 
     if provider == "gemini":
         payload = {
@@ -6829,7 +7226,7 @@ def _call_vision_llm_from_env(prompt: str, image_data_url: str, temperature: flo
         )
         return ((((response.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])[0].get("text") or "").strip()
 
-    raise HTTPException(status_code=400, detail=f"The configured provider '{provider}' does not currently support screenshot-based passage analysis in StarMap. Switch to OpenAI or Gemini for vision.")
+    raise HTTPException(status_code=400, detail=f"The configured provider '{provider}' does not currently support screenshot-based passage analysis in StarMap. Switch to OpenAI, Gemini, or MiniMax for vision.")
 
 def _status_result(name: str, state: str, detail: str, configured: bool) -> dict:
     return {
@@ -6840,39 +7237,23 @@ def _status_result(name: str, state: str, detail: str, configured: bool) -> dict
     }
 
 def _probe_llm_status() -> dict:
-    provider = (_env_value("STARMAP_LLM_PROVIDER", "groq") or "groq").lower()
-    api_key = _env_value("STARMAP_LLM_API_KEY")
+    settings = _load_runtime_settings()
+    provider = _normalize_llm_provider(settings.get("llm_provider") or "groq")
+    api_key = settings.get("llm_api_key") or ""
     if not api_key:
         return _status_result("LLM", "missing", "LLM API key is not configured.", False)
 
     try:
-        prompt = "Reply with OK only."
-        if provider in {"openai", "deepseek", "groq"}:
-            if provider == "openai":
-                url = "https://api.openai.com/v1/chat/completions"
-                model = "gpt-4o-mini"
-            elif provider == "deepseek":
-                url = "https://api.deepseek.com/chat/completions"
-                model = "deepseek-chat"
-            else:
-                url = "https://api.groq.com/openai/v1/chat/completions"
-                model = "llama-3.1-8b-instant"
-            _http_post_json(
-                url,
-                {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0},
-                {"Authorization": f"Bearer {api_key}"},
-                timeout=12
-            )
-        elif provider == "gemini":
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={parse.quote(api_key, safe='')}"
-            _http_post_json(
-                url,
-                {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0}},
-                timeout=12
-            )
-        else:
-            return _status_result("LLM", "error", f"Unsupported provider: {provider}", True)
-        return _status_result("LLM", "ready", f"{provider} reachable ({GEMINI_MODEL if provider == 'gemini' else provider}).", True)
+        llm = _current_llm_config(allow_auto_probe=True)
+        model = _probe_specific_llm_provider(
+            llm["provider"],
+            api_key,
+            model=llm.get("model") or "",
+            base_url=llm.get("base_url") or "",
+            timeout=12
+        )
+        provider_label = _llm_provider_label(llm["provider"])
+        return _status_result("LLM", "ready", f"{provider_label} reachable ({model}).", True)
     except HTTPException as exc:
         return _status_result("LLM", "error", f"{provider} check failed: {str(exc.detail)[:180]}", True)
 
